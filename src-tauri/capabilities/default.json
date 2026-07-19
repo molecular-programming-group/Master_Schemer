@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Base window capability; the app uses no IPC yet.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
