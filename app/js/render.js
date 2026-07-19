@@ -1,5 +1,5 @@
 // SVG rendering: full redraw of the document + selection overlay.
-import { state, byId } from './model.js';
+import { state, byId, resolveColor } from './model.js';
 import { GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint } from './geom.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -30,9 +30,13 @@ export const worldToScreen = p => [
 export function elementBBox(el) {
   switch (el.type) {
     case 'card': return [el.x, el.y, el.x + el.w, el.y + el.h];
-    case 'path': case 'ink': {
+    case 'path': case 'ink': case 'aline': {
       const b = bboxOfPts(el.pts), m = (el.width || 2) + 4;
       return [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
+    }
+    case 'ellipse': {
+      const m = (el.width || 2) + 2;
+      return [el.cx - el.rx - m, el.cy - el.ry - m, el.cx + el.rx + m, el.cy + el.ry + m];
     }
     case 'text': {
       const lines = el.text.split('\n');
@@ -60,6 +64,58 @@ export function contentBBox() {
                  Math.max(box[2], b[2]), Math.max(box[3], b[3])] : b;
   }
   return box;
+}
+
+// ---- shared stroke styling ----
+
+export function dashArray(dash, w) {
+  if (dash === 'dashed') return `${w * 2.6} ${w * 1.9}`;
+  if (dash === 'dotted') return `0.1 ${w * 2.2}`; // round linecap turns these into dots
+  return null;
+}
+
+function strokeAttrs(el) {
+  const attrs = {
+    fill: 'none', stroke: resolveColor(el.color), 'stroke-width': el.width || 2,
+    'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+  };
+  const da = dashArray(el.dash, el.width || 2);
+  if (da) attrs['stroke-dasharray'] = da;
+  return attrs;
+}
+
+// Outward unit direction at a polyline end (end: 0 = first point, 1 = last).
+function endDir(pts, end) {
+  const i = end ? pts.length - 1 : 0, step = end ? -1 : 1;
+  let j = i + step;
+  while (j >= 0 && j < pts.length && pts[j][0] === pts[i][0] && pts[j][1] === pts[i][1]) j += step;
+  if (j < 0 || j >= pts.length) return [1, 0];
+  const dx = pts[i][0] - pts[j][0], dy = pts[i][1] - pts[j][1];
+  const n = Math.hypot(dx, dy) || 1;
+  return [dx / n, dy / n];
+}
+
+export const CAPS = ['none', 'arrow', 'barb', 'square', 'circle'];
+
+// End-cap glyph at p pointing along outward unit dir d.
+function capGlyph(parent, p, d, cap, color, w) {
+  if (!cap || cap === 'none') return;
+  const s = Math.max(7, w * 2.1);
+  const n = [-d[1], d[0]];
+  const P = (a, b) => [p[0] + d[0] * a + n[0] * b, p[1] + d[1] * a + n[1] * b];
+  const poly = pts => svgEl('polygon', {
+    points: pts.map(q => `${q[0]},${q[1]}`).join(' '), fill: color, stroke: 'none',
+  }, parent);
+  if (cap === 'arrow') poly([P(s * 0.75, 0), P(-s * 0.55, s * 0.55), P(-s * 0.55, -s * 0.55)]);
+  else if (cap === 'barb') { // swept-back barbed head
+    const path = [P(s * 0.8, 0), P(-s * 0.75, s * 0.7), P(-s * 0.3, 0), P(-s * 0.75, -s * 0.7)];
+    poly(path);
+  } else if (cap === 'square') {
+    const h = s * 0.42;
+    poly([P(h, h), P(h, -h), P(-h, -h), P(-h, h)]);
+  } else if (cap === 'circle') {
+    svgEl('circle', { cx: p[0], cy: p[1], r: s * 0.42, fill: color, stroke: 'none' }, parent);
+  }
 }
 
 // ---- element renderers ----
@@ -136,35 +192,36 @@ function renderPath(el, parent) {
   const g = svgEl('g', { 'data-id': el.id }, parent);
   const pts = ptsAttr(el.pts);
   const w = el.width || 2;
+  const color = resolveColor(el.color);
   svgEl('polyline', {
     points: pts, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, w + 8), 'data-hit': '1',
   }, g);
-  svgEl('polyline', {
-    points: pts, fill: 'none', stroke: el.color, 'stroke-width': w,
-    'stroke-linejoin': 'round', 'stroke-linecap': 'round',
-  }, g);
+  svgEl('polyline', { points: pts, ...strokeAttrs(el) }, g);
   const len = polylineLength(el.pts);
   (el.segments || []).forEach((seg, i) => {
     const sp = subPath(el.pts, seg.t0, seg.t1);
     const sa = ptsAttr(sp);
+    const segColor = resolveColor(seg.color);
     svgEl('polyline', {
       points: sa, fill: 'none', stroke: 'transparent',
       'stroke-width': Math.max(12, w + 8), 'data-hit': '1', 'data-seg': i,
     }, g);
     svgEl('polyline', {
-      points: sa, fill: 'none', stroke: seg.color, 'stroke-width': w + 2.5,
+      points: sa, fill: 'none', stroke: segColor, 'stroke-width': w + 2.5,
       'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'data-seg': i,
     }, g);
     if (seg.label) {
       const m = labelPos(el.pts, (seg.t0 + seg.t1) / 2, 16, 1);
-      haloText(g, m[0], m[1], seg.label, 12, seg.color, 600,
+      haloText(g, m[0], m[1], seg.label, 12, segColor, 600,
         { 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
     }
   });
+  capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, color, w);
+  capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, color, w);
   if (el.label) {
     const m = labelPos(el.pts, len / 2, 14, -1);
-    haloText(g, m[0], m[1], el.label, 12.5, el.color, 600,
+    haloText(g, m[0], m[1], el.label, 12.5, color, 600,
       { 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
   }
 }
@@ -189,17 +246,61 @@ function renderInk(el, parent) {
     d, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
-  svgEl('path', {
-    d, fill: 'none', stroke: el.color, 'stroke-width': el.width || 2,
-    'stroke-linejoin': 'round', 'stroke-linecap': 'round',
-  }, g);
+  svgEl('path', { d, ...strokeAttrs(el) }, g);
 }
 
+function renderEllipse(el, parent) {
+  const g = svgEl('g', { 'data-id': el.id }, parent);
+  const base = { cx: el.cx, cy: el.cy, rx: el.rx, ry: el.ry };
+  svgEl('ellipse', {
+    ...base, fill: 'none', stroke: 'transparent',
+    'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
+  }, g);
+  const attrs = strokeAttrs(el);
+  svgEl('ellipse', { ...base, ...attrs }, g);
+}
+
+function renderALine(el, parent) {
+  const g = svgEl('g', { 'data-id': el.id }, parent);
+  const [a, b] = el.pts;
+  const color = resolveColor(el.color);
+  svgEl('line', {
+    x1: a[0], y1: a[1], x2: b[0], y2: b[1],
+    stroke: 'transparent', 'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
+  }, g);
+  const attrs = strokeAttrs(el);
+  svgEl('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], ...attrs }, g);
+  capGlyph(g, a, endDir(el.pts, 0), el.cap0, color, el.width || 2);
+  capGlyph(g, b, endDir(el.pts, 1), el.cap1, color, el.width || 2);
+}
+
+// Math notes: lines containing $…$ render through KaTeX in a foreignObject.
+// ponytail: exported SVGs show math correctly in browsers only if KaTeX CSS is
+// available; plain-text notes stay portable SVG <text>.
 function renderText(el, parent) {
   const g = svgEl('g', { 'data-id': el.id }, parent);
+  const color = resolveColor(el.color);
+  if (el.text.includes('$') && window.katex) {
+    const fo = svgEl('foreignObject', {
+      x: el.x, y: el.y - el.size * 1.1, width: 2000, height: 1000,
+      style: 'overflow:visible', 'pointer-events': 'none',
+    }, g);
+    const div = document.createElement('div');
+    div.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+    div.style.cssText = `font:${el.size}px ${FONT};color:${color};line-height:1.3;` +
+      'white-space:pre-wrap;width:max-content;max-width:1000px;pointer-events:auto';
+    div.innerHTML = el.text.split('\n').map(line =>
+      line.replace(/\$([^$]+)\$/g, (_, tex) => {
+        try { return window.katex.renderToString(tex, { throwOnError: false }); }
+        catch { return tex; }
+      }) || '&nbsp;'
+    ).map(html => `<div>${html}</div>`).join('');
+    fo.appendChild(div);
+    return;
+  }
   const t = svgEl('text', {
     x: el.x, y: el.y, 'font-size': el.size, 'font-family': FONT,
-    fill: el.color, 'data-role': 'text-body',
+    fill: color, 'data-role': 'text-body',
   }, g);
   el.text.split('\n').forEach((line, i) => {
     const span = svgEl('tspan', { x: el.x, dy: i === 0 ? 0 : el.size * 1.3 }, t);
@@ -209,8 +310,16 @@ function renderText(el, parent) {
 
 // ---- selection overlay ----
 
+function handleDot(overlay, x, y, s, extra = {}) {
+  return svgEl('circle', {
+    cx: x, cy: y, r: 5.5 / s, fill: '#ffffff', stroke: SEL, 'stroke-width': 2 / s,
+    style: 'cursor:crosshair', ...extra,
+  }, overlay);
+}
+
 function renderSelection(overlay) {
   const s = state.view.s;
+  const single = state.selection.length === 1;
   for (const sel of state.selection) {
     const el = byId(sel.id);
     if (!el) continue;
@@ -222,6 +331,12 @@ function renderSelection(overlay) {
         stroke: SEL, 'stroke-width': (el.width || 2) + 12 / s, opacity: 0.35,
         'stroke-linecap': 'round', 'stroke-linejoin': 'round',
       }, overlay);
+      // draggable segment boundaries
+      if (single) {
+        const p0 = pointAt(el.pts, seg.t0), p1 = pointAt(el.pts, seg.t1);
+        handleDot(overlay, p0[0], p0[1], s, { 'data-seghandle': '0', 'data-id': el.id, 'data-segi': sel.seg });
+        handleDot(overlay, p1[0], p1[1], s, { 'data-seghandle': '1', 'data-id': el.id, 'data-segi': sel.seg });
+      }
       continue;
     }
     if (el.type === 'path' || el.type === 'ink') {
@@ -238,8 +353,9 @@ function renderSelection(overlay) {
       fill: 'none', stroke: SEL, 'stroke-width': 1.5 / s,
       'stroke-dasharray': `${5 / s} ${4 / s}`, rx: 3 / s,
     }, overlay);
-    // corner handles for a single selected card
-    if (el.type === 'card' && state.selection.length === 1) {
+    // corner handles for a single selected card: squares resize, dragging the
+    // card border moves it (its contents ride along)
+    if (el.type === 'card' && single) {
       const hs = 9 / s;
       for (const [hx, hy, name] of [
         [el.x, el.y, 'nw'], [el.x + el.w, el.y, 'ne'],
@@ -252,6 +368,23 @@ function renderSelection(overlay) {
           style: `cursor:${name === 'nw' || name === 'se' ? 'nwse' : 'nesw'}-resize`,
         }, overlay);
       }
+    }
+    // path endpoints: drag to keep laying down line (select tool)
+    if (el.type === 'path' && single && state.tool === 'select') {
+      const a = el.pts[0], z = el.pts[el.pts.length - 1];
+      handleDot(overlay, a[0], a[1], s, { 'data-pend': '0', 'data-id': el.id });
+      handleDot(overlay, z[0], z[1], s, { 'data-pend': '1', 'data-id': el.id });
+    }
+    // vertex handles for the line-edit tool
+    if (el.type === 'path' && single && state.tool === 'edit') {
+      const hs = 8 / s;
+      el.pts.forEach((p, i) => {
+        svgEl('rect', {
+          x: p[0] - hs / 2, y: p[1] - hs / 2, width: hs, height: hs,
+          fill: '#ffffff', stroke: SEL, 'stroke-width': 1.75 / s,
+          'data-vertex': i, 'data-id': el.id, style: 'cursor:move',
+        }, overlay);
+      });
     }
   }
 }
@@ -274,14 +407,18 @@ export function render() {
   grid.setAttribute('height', vh / s + 3 * GRID);
   grid.setAttribute('opacity', s < 0.4 ? 0 : Math.min(1, (s - 0.4) / 0.2 + 0.35));
 
-  const layers = { cards: $('layer-cards'), arrows: $('layer-arrows'), draw: $('layer-draw') };
-  for (const l of Object.values(layers)) l.replaceChildren();
+  // cards sit below everything; all other elements paint in doc order (z-order)
+  const cards = $('layer-cards'), draw = $('layer-draw');
+  cards.replaceChildren();
+  draw.replaceChildren();
   for (const el of state.doc.elements) {
-    if (el.type === 'card') renderCard(el, layers.cards);
-    else if (el.type === 'arrow') renderArrow(el, layers.arrows);
-    else if (el.type === 'path') renderPath(el, layers.draw);
-    else if (el.type === 'ink') renderInk(el, layers.draw);
-    else if (el.type === 'text') renderText(el, layers.draw);
+    if (el.type === 'card') renderCard(el, cards);
+    else if (el.type === 'arrow') renderArrow(el, draw);
+    else if (el.type === 'path') renderPath(el, draw);
+    else if (el.type === 'ink') renderInk(el, draw);
+    else if (el.type === 'ellipse') renderEllipse(el, draw);
+    else if (el.type === 'aline') renderALine(el, draw);
+    else if (el.type === 'text') renderText(el, draw);
   }
   const overlay = $('layer-overlay');
   overlay.replaceChildren();
@@ -302,7 +439,7 @@ export function exportSVGString() {
   out.setAttribute('height', y1 - y0);
   svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: '#ffffff' }, out);
   out.appendChild(document.querySelector('#canvas defs').cloneNode(true));
-  for (const id of ['layer-cards', 'layer-arrows', 'layer-draw']) {
+  for (const id of ['layer-cards', 'layer-draw']) {
     out.appendChild($(id).cloneNode(true));
   }
   out.querySelectorAll('[data-hit], [data-ph]').forEach(n => n.remove());

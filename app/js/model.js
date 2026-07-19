@@ -15,8 +15,23 @@ export const COLORS = [
 
 export const INK = COLORS[0].hex;
 
+// Semantic objects are the tracked vocabulary of a scheme; everything else is
+// annotation until the user promotes it (el.semantic = true).
+export const isSemantic = el =>
+  el.type === 'path' || el.type === 'card' || el.type === 'arrow' || !!el.semantic;
+
+// Colors are either a literal '#rrggbb' or a palette reference 'slot:<id>'.
+// References resolve at render time, so editing a slot recolors every user.
+export function resolveColor(c) {
+  if (typeof c === 'string' && c.startsWith('slot:')) {
+    const slot = state.doc.palette?.find(s => s.id === c.slice(5));
+    return slot ? slot.color : '#8a857c';
+  }
+  return c;
+}
+
 export const state = {
-  doc: { version: 1, elements: [] },
+  doc: { version: 2, elements: [], palette: [] },
   // selection entries: { id } for an element, { id, seg: i } for a path segment
   selection: [],
   tool: 'select',
@@ -106,9 +121,60 @@ export function selectionSingle() {
   return { el, seg: s.seg };
 }
 
+// Clone elements (deep copy, fresh ids). Arrows between cloned cards are
+// re-pointed at the clones; arrows to un-cloned cards are dropped.
+export function cloneElements(ids) {
+  const idMap = new Map();
+  const clones = [];
+  for (const id of ids) {
+    const el = byId(id);
+    if (!el) continue;
+    const copy = JSON.parse(JSON.stringify(el));
+    copy.id = newId();
+    idMap.set(el.id, copy.id);
+    clones.push(copy);
+  }
+  const out = clones.filter(c => {
+    if (c.type !== 'arrow') return true;
+    if (!idMap.has(c.from) || !idMap.has(c.to)) return false;
+    c.from = idMap.get(c.from); c.to = idMap.get(c.to);
+    return true;
+  });
+  state.doc.elements.push(...out);
+  return out;
+}
+
+// Z-order: element order in doc.elements is paint order within its layer group.
+export function reorder(dir) {
+  const ids = new Set(state.selection.filter(s => s.seg === undefined).map(s => s.id));
+  if (!ids.size) return;
+  beginChange();
+  const els = state.doc.elements;
+  if (dir === 'front' || dir === 'back') {
+    const picked = els.filter(el => ids.has(el.id));
+    const rest = els.filter(el => !ids.has(el.id));
+    state.doc.elements = dir === 'front' ? [...rest, ...picked] : [...picked, ...rest];
+  } else if (dir === 'up') {
+    for (let i = els.length - 2; i >= 0; i--)
+      if (ids.has(els[i].id) && !ids.has(els[i + 1].id))
+        [els[i], els[i + 1]] = [els[i + 1], els[i]];
+  } else {
+    for (let i = 1; i < els.length; i++)
+      if (ids.has(els[i].id) && !ids.has(els[i - 1].id))
+        [els[i], els[i - 1]] = [els[i - 1], els[i]];
+  }
+  changed();
+}
+
+function migrate(doc) {
+  doc.palette ||= [];
+  doc.version = 2;
+  return doc;
+}
+
 export function newDoc() {
   beginChange();
-  state.doc = { version: 1, elements: [] };
+  state.doc = { version: 2, elements: [], palette: [] };
   state.selection = [];
   changed();
 }
@@ -117,7 +183,7 @@ export function loadDocJSON(text) {
   const doc = JSON.parse(text);
   if (!Array.isArray(doc.elements)) throw new Error('not a Master Schemer document');
   beginChange();
-  state.doc = doc;
+  state.doc = migrate(doc);
   state.selection = [];
   changed();
 }
@@ -125,6 +191,6 @@ export function loadDocJSON(text) {
 export function restoreAutosave() {
   try {
     const text = localStorage.getItem(AUTOSAVE_KEY);
-    if (text) state.doc = JSON.parse(text);
+    if (text) state.doc = migrate(JSON.parse(text));
   } catch { /* corrupt autosave: start fresh */ }
 }

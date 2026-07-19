@@ -24,19 +24,26 @@
 html, body { height: 100%; overflow: hidden; }
 
 body {
+  /* editor chrome and canvas text are not selectable content: a stray text
+     selection turns the next canvas drag into a native drag-and-drop, which
+     fires pointercancel and kills the gesture mid-drag */
+  user-select: none;
+  -webkit-user-select: none;
   font-family: var(--font);
   font-size: 13px;
   color: var(--ink);
   background: var(--surface);
   display: grid;
   grid-template:
-    "topbar topbar topbar" 48px
-    "rail   canvas panel"  1fr
-    "status status status" 28px
-    / 48px 1fr 264px;
+    "topbar topbar  topbar topbar" 48px
+    "rail   sidebar canvas panel"  1fr
+    "status status  status status" 28px
+    / 48px 200px 1fr 264px;
 }
 
 button { font: inherit; color: inherit; }
+
+input, textarea { user-select: text; -webkit-user-select: text; }
 
 /* ---------- top bar ---------- */
 
@@ -131,17 +138,98 @@ button { font: inherit; color: inherit; }
 
 .rail-rule { width: 22px; border-top: 1px solid var(--line); margin: 4px 0; }
 
+.rail-label {
+  font-size: 8.5px;
+  font-weight: 650;
+  color: var(--muted);
+  margin: 6px 0 1px;
+  border-top: 1px solid var(--line);
+  padding-top: 5px;
+  width: 34px;
+  text-align: center;
+}
+
+/* ---------- object sidebar ---------- */
+
+#sidebar {
+  grid-area: sidebar;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.side-head {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--muted);
+  padding: 12px 12px 6px;
+}
+
+#sidebarBody { display: flex; flex-direction: column; padding: 0 6px 12px; }
+
+.side-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  min-height: 24px;
+  transition: background 150ms ease-out;
+}
+.side-item:hover { background: var(--surface-2); }
+.side-item[aria-current="true"] { background: var(--primary-soft); }
+.side-item.side-card { font-weight: 600; margin-top: 4px; }
+
+.side-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-rename {
+  font: inherit;
+  width: 100%;
+  border: 1px solid var(--primary);
+  border-radius: 4px;
+  padding: 1px 4px;
+  outline: none;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.side-group {
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--muted);
+  padding: 8px 8px 2px;
+}
+
+.side-empty { padding: 4px 8px; font-size: 12px; }
+
 /* ---------- canvas ---------- */
 
 #canvasWrap { grid-area: canvas; position: relative; background: var(--bg); }
 
 #canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
 
+/* Selection halo and tool previews must never swallow clicks aimed at the
+   elements beneath them; only the drag handles in the overlay are targets. */
+#layer-overlay, #layer-preview { pointer-events: none; }
+#layer-overlay [data-handle], #layer-overlay [data-pend],
+#layer-overlay [data-seghandle], #layer-overlay [data-vertex] { pointer-events: auto; }
+
 body[data-tool="select"] #canvas { cursor: default; }
 body[data-tool="path"] #canvas,
 body[data-tool="segment"] #canvas,
+body[data-tool="edit"] #canvas,
 body[data-tool="card"] #canvas,
 body[data-tool="arrow"] #canvas,
+body[data-tool="ellipse"] #canvas,
+body[data-tool="aline"] #canvas,
+body[data-tool="aarrow"] #canvas,
 body[data-tool="draw"] #canvas { cursor: crosshair; }
 body[data-tool="text"] #canvas { cursor: text; }
 body[data-tool="hand"] #canvas { cursor: grab; }
@@ -233,6 +321,61 @@ body.panning #canvas { cursor: grabbing !important; }
   padding: 5px 10px;
 }
 .btn.danger:hover { background: oklch(0.97 0.015 25); border-color: oklch(0.8 0.06 25); }
+
+.btn.outline {
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  padding: 5px 10px;
+}
+.btn.outline:hover { background: var(--surface-2); }
+
+.btn-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn-row .btn { align-self: auto; }
+
+.swatch.slot { border: 1px solid var(--line); }
+
+.swatch.slot-add {
+  background: var(--bg);
+  border: 1.5px dashed var(--line);
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+}
+.swatch.slot-add:hover { border-color: var(--primary); color: var(--primary); }
+
+.slot-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px;
+  background: var(--bg);
+}
+
+.field input[type="color"], .color-pick {
+  width: 100%;
+  height: 28px;
+  padding: 1px 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.field select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 6px;
+  outline: none;
+}
+.field select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft); }
 
 .seg-list { display: flex; flex-direction: column; gap: 3px; }
 

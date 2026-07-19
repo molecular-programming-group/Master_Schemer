@@ -3,6 +3,9 @@ export const GRID = 20;
 
 export const snap = v => Math.round(v / GRID) * GRID || 0; // || 0 normalizes -0
 export const snapPt = p => [snap(p[0]), snap(p[1])];
+// Half-grid lattice: segment boundaries live at 2x the resolution of the main grid.
+export const snapHalf = v => Math.round(v / (GRID / 2)) * (GRID / 2) || 0;
+export const snapHalfPt = p => [snapHalf(p[0]), snapHalf(p[1])];
 export const eq = (a, b) => a[0] === b[0] && a[1] === b[1];
 export const dist = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
 
@@ -100,6 +103,27 @@ export function bboxOfPts(pts) {
     if (x > x1) x1 = x; if (y > y1) y1 = y;
   }
   return [x0, y0, x1, y1];
+}
+
+// Fuse two paths that share an endpoint. Returns { pts, segments } with the
+// second path's segments re-based onto the merged arc length, or null if no
+// endpoint pair coincides. Segment objects are copied, not mutated.
+export function mergePaths(aPts, aSegs, bPts, bSegs) {
+  const rev = pts => pts.slice().reverse();
+  const flipSegs = (segs, len) =>
+    segs.map(s => ({ ...s, t0: len - s.t1, t1: len - s.t0 }));
+  const shiftSegs = (segs, off) =>
+    segs.map(s => ({ ...s, t0: s.t0 + off, t1: s.t1 + off }));
+  const lenA = polylineLength(aPts), lenB = polylineLength(bPts);
+  let A = aPts, sA = aSegs, B = bPts, sB = bSegs;
+  if (eq(A[A.length - 1], B[0])) { /* already head-to-tail */ }
+  else if (eq(A[A.length - 1], B[B.length - 1])) { B = rev(B); sB = flipSegs(sB, lenB); }
+  else if (eq(A[0], B[0])) { A = rev(A); sA = flipSegs(sA, lenA); }
+  else if (eq(A[0], B[B.length - 1])) {
+    [A, B] = [B, A]; [sA, sB] = [sB, sA];
+    return { pts: simplify([...A, ...B.slice(1)]), segments: [...sA.map(s => ({ ...s })), ...shiftSegs(sB, lenB)] };
+  } else return null;
+  return { pts: simplify([...A, ...B.slice(1)]), segments: [...sA.map(s => ({ ...s })), ...shiftSegs(sB, lenA)] };
 }
 
 export const rectsIntersect = (a, b) =>

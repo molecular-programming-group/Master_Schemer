@@ -1,10 +1,10 @@
 // Tool state machines. app.js routes pointer events here with world coords.
 import {
-  state, byId, beginChange, changed, addElement, isSelected,
+  state, byId, beginChange, changed, addElement, isSelected, cloneElements, resolveColor,
 } from './model.js';
 import {
-  GRID, snap, snapPt, eq, dirOf, snap8, simplify, polylineLength,
-  nearestOnPath, subPath, dist, rectsIntersect,
+  GRID, snap, snapPt, snapHalfPt, eq, dirOf, snap8, simplify, polylineLength,
+  nearestOnPath, pointAt, subPath, dist, rectsIntersect,
 } from './geom.js';
 import { svgEl, SEL, inkD, worldToScreen, elementBBox } from './render.js';
 
@@ -77,7 +77,7 @@ export function startInlineEdit(el, opts) {
 export function editElementText(el) {
   if (el.type === 'text') {
     startInlineEdit(el, {
-      field: 'text', multiline: true, size: el.size, color: el.color,
+      field: 'text', multiline: true, size: el.size, color: resolveColor(el.color),
       world: [el.x, el.y - el.size],
       onDone: v => {
         if (v === null || v === el.text) return changed();
@@ -106,7 +106,7 @@ export function editElementText(el) {
 function createTextAt(wp) {
   const el = { type: 'text', x: wp[0], y: wp[1], text: '', size: 14, color: state.color };
   startInlineEdit(el, {
-    field: 'text', multiline: true, size: el.size, color: el.color,
+    field: 'text', multiline: true, size: el.size, color: resolveColor(el.color),
     world: [el.x, el.y - el.size], value: '',
     onDone: v => {
       if (!v || v.trim() === '') return;
@@ -143,9 +143,17 @@ function nearestPath(wp) {
   return best;
 }
 
+// Arc length on el nearest to wp, snapped to the half-grid lattice.
+function halfSnapT(el, wp) {
+  const n = nearestOnPath(el.pts, wp);
+  const q = snapHalfPt(pointAt(el.pts, n.t));
+  const n2 = nearestOnPath(el.pts, q);
+  return n2.d < 1 ? n2.t : n.t; // lattice point off the path: keep the raw hit
+}
+
 function origOf(el) {
-  if (el.type === 'card') return { x: el.x, y: el.y };
-  if (el.type === 'text') return { x: el.x, y: el.y };
+  if (el.x !== undefined) return { x: el.x, y: el.y };
+  if (el.cx !== undefined) return { cx: el.cx, cy: el.cy };
   if (el.pts) return { pts: el.pts.map(p => [p[0], p[1]]) };
   return null;
 }
@@ -153,7 +161,75 @@ function origOf(el) {
 function applyDelta(el, orig, dx, dy) {
   if (!orig) return;
   if (orig.pts) el.pts = orig.pts.map(p => [p[0] + dx, p[1] + dy]);
+  else if (orig.cx !== undefined) { el.cx = orig.cx + dx; el.cy = orig.cy + dy; }
   else { el.x = orig.x + dx; el.y = orig.y + dy; }
+}
+
+// Elements riding along with a card: bbox center inside the card rect.
+export function cardContents(card) {
+  return state.doc.elements.filter(el => {
+    if (el === card || el.type === 'card' || el.type === 'arrow') return false;
+    const b = elementBBox(el);
+    const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+    return cx >= card.x && cx <= card.x + card.w && cy >= card.y && cy <= card.y + card.h;
+  });
+}
+
+// Move-drag items for the current selection: cards carry their contents.
+function moveItems() {
+  const map = new Map();
+  for (const s of state.selection) {
+    if (s.seg !== undefined) continue;
+    const el = byId(s.id);
+    if (!el || el.type === 'arrow') continue;
+    map.set(el.id, el);
+    if (el.type === 'card') for (const c of cardContents(el)) map.set(c.id, c);
+  }
+  return [...map.values()].map(el => ({ el, orig: origOf(el) }));
+}
+
+// ---- path extension (drag an endpoint to keep laying down line) ----
+
+function beginExtend(el, end) {
+  const p = end ? el.pts[el.pts.length - 1] : el.pts[0];
+  drag = { mode: 'extend', el, end, pts: [[p[0], p[1]], [p[0], p[1]]] };
+}
+
+function moveExtend(wp) {
+  const pts = drag.pts;
+  const a = pts[pts.length - 2], prov = pts[pts.length - 1];
+  const p = snap8(a, wp);
+  const dNew = dirOf(a, p), dProv = dirOf(a, prov);
+  if (eq(prov, a) || eq(p, a) || (dNew[0] === dProv[0] && dNew[1] === dProv[1])) {
+    pts[pts.length - 1] = p;
+  } else {
+    const q = snap8(prov, wp);
+    if (!eq(q, prov)) pts.push(q);
+  }
+  clearPreview();
+  svgEl('polyline', {
+    points: ptsAttr(pts), fill: 'none', stroke: resolveColor(drag.el.color),
+    'stroke-width': drag.el.width || 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+  }, preview());
+}
+
+function endExtend() {
+  const { el, end } = drag;
+  const ext = simplify(drag.pts);
+  drag = null;
+  clearPreview();
+  if (ext.length < 2 || polylineLength(ext) === 0) { changed(); return; }
+  beginChange();
+  if (end) {
+    el.pts = simplify([...el.pts, ...ext.slice(1)]);
+  } else {
+    // prepended length shifts every segment's arc-length range
+    const add = polylineLength(ext);
+    el.pts = simplify([...ext.slice(1).reverse(), ...el.pts]);
+    for (const seg of el.segments || []) { seg.t0 += add; seg.t1 += add; }
+  }
+  state.selection = [{ id: el.id }];
+  changed();
 }
 
 // ---- tools ----
@@ -161,35 +237,72 @@ function applyDelta(el, orig, dx, dy) {
 export const tools = {
 
   select: {
-    hint: 'Click to select · drag to move · drag empty space for marquee · double-click text to edit',
+    hint: 'Click to select · drag to move · Ctrl+drag to clone · drag a line end to extend it',
     down(e, wp) {
-      const handle = e.target.closest('[data-handle]');
+      const t = e.target;
+      const handle = t.closest?.('[data-handle]');
       if (handle) {
         const el = byId(handle.getAttribute('data-id'));
         drag = { mode: 'resize', el, handle: handle.getAttribute('data-handle'),
                  orig: { x: el.x, y: el.y, w: el.w, h: el.h } };
         return;
       }
-      const group = e.target.closest('[data-id]');
+      const pend = t.closest?.('[data-pend]');
+      if (pend) {
+        beginExtend(byId(pend.getAttribute('data-id')), +pend.getAttribute('data-pend'));
+        return;
+      }
+      const segh = t.closest?.('[data-seghandle]');
+      if (segh) {
+        drag = {
+          mode: 'segadj', el: byId(segh.getAttribute('data-id')),
+          i: +segh.getAttribute('data-segi'), end: +segh.getAttribute('data-seghandle'),
+        };
+        return;
+      }
+      const group = t.closest?.('[data-id]');
       if (group) {
         const id = group.getAttribute('data-id');
-        const segAttr = e.target.getAttribute('data-seg');
+        const el = byId(id);
+        const segAttr = t.getAttribute('data-seg');
         const entry = segAttr !== null ? { id, seg: +segAttr } : { id };
         if (e.shiftKey) {
           const i = state.selection.findIndex(s => s.id === entry.id && s.seg === entry.seg);
           if (i >= 0) state.selection.splice(i, 1); else state.selection.push(entry);
-        } else if (!isSelected(entry.id, entry.seg)) {
-          state.selection = [entry];
+          changed();
+          return;
         }
+        if (!isSelected(entry.id, entry.seg)) state.selection = [entry];
         changed();
-        // move drag applies to element selections only (segments ride along)
-        const movables = state.selection.filter(s => s.seg === undefined);
-        if (!e.shiftKey && movables.length) {
+        // Ctrl+drag clones the selection and moves the copies
+        if (e.ctrlKey || e.metaKey) {
+          beginChange();
+          const ids = state.selection.filter(s => s.seg === undefined).map(s => s.id);
+          const withContents = new Set(ids);
+          for (const cid of ids) {
+            const c = byId(cid);
+            if (c?.type === 'card') for (const inner of cardContents(c)) withContents.add(inner.id);
+          }
+          const clones = cloneElements([...withContents]);
+          state.selection = clones.map(c => ({ id: c.id }));
           drag = {
-            mode: 'move', start: wp,
-            items: movables.map(s => ({ el: byId(s.id), orig: origOf(byId(s.id)) })),
+            mode: 'move', start: wp, began: true,
+            items: clones.map(c => ({ el: c, orig: origOf(c) })),
           };
+          changed();
+          return;
         }
+        // cards move only by their border, so clicks inside don't fight the
+        // objects sitting on them
+        if (el?.type === 'card' && entry.seg === undefined) {
+          const m = Math.max(10 / state.view.s, 6);
+          const nearBorder =
+            Math.abs(wp[0] - el.x) < m || Math.abs(wp[0] - (el.x + el.w)) < m ||
+            Math.abs(wp[1] - el.y) < m || Math.abs(wp[1] - (el.y + el.h)) < m;
+          if (!nearBorder) return;
+        }
+        const items = moveItems();
+        if (items.length) drag = { mode: 'move', start: wp, items };
         return;
       }
       if (!e.shiftKey) { state.selection = []; changed(); }
@@ -197,6 +310,17 @@ export const tools = {
     },
     move(e, wp) {
       if (!drag) return;
+      if (drag.mode === 'extend') { moveExtend(wp); return; }
+      if (drag.mode === 'segadj') {
+        const el = drag.el, seg = el.segments[drag.i];
+        if (!seg) return;
+        began();
+        const t = r1(halfSnapT(el, wp));
+        if (drag.end === 0) seg.t0 = t; else seg.t1 = t;
+        if (seg.t0 > seg.t1) { [seg.t0, seg.t1] = [seg.t1, seg.t0]; drag.end = 1 - drag.end; }
+        changed();
+        return;
+      }
       if (drag.mode === 'move') {
         const dx = snap(wp[0] - drag.start[0]), dy = snap(wp[1] - drag.start[1]);
         if (dx === 0 && dy === 0 && !drag.began) return;
@@ -228,6 +352,7 @@ export const tools = {
     },
     up(e, wp) {
       if (!drag) return;
+      if (drag.mode === 'extend') { endExtend(); return; }
       if (drag.mode === 'marquee' && drag.end) {
         const box = [
           Math.min(drag.start[0], drag.end[0]), Math.min(drag.start[1], drag.end[1]),
@@ -253,13 +378,21 @@ export const tools = {
   },
 
   path: {
-    hint: 'Click and drag along the grid — turns commit corners automatically · release to finish',
+    hint: 'Click and drag along the grid — turns commit corners automatically · start on a line end to extend it',
     down(e, wp) {
+      // starting on an existing path's endpoint continues that path
+      const threshold = Math.max(12 / state.view.s, 8);
+      for (const el of state.doc.elements) {
+        if (el.type !== 'path') continue;
+        if (dist(wp, el.pts[0]) <= threshold) return beginExtend(el, 0);
+        if (dist(wp, el.pts[el.pts.length - 1]) <= threshold) return beginExtend(el, 1);
+      }
       const a = snapPt(wp);
       drag = { pts: [a, [a[0], a[1]]] };
     },
     move(e, wp) {
       if (!drag) return;
+      if (drag.mode === 'extend') { moveExtend(wp); return; }
       const pts = drag.pts;
       const a = pts[pts.length - 2], prov = pts[pts.length - 1];
       const p = snap8(a, wp);
@@ -273,15 +406,16 @@ export const tools = {
       }
       clearPreview();
       svgEl('polyline', {
-        points: ptsAttr(pts), fill: 'none', stroke: state.color,
+        points: ptsAttr(pts), fill: 'none', stroke: resolveColor(state.color),
         'stroke-width': state.width, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
       }, preview());
       svgEl('circle', {
-        cx: pts[0][0], cy: pts[0][1], r: 3 / state.view.s, fill: state.color,
+        cx: pts[0][0], cy: pts[0][1], r: 3 / state.view.s, fill: resolveColor(state.color),
       }, preview());
     },
     up() {
       if (!drag) return;
+      if (drag.mode === 'extend') { endExtend(); return; }
       const pts = simplify(drag.pts);
       drag = null;
       clearPreview();
@@ -296,19 +430,19 @@ export const tools = {
   },
 
   segment: {
-    hint: 'Press on a line and drag along it to define a colored segment · release to apply',
+    hint: 'Press on a line and drag along it to define a colored segment · snaps to half-grid',
     down(e, wp) {
       const hit = nearestPath(wp);
       if (!hit) return;
-      drag = { el: hit.el, t0: hit.t, t1: hit.t };
+      drag = { el: hit.el, t0: halfSnapT(hit.el, wp), t1: halfSnapT(hit.el, wp) };
     },
     move(e, wp) {
       if (!drag) return;
-      drag.t1 = nearestOnPath(drag.el.pts, wp).t;
+      drag.t1 = halfSnapT(drag.el, wp);
       clearPreview();
       const sp = subPath(drag.el.pts, Math.min(drag.t0, drag.t1), Math.max(drag.t0, drag.t1));
       svgEl('polyline', {
-        points: ptsAttr(sp), fill: 'none', stroke: state.color,
+        points: ptsAttr(sp), fill: 'none', stroke: resolveColor(state.color),
         'stroke-width': (drag.el.width || 2) + 2.5, opacity: 0.85,
         'stroke-linejoin': 'round', 'stroke-linecap': 'round',
       }, preview());
@@ -325,6 +459,36 @@ export const tools = {
         color: state.color, label: '',
       });
       state.selection = [{ id: el.id, seg: el.segments.length - 1 }];
+      changed();
+    },
+  },
+
+  edit: {
+    hint: 'Click a line to select it · drag a square handle to reshape its path',
+    down(e, wp) {
+      const v = e.target.closest?.('[data-vertex]');
+      if (v) {
+        drag = { mode: 'vertex', el: byId(v.getAttribute('data-id')), i: +v.getAttribute('data-vertex') };
+        return;
+      }
+      const hit = nearestPath(wp);
+      state.selection = hit ? [{ id: hit.el.id }] : [];
+      changed();
+    },
+    move(e, wp) {
+      if (!drag) return;
+      began();
+      drag.el.pts[drag.i] = snapPt(wp);
+      changed();
+    },
+    up() {
+      if (!drag) return;
+      // ponytail: segment arc-length ranges are not remapped when a vertex
+      // moves — re-drag segment ends afterwards if they shifted
+      const el = drag.el;
+      drag = null;
+      // drop exact duplicate neighbors created by dragging onto a neighbor
+      el.pts = el.pts.filter((p, i) => i === 0 || !eq(p, el.pts[i - 1]));
       changed();
     },
   },
@@ -414,7 +578,7 @@ export const tools = {
       drag.pts.push([r1(wp[0]), r1(wp[1])]);
       clearPreview();
       svgEl('path', {
-        d: inkD(drag.pts), fill: 'none', stroke: state.color,
+        d: inkD(drag.pts), fill: 'none', stroke: resolveColor(state.color),
         'stroke-width': state.width, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
       }, preview());
     },
@@ -431,8 +595,45 @@ export const tools = {
     },
   },
 
+  ellipse: {
+    hint: 'Drag to draw a circle or ellipse annotation',
+    down(e, wp) {
+      drag = { a: wp };
+    },
+    move(e, wp) {
+      if (!drag) return;
+      drag.b = wp;
+      clearPreview();
+      const [a, b] = [drag.a, wp];
+      svgEl('ellipse', {
+        cx: (a[0] + b[0]) / 2, cy: (a[1] + b[1]) / 2,
+        rx: Math.abs(b[0] - a[0]) / 2, ry: Math.abs(b[1] - a[1]) / 2,
+        fill: 'none', stroke: resolveColor(state.color), 'stroke-width': state.width,
+      }, preview());
+    },
+    up(e, wp) {
+      if (!drag) return;
+      const a = drag.a, b = drag.b || wp;
+      drag = null;
+      clearPreview();
+      const rx = Math.abs(b[0] - a[0]) / 2, ry = Math.abs(b[1] - a[1]) / 2;
+      if (rx < 3 && ry < 3) { changed(); return; }
+      beginChange();
+      const el = addElement({
+        type: 'ellipse', cx: r1((a[0] + b[0]) / 2), cy: r1((a[1] + b[1]) / 2),
+        rx: r1(Math.max(rx, 3)), ry: r1(Math.max(ry, 3)),
+        color: state.color, width: state.width,
+      });
+      state.selection = [{ id: el.id }];
+      changed();
+    },
+  },
+
+  aline: { hint: 'Drag to draw a free line annotation — not locked to the grid' },
+  aarrow: { hint: 'Drag to draw an arrow annotation — not locked to the grid' },
+
   text: {
-    hint: 'Click to place a note · Ctrl+Enter or click away to finish',
+    hint: 'Click to place a note · wrap math in $…$ for LaTeX · Ctrl+Enter or click away to finish',
     // editor opens on pointerup: opening on pointerdown gets blurred by the
     // browser's default mousedown focus handling before typing can start
     down() {},
@@ -442,3 +643,34 @@ export const tools = {
     },
   },
 };
+
+// aline and aarrow share one state machine; only the arrowhead differs.
+for (const [name, cap1] of [['aline', 'none'], ['aarrow', 'barb']]) {
+  Object.assign(tools[name], {
+    down(e, wp) { drag = { a: wp, b: wp }; },
+    move(e, wp) {
+      if (!drag) return;
+      drag.b = wp;
+      clearPreview();
+      svgEl('line', {
+        x1: drag.a[0], y1: drag.a[1], x2: wp[0], y2: wp[1],
+        stroke: resolveColor(state.color), 'stroke-width': state.width,
+        'stroke-linecap': 'round',
+      }, preview());
+    },
+    up(e, wp) {
+      if (!drag) return;
+      const a = drag.a, b = drag.b || wp;
+      drag = null;
+      clearPreview();
+      if (dist(a, b) < 4) { changed(); return; }
+      beginChange();
+      const el = addElement({
+        type: 'aline', pts: [[r1(a[0]), r1(a[1])], [r1(b[0]), r1(b[1])]],
+        color: state.color, width: state.width, cap0: 'none', cap1,
+      });
+      state.selection = [{ id: el.id }];
+      changed();
+    },
+  });
+}

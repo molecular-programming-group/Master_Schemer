@@ -1,6 +1,12 @@
 {
   "identifier": "default",
-  "description": "Base window capability; the app uses no IPC yet.",
+  "description": "Window basics, native open/save dialogs, and text-file read/write for user documents.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default",
+    { "identifier": "fs:allow-read-text-file", "allow": [{ "path": "**" }] },
+    { "identifier": "fs:allow-write-text-file", "allow": [{ "path": "**" }] }
+  ]
 }
