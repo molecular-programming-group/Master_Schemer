@@ -11,7 +11,7 @@ schemes, protocols, conceptual flows.
 
 | Tool | Key | What it does |
 |---|---|---|
-| Select | `V` | Click to select, drag to move (multi-selections too), marquee on empty space, double-click to edit text. `Ctrl`+drag clones. Drag a line's end dot to keep laying down line. Drag a selected object's label to reposition it. |
+| Select | `V` | Click to select, drag to move (multi-selections too), marquee on empty space, double-click to edit text. `Ctrl`+drag clones. Drag a line's end dot to keep laying down line. Drag a selected object's label to reposition it. Dragging a selected segment moves its whole line. Cards, rectangles, and ellipses show corner handles to resize. |
 | Line | `L` | Drag to draw a snaking path — horizontal, vertical, and 45° runs at **half-grid** resolution; turns commit corners automatically. Start on an existing line's end to extend it. |
 | Segment | `S` | Press on a line and drag along it to mark a colored, labelled sub-segment. Snaps at half-grid resolution; a selected segment's end dots are draggable. |
 | Edit line | `E` | Click a line, then drag its square vertex handles to reshape the path. Click anywhere on the selected line to **insert a new vertex** there. |
@@ -24,7 +24,14 @@ lines** in the panel to fuse them into one object.
 **Groups** (`Ctrl+G` / `Ctrl+Shift+G` or the panel buttons) bundle any
 selection into a named group: clicking one member selects them all, the
 sidebar nests members under the group's (renameable) name, and clones land in
-a fresh group.
+a fresh group. Groups **nest** — group whole groups together into
+supergroups, to any depth; ungrouping a supergroup releases it back into its
+constituent subgroups rather than scattering everything.
+
+**Links** join two selected objects (or segments, or two whole groups) into a
+filled area spanning between them — select exactly two things and press
+**Link** in the panel. The fill colour and opacity are yours to set, and the
+shape re-flows automatically as either end moves.
 
 ## Annotation tools (not tracked)
 
@@ -32,14 +39,18 @@ a fresh group.
 |---|---|---|
 | Freehand | `D` | Unsnapped ink for quick annotations. |
 | Note | `T` | Click to place a text note — or **drag a box** to set the width the text wraps at. Wrap math in `$…$` for LaTeX (KaTeX, offline; labels support it too). |
-| Ellipse | `O` | Drag to draw a circle/ellipse. |
-| Rectangle | `B` | Drag to draw a rectangle; round its corners from the panel. |
-| Free line | `N` | A straight line, not locked to the grid. |
+| Ellipse | `O` | Drag to draw a circle/ellipse; hold **Shift** for a perfect circle. Fill it from the panel. |
+| Rectangle | `B` | Drag to draw a rectangle; hold **Shift** for a square. Round its corners and fill it from the panel. |
+| Free line | `N` | A straight line annotation. |
 | Free arrow | `R` | Same, with an arrowhead. |
 | Pan | `H` / Space / middle-drag | Move around the canvas. Mouse wheel zooms at the cursor. |
 
-Any annotation can be **promoted to a tracked object** from the panel — it
-then appears in the object sidebar with the rest.
+Shape and line annotations snap to the half-grid; toggle **Snap** in the
+status bar to draw freely. Any annotation can be **promoted to a tracked
+object** from the panel — it then appears in the object sidebar with the rest.
+
+The status bar also carries **Data** (show every object's hidden data in a box
+beside it) and **Data on hover** (reveal one object's data as you point at it).
 
 ## Sidebar, panel, palette
 
@@ -51,9 +62,11 @@ then appears in the object sidebar with the rest.
   onto the canvas. **Export**/**Import** move the library between machines
   as a plain JSON file.
 - The **properties panel** edits label, color, width (slider + numeric
-  input), line style (solid/dashed/dotted), line ends (rounded/flat/square),
-  end caps (arrow, **harpoon**, barb, square, circle), rectangle corner
-  radius, a hidden **Data** notes field per object, and **Arrange**: z-order
+  input), fill (for rectangles/ellipses), line style (solid/dashed/dotted),
+  line ends (rounded/flat/square), end caps (arrow, **harpoon** — a
+  seamless half-arrow you can flip to either side — barb, square, circle),
+  rectangle corner radius, a hidden **Data** notes field per object, canvas
+  **background colour** (when nothing is selected), and **Arrange**: z-order
   (Front/Raise/Lower/Back), rotate 90°/flip, and alignment
   (left/center/right/top/middle/bottom) for multi-selections.
 - **Labels** can be hidden, dragged to a custom position, and **shared**:
@@ -73,9 +86,12 @@ Documents autosave locally. **Save** / **Save As** (`Ctrl+S` /
 the desktop app — **Open** loads one, **Export SVG** produces a standalone
 vector file, and **Export CSV** dumps every object (or just the selection —
 a selected card exports its contents) with its type, name, group, card,
-color, and hidden data. (Notes using `$math$` render via KaTeX in-app; in
-exported SVGs they display correctly in browsers when KaTeX CSS is
-available.)
+color, and hidden data. Notes and labels using `$math$` render via KaTeX both
+in-app and in exported SVGs — the export bakes the KaTeX stylesheet and fonts
+in as data URIs, so the file renders math anywhere with nothing alongside it.
+
+Each session opens on a fresh blank canvas (work is still autosaved locally
+between edits; use **Open** to reload a saved `.schemer.json`).
 
 ## Running
 

@@ -1,12 +1,13 @@
 // App shell: event routing, sidebar, panel, keyboard, view controls, file ops.
 import {
-  state, COLORS, setOnChanged, beginChange, changed, undo, redo, newId,
-  deleteSelection, selectionSingle, byId, newDoc, loadDocJSON, restoreAutosave,
+  state, COLORS, setOnChanged, beginChange, changed, undo, redo, newId, addElement,
+  deleteSelection, selectionSingle, byId, newDoc, loadDocJSON,
   isSemantic, resolveColor, resolveLabel, reorder, pruneGroups,
+  byGroup, childGroups, topLevelGroups, groupElementMembers,
 } from './model.js';
 import { GRID, mergePaths, rot90, flipPt, snapHalf } from './geom.js';
 import {
-  render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS,
+  render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, dataView,
 } from './render.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
 
@@ -79,6 +80,10 @@ svg.addEventListener('pointermove', e => {
     state.view.ty = panning.ty + sp[1] - panning.sy;
     render();
     return;
+  }
+  if (dataView.hover && !dataView.show && !isDragging()) {
+    const id = e.target.closest?.('[data-id]')?.getAttribute('data-id') || null;
+    if (id !== dataView.hoverId) { dataView.hoverId = id; render(); }
   }
   tools[state.tool]?.move?.(e, wp, sp);
 });
@@ -217,25 +222,95 @@ function alignSelection(mode) {
   changed();
 }
 
-// ---- groups ----
+// ---- groups (hierarchical: a group can contain groups) ----
+
+// Groups whose every element member is in the current selection — these can be
+// nested wholesale rather than having their members pulled out individually.
+function whollySelectedGroups() {
+  const selIds = new Set(selectedElements().map(e => e.id));
+  return new Set(state.doc.groups
+    .filter(g => {
+      const m = groupElementMembers(g.id);
+      return m.length && m.every(x => selIds.has(x.id));
+    })
+    .map(g => g.id));
+}
 
 function groupSelection() {
   const els = selectedElements();
   if (els.length < 2) return;
   beginChange();
-  const g = { id: newId(), name: `group ${state.doc.groups.length + 1}` };
-  state.doc.groups.push(g);
-  for (const el of els) el.group = g.id;
-  pruneGroups(); // members stolen from other groups may leave them empty
+  const G = { id: newId(), name: `group ${state.doc.groups.length + 1}` };
+  state.doc.groups.push(G);
+  const wholly = whollySelectedGroups();
+  // nest the topmost wholly-selected groups under G; leave their innards intact
+  for (const gid of wholly) {
+    const g = byGroup(gid);
+    if (!g.parent || !wholly.has(g.parent)) g.parent = G.id;
+  }
+  // loose elements (and elements pulled from partially-selected groups) join G
+  for (const el of els) if (!el.group || !wholly.has(el.group)) el.group = G.id;
+  pruneGroups();
   changed();
 }
 
 function ungroupSelection() {
-  const gids = new Set(state.selection.map(s => byId(s.id)?.group).filter(Boolean));
-  if (!gids.size) return;
+  const wholly = whollySelectedGroups();
+  // dissolve only the topmost fully-selected groups; each releases into its
+  // child groups and direct elements, promoted to the dissolved group's parent
+  const tops = [...wholly].filter(gid => {
+    const g = byGroup(gid);
+    return !g.parent || !wholly.has(g.parent);
+  });
+  if (!tops.length) return;
   beginChange();
-  for (const el of state.doc.elements) if (gids.has(el.group)) delete el.group;
+  for (const gid of tops) {
+    const parent = byGroup(gid).parent;
+    for (const el of state.doc.elements) {
+      if (el.group !== gid) continue;
+      if (parent) el.group = parent; else delete el.group;
+    }
+    for (const cg of childGroups(gid)) {
+      if (parent) cg.parent = parent; else delete cg.parent;
+    }
+    state.doc.groups = state.doc.groups.filter(x => x.id !== gid);
+  }
   pruneGroups();
+  changed();
+}
+
+// Pull a single element out of its immediate group (up to the parent level).
+function removeFromGroup(el) {
+  beginChange();
+  const parent = byGroup(el.group)?.parent;
+  if (parent) el.group = parent; else delete el.group;
+  pruneGroups();
+  changed();
+}
+
+// ---- links (filled area between two objects/segments/groups) ----
+
+// The two endpoints for a link, drawn from the current selection: either two
+// explicitly selected entries, or elements that span exactly two groups.
+function linkTargetsFromSelection() {
+  const entries = state.selection;
+  if (entries.length === 2) {
+    return entries.map(s => (s.seg !== undefined ? { id: s.id, seg: s.seg } : { id: s.id }));
+  }
+  const groups = [...new Set(entries.map(s => byId(s.id)?.group).filter(Boolean))];
+  if (groups.length === 2 && entries.length && entries.every(s => byId(s.id)?.group)) {
+    return groups.map(g => ({ group: g }));
+  }
+  return null;
+}
+
+function createLink(targets) {
+  beginChange();
+  const el = addElement({
+    type: 'link', a: targets[0], b: targets[1],
+    fill: resolveColor(currentColor()) || '#8a857c', opacity: 0.45,
+  });
+  state.selection = [{ id: el.id }];
   changed();
 }
 
@@ -331,32 +406,45 @@ function sideItem({ depth, name, color, selected, onSelect, onRename }) {
   label.className = 'side-name';
   label.textContent = name;
   row.appendChild(label);
-  row.addEventListener('click', onSelect);
-  if (onRename) {
-    row.title = 'Double-click to rename';
-    row.addEventListener('dblclick', () => {
-      const input = document.createElement('input');
-      input.className = 'side-rename';
-      input.value = name;
-      label.replaceWith(input);
-      input.focus();
-      input.select();
-      let done = false;
-      const finish = commit => {
-        if (done) return;
-        done = true;
-        const v = input.value;
-        if (commit && v !== name) { beginChange(); onRename(v); changed(); }
-        else refresh();
-      };
-      input.addEventListener('blur', () => finish(true));
-      input.addEventListener('keydown', ev => {
-        ev.stopPropagation();
-        if (ev.key === 'Enter') finish(true);
-        if (ev.key === 'Escape') finish(false);
-      });
-    });
+  if (!onRename) {
+    row.addEventListener('click', onSelect);
+    return row;
   }
+  // Renamable rows defer the select by one click-interval: a synchronous select
+  // rebuilds the sidebar and destroys this node, so the browser never sees the
+  // second click as a dblclick. Deferring keeps the node alive long enough.
+  row.title = 'Double-click to rename';
+  const startRename = () => {
+    const input = document.createElement('input');
+    input.className = 'side-rename';
+    input.value = name;
+    label.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = commit => {
+      if (done) return;
+      done = true;
+      const v = input.value;
+      if (commit && v !== name) { beginChange(); onRename(v); changed(); }
+      else refresh();
+    };
+    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('keydown', ev => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') finish(true);
+      if (ev.key === 'Escape') finish(false);
+    });
+  };
+  let clickTimer = null;
+  row.addEventListener('click', () => {
+    if (clickTimer) return; // the second click of a double-click; let dblclick win
+    clickTimer = setTimeout(() => { clickTimer = null; onSelect(); }, 220);
+  });
+  row.addEventListener('dblclick', () => {
+    clearTimeout(clickTimer); clickTimer = null;
+    startRename();
+  });
   return row;
 }
 
@@ -385,6 +473,24 @@ function objectItems(els, depth, into) {
   });
 }
 
+// One group node and everything beneath it (child groups first, then the
+// group's own direct elements), recursing to any depth.
+function renderGroupTree(gid, depth, into, placed) {
+  const g = byGroup(gid);
+  const members = groupElementMembers(gid);
+  into.appendChild(sideItem({
+    depth, name: g.name || 'group', color: null,
+    selected: members.length > 0 &&
+      members.every(m => state.selection.some(s => s.id === m.id && s.seg === undefined)),
+    onSelect: () => { state.selection = members.map(m => ({ id: m.id })); refresh(); },
+    onRename: v => { g.name = v; },
+  })).classList.add('side-card');
+  for (const cg of childGroups(gid)) renderGroupTree(cg.id, depth + 1, into, placed);
+  const direct = state.doc.elements.filter(el => el.group === gid);
+  direct.forEach(el => placed.add(el.id));
+  objectItems(direct, depth + 1, into);
+}
+
 function renderSidebar() {
   const body = $('sidebarBody');
   if (body.contains(document.activeElement)) return; // mid-rename
@@ -394,19 +500,8 @@ function renderSidebar() {
   const tracked = els.filter(el => el.type !== 'card' && el.type !== 'arrow' && isSemantic(el));
   const placed = new Set();
 
-  // user groups first: they are the explicit hierarchy
-  for (const g of state.doc.groups) {
-    const members = els.filter(el => el.group === g.id);
-    if (!members.length) continue;
-    body.appendChild(sideItem({
-      depth: 0, name: g.name || 'group', color: null,
-      selected: members.every(m => state.selection.some(s => s.id === m.id && s.seg === undefined)),
-      onSelect: () => { state.selection = members.map(m => ({ id: m.id })); refresh(); },
-      onRename: v => { g.name = v; },
-    })).classList.add('side-card');
-    members.forEach(el => placed.add(el.id));
-    objectItems(members, 1, body);
-  }
+  // user groups first: the explicit hierarchy, nested to any depth
+  for (const g of topLevelGroups()) renderGroupTree(g.id, 0, body, placed);
 
   for (const card of cards) {
     if (placed.has(card.id)) continue;
@@ -493,10 +588,17 @@ function placeAsset(asset) {
   const placed = els.filter(el => {
     if (el.group) el.group = groupMap.get(el.group);
     if (!el.group) delete el.group;
-    if (el.type !== 'arrow') return true;
-    if (!idMap.has(el.from) || !idMap.has(el.to)) return false;
-    el.from = idMap.get(el.from);
-    el.to = idMap.get(el.to);
+    if (el.type === 'arrow') {
+      if (!idMap.has(el.from) || !idMap.has(el.to)) return false;
+      el.from = idMap.get(el.from);
+      el.to = idMap.get(el.to);
+    } else if (el.type === 'link') {
+      // keep only if both endpoints came along; remap element refs, drop group refs
+      if (el.a?.id && !idMap.has(el.a.id)) return false;
+      if (el.b?.id && !idMap.has(el.b.id)) return false;
+      if (el.a?.id) el.a = { ...el.a, id: idMap.get(el.a.id) };
+      if (el.b?.id) el.b = { ...el.b, id: idMap.get(el.b.id) };
+    }
     return true;
   });
   state.doc.elements.push(...placed);
@@ -999,6 +1101,41 @@ function labelFields(target, placeholder) {
   return frag;
 }
 
+// Fill toggle + colour for closed shapes (rect/ellipse) and links.
+function fillControl(el, { label = 'Fill', optional = true } = {}) {
+  const frag = document.createDocumentFragment();
+  if (optional) {
+    frag.appendChild(checkboxRow(label, () => !!el.fill, v => {
+      if (v) el.fill = resolveColor(el.color) || resolveColor(currentColor()) || '#c9c2b6';
+      else delete el.fill;
+    }));
+  }
+  if (el.fill || !optional) {
+    const pick = colorPicker(`fill:${el.id}`,
+      () => (/^#[0-9a-f]{6}$/i.test(el.fill || '') ? el.fill : '#c9c2b6'),
+      Object.assign(hex => { el.fill = hex; render(); }, { begin: beginChange }),
+      changed);
+    frag.appendChild(fieldRow(`${label} colour`, pick));
+  }
+  return frag;
+}
+
+// A "flip harpoon" checkbox appears for whichever end caps are harpoons.
+function harpoonFlips(el) {
+  const frag = document.createDocumentFragment();
+  if (el.cap0 === 'harpoon') {
+    frag.appendChild(checkboxRow('Flip start harpoon', () => !!el.cap0flip, v => {
+      if (v) el.cap0flip = true; else delete el.cap0flip;
+    }));
+  }
+  if (el.cap1 === 'harpoon') {
+    frag.appendChild(checkboxRow('Flip end harpoon', () => !!el.cap1flip, v => {
+      if (v) el.cap1flip = true; else delete el.cap1flip;
+    }));
+  }
+  return frag;
+}
+
 function labelDisplayFields(target) {
   const frag = document.createDocumentFragment();
   frag.appendChild(checkboxRow('Hide label', () => !!target.labelHide, v => {
@@ -1065,6 +1202,7 @@ function renderPanel() {
         CAPS, () => el.cap0 || 'none', v => { el.cap0 = v; })));
       styleSec.appendChild(fieldRow('End cap', selectControl(
         CAPS, () => el.cap1 || 'none', v => { el.cap1 = v; })));
+      styleSec.appendChild(harpoonFlips(el));
     }
     if (el.type === 'rect') {
       styleSec.appendChild(fieldRow('Corner radius', numberControl(
@@ -1072,6 +1210,7 @@ function renderPanel() {
         v => { el.r = v; },
         { min: 0, max: Math.floor(Math.min(el.w, el.h) / 2), step: 1 })));
     }
+    if (el.type === 'rect' || el.type === 'ellipse') styleSec.appendChild(fillControl(el));
     styled = true;
   }
   if (styled) {
@@ -1091,6 +1230,15 @@ function renderPanel() {
       ? `${count} object${count === 1 ? '' : 's'} in this scheme. Select one to edit its label and color.`
       : 'An empty canvas. Pick the Line tool (L) and drag on the grid to draw your first path, or frame a section with the Card tool (C).';
     sec.appendChild(p);
+    sec.appendChild(fieldRow('Background', colorPicker('bg',
+      () => (/^#[0-9a-f]{6}$/i.test(state.doc.bg || '') ? state.doc.bg : '#ffffff'),
+      Object.assign(hex => { state.doc.bg = hex; render(); }, { begin: beginChange }),
+      changed)));
+    if (state.doc.bg && state.doc.bg !== '#ffffff') {
+      sec.appendChild(smallButton('Reset background', () => {
+        beginChange(); delete state.doc.bg; changed();
+      }, 'Back to white'));
+    }
   } else if (!single) {
     sec.appendChild(sectionTitle(`${n} objects`));
     const row = document.createElement('div');
@@ -1098,6 +1246,11 @@ function renderPanel() {
     row.append(smallButton('Group', groupSelection, 'Bundle the selection into a named group (Ctrl+G)'));
     if (state.selection.some(s => byId(s.id)?.group)) {
       row.append(smallButton('Ungroup', ungroupSelection, 'Dissolve the selected group(s) (Ctrl+Shift+G)'));
+    }
+    const linkT = linkTargetsFromSelection();
+    if (linkT) {
+      row.append(smallButton('Link', () => createLink(linkT),
+        'Fill the area spanning the two selected items'));
     }
     const join = joinSelectedPaths();
     if (join) {
@@ -1121,6 +1274,37 @@ function renderPanel() {
     sec.appendChild(fieldRow('Data (not displayed)', boundInput(
       () => seg.notes || '', v => { seg.notes = v; }, { textarea: true, placeholder: 'notes, metadata…' })));
     sec.appendChild(deleteButton('Delete segment'));
+  } else if (single.el.type === 'link') {
+    const el = single.el;
+    sec.appendChild(sectionTitle('Link'));
+    const info = document.createElement('p');
+    info.className = 'muted';
+    info.textContent = 'A filled area spanning two objects — it follows them as they move.';
+    sec.appendChild(info);
+    sec.appendChild(fillControl(el, { optional: false, label: 'Fill' }));
+    const orow = document.createElement('div');
+    orow.className = 'width-row';
+    const range = document.createElement('input');
+    range.type = 'range'; range.min = 0.05; range.max = 1; range.step = 0.05;
+    range.value = el.opacity ?? 0.45;
+    const num = document.createElement('input');
+    num.type = 'number'; num.min = 0.05; num.max = 1; num.step = 0.05;
+    num.value = el.opacity ?? 0.45;
+    let editing = false;
+    range.addEventListener('input', () => {
+      if (!editing) { beginChange(); editing = true; }
+      el.opacity = +range.value; num.value = range.value; render();
+    });
+    range.addEventListener('change', () => { if (editing) { editing = false; changed(); } });
+    num.addEventListener('change', () => {
+      const v = clamp(+num.value || 0.45, 0.05, 1); num.value = v; range.value = v;
+      beginChange(); el.opacity = v; changed();
+    });
+    orow.append(range, num);
+    sec.appendChild(fieldRow('Opacity', orow));
+    sec.appendChild(deleteButton());
+    panel.appendChild(sec);
+    return;
   } else {
     const el = single.el;
     const titles = {
@@ -1163,7 +1347,8 @@ function renderPanel() {
       }, 'Track this annotation in the object list'));
     }
     if (el.group) {
-      sec.appendChild(smallButton('Ungroup', ungroupSelection, 'Remove this object’s group (Ctrl+Shift+G)'));
+      sec.appendChild(smallButton('Remove from group', () => removeFromGroup(el),
+        'Take this object out of its group'));
     }
     if (el.type === 'path' && el.segments.length) {
       sec.appendChild(sectionTitle('Segments'));
@@ -1296,7 +1481,8 @@ async function openFile() {
 async function exportSVG() {
   state.selection = [];
   refresh();
-  const text = exportSVGString();
+  $('hint').textContent = 'Building SVG…';
+  const text = await exportSVGString();
   if (!text) { $('hint').textContent = 'Nothing to export yet — the canvas is empty.'; return; }
   try {
     if (TAURI) {
@@ -1402,12 +1588,30 @@ $('csvBtn').addEventListener('click', exportCSV);
 $('undoBtn').addEventListener('click', undo);
 $('redoBtn').addEventListener('click', redo);
 
+$('snapToggle').addEventListener('click', () => {
+  state.snap = !state.snap;
+  $('snapToggle').setAttribute('aria-pressed', state.snap);
+  $('hint').textContent = `Annotation snapping ${state.snap ? 'on' : 'off'}.`;
+});
+$('dataToggle').addEventListener('click', () => {
+  dataView.show = !dataView.show;
+  $('dataToggle').setAttribute('aria-pressed', dataView.show);
+  render();
+});
+$('hoverToggle').addEventListener('click', () => {
+  dataView.hover = !dataView.hover;
+  $('hoverToggle').setAttribute('aria-pressed', dataView.hover);
+  if (!dataView.hover) dataView.hoverId = null;
+  render();
+});
+
 window.addEventListener('resize', render);
 
 // ---- boot ----
 
-restoreAutosave();
+// Start every session on a fresh blank canvas (autosave still writes, so a
+// future "recover last" could read it, but we no longer reopen it on launch).
 setTool('select');
 refresh();
-if (state.doc.elements.length) fitView();
-else { state.view.tx = 80; state.view.ty = 80; refresh(); }
+state.view.tx = 80; state.view.ty = 80;
+refresh();

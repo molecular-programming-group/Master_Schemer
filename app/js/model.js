@@ -43,6 +43,25 @@ export function resolveLabel(l) {
 export const groupMembers = gid =>
   state.doc.elements.filter(el => el.group === gid);
 
+// Groups nest: a group carries an optional `parent` group id. These walk the
+// tree — child groups of gid, and every element that lives anywhere under gid.
+export const byGroup = gid => state.doc.groups.find(g => g.id === gid);
+export const childGroups = gid => state.doc.groups.filter(g => g.parent === gid);
+export const topLevelGroups = () => state.doc.groups.filter(g => !g.parent || !byGroup(g.parent));
+
+export function groupElementMembers(gid) {
+  const out = state.doc.elements.filter(el => el.group === gid);
+  for (const cg of childGroups(gid)) out.push(...groupElementMembers(cg.id));
+  return out;
+}
+
+// A group is "empty" once it holds no elements and no child groups anywhere
+// beneath it — those get swept away.
+export function groupIsEmpty(gid) {
+  if (state.doc.elements.some(el => el.group === gid)) return false;
+  return childGroups(gid).every(cg => groupIsEmpty(cg.id));
+}
+
 export const state = {
   doc: { version: 3, elements: [], palette: [], groups: [], labelSlots: [] },
   // selection entries: { id } for an element, { id, seg: i } for a path segment
@@ -50,6 +69,7 @@ export const state = {
   tool: 'select',
   color: INK,
   width: 2,
+  snap: true, // annotation shapes snap to the half-grid (toggle in the status bar)
   view: { tx: 0, ty: 0, s: 1 },
   history: [],
   future: [],
@@ -116,17 +136,30 @@ export function deleteSelection() {
     if (el?.segments) el.segments.splice(s.seg, 1);
   }
   const ids = new Set(state.selection.filter(s => s.seg === undefined).map(s => s.id));
+  // arrows to a deleted card, and links touching a deleted element, go too
   state.doc.elements = state.doc.elements.filter(el =>
-    !ids.has(el.id) && !(el.type === 'arrow' && (ids.has(el.from) || ids.has(el.to))));
+    !ids.has(el.id) &&
+    !(el.type === 'arrow' && (ids.has(el.from) || ids.has(el.to))) &&
+    !(el.type === 'link' && (ids.has(el.a?.id) || ids.has(el.b?.id))));
   pruneGroups();
   state.selection = [];
   changed();
 }
 
-// Groups with no remaining members disappear.
+// Groups with no remaining members (elements or child groups) disappear;
+// repeats until nothing more collapses, so orphaned parents go too.
 export function pruneGroups() {
-  state.doc.groups = (state.doc.groups || []).filter(g =>
-    state.doc.elements.some(el => el.group === g.id));
+  const groups = state.doc.groups || [];
+  let changedAny = true;
+  while (changedAny) {
+    changedAny = false;
+    for (let i = groups.length - 1; i >= 0; i--) {
+      if (groupIsEmpty(groups[i].id)) { groups.splice(i, 1); changedAny = true; }
+    }
+  }
+  // heal dangling parent pointers
+  for (const g of groups) if (g.parent && !groups.some(p => p.id === g.parent)) delete g.parent;
+  state.doc.groups = groups;
 }
 
 export const isSelected = (id, seg) =>
@@ -155,23 +188,31 @@ export function cloneElements(ids) {
     clones.push(copy);
   }
   const out = clones.filter(c => {
-    if (c.type !== 'arrow') return true;
-    if (!idMap.has(c.from) || !idMap.has(c.to)) return false;
-    c.from = idMap.get(c.from); c.to = idMap.get(c.to);
+    if (c.type === 'arrow') {
+      if (!idMap.has(c.from) || !idMap.has(c.to)) return false;
+      c.from = idMap.get(c.from); c.to = idMap.get(c.to);
+    } else if (c.type === 'link') {
+      // keep a link only if both ends were cloned too (group ends survive as-is)
+      if (c.a?.id && !idMap.has(c.a.id)) return false;
+      if (c.b?.id && !idMap.has(c.b.id)) return false;
+      if (c.a?.id) c.a = { ...c.a, id: idMap.get(c.a.id) };
+      if (c.b?.id) c.b = { ...c.b, id: idMap.get(c.b.id) };
+    }
     return true;
   });
-  // cloned group members land in fresh groups, not the originals'
+  // cloned group members land in fresh groups, whole nested chain copied
   const groupMap = new Map();
-  for (const c of out) {
-    if (!c.group) continue;
-    if (!groupMap.has(c.group)) {
-      const src = state.doc.groups.find(g => g.id === c.group);
-      const ng = { id: newId(), name: src ? `${src.name} copy` : 'group' };
-      state.doc.groups.push(ng);
-      groupMap.set(c.group, ng.id);
-    }
-    c.group = groupMap.get(c.group);
-  }
+  const cloneGroupChain = gid => {
+    if (!gid) return undefined;
+    if (groupMap.has(gid)) return groupMap.get(gid);
+    const src = byGroup(gid);
+    const ng = { id: newId(), name: src ? `${src.name} copy` : 'group' };
+    groupMap.set(gid, ng.id); // set before recursing so cycles can't loop
+    if (src?.parent) ng.parent = cloneGroupChain(src.parent);
+    state.doc.groups.push(ng);
+    return ng.id;
+  };
+  for (const c of out) if (c.group) c.group = cloneGroupChain(c.group);
   state.doc.elements.push(...out);
   return out;
 }

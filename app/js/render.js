@@ -1,8 +1,11 @@
 // SVG rendering with a per-element node cache: only elements whose data
 // changed since the last frame rebuild their DOM, everything else is re-slotted
 // in document order (which is what gives us z-order for free).
-import { state, byId, resolveColor, resolveLabel } from './model.js';
-import { GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint } from './geom.js';
+import { state, byId, resolveColor, resolveLabel, groupElementMembers } from './model.js';
+import {
+  GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint,
+  convexHull, ellipsePoints,
+} from './geom.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 export const SEL = '#b57f1d'; // honey selection accent (matches --primary)
@@ -93,6 +96,10 @@ export function elementBBox(el) {
       const [x1, y1] = [b.x + b.w / 2, b.y + b.h / 2];
       return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
     }
+    case 'link': {
+      const pts = [...linkTargetPoints(el.a), ...linkTargetPoints(el.b)];
+      return pts.length ? bboxOfPts(pts) : [0, 0, 0, 0];
+    }
   }
   return [0, 0, 0, 0];
 }
@@ -119,6 +126,9 @@ export function dashArray(dash, w) {
 
 export const LINECAPS = ['round', 'butt', 'square'];
 
+// Fill for closed shapes (rect/ellipse): a color ref or 'none'.
+const fillOf = el => (el.fill ? resolveColor(el.fill) : 'none');
+
 function strokeAttrs(el) {
   // dotted strokes need round caps or the dots vanish
   const cap = el.dash === 'dotted' ? 'round' : (el.linecap || 'round');
@@ -144,8 +154,9 @@ function endDir(pts, end) {
 
 export const CAPS = ['none', 'arrow', 'harpoon', 'barb', 'square', 'circle'];
 
-// End-cap glyph at p pointing along outward unit dir d.
-function capGlyph(parent, p, d, cap, color, w) {
+// End-cap glyph at p pointing along outward unit dir d. `flip` mirrors the
+// (one-sided) harpoon barb to the other side of the line.
+function capGlyph(parent, p, d, cap, color, w, flip) {
   if (!cap || cap === 'none') return;
   const s = Math.max(7, w * 2.1);
   const n = [-d[1], d[0]];
@@ -156,8 +167,12 @@ function capGlyph(parent, p, d, cap, color, w) {
   if (cap === 'arrow') poly([P(s * 0.75, 0), P(-s * 0.55, s * 0.55), P(-s * 0.55, -s * 0.55)]);
   else if (cap === 'barb') { // swept-back barbed head
     poly([P(s * 0.8, 0), P(-s * 0.75, s * 0.7), P(-s * 0.3, 0), P(-s * 0.75, -s * 0.7)]);
-  } else if (cap === 'harpoon') { // one-sided barb
-    poly([P(s * 0.8, 0), P(-s * 0.75, s * 0.7), P(-s * 0.25, 0)]);
+  } else if (cap === 'harpoon') {
+    // one-sided barb whose flat edge lies on the line axis (tip → base runs
+    // straight down the centerline) so it reads as a seamless continuation of
+    // the stroke rather than a glued-on triangle.
+    const side = flip ? -1 : 1;
+    poly([P(s * 0.9, 0), P(-s * 0.5, s * 0.92 * side), P(-s * 0.12, 0)]);
   } else if (cap === 'square') {
     const h = s * 0.42;
     poly([P(h, h), P(h, -h), P(-h, -h), P(-h, h)]);
@@ -296,8 +311,8 @@ function renderPath(el) {
     drawLabel(g, divs, seg, labelPos(el.pts, (seg.t0 + seg.t1) / 2, 16, 1),
       { size: 12, color: segColor, id: el.id, segi: i });
   });
-  capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, color, w);
-  capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, color, w);
+  capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, color, w, el.cap0flip);
+  capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, color, w, el.cap1flip);
   drawLabel(g, divs, el, labelPos(el.pts, len / 2, 14, -1),
     { size: 12.5, color, id: el.id });
   return { node: g, divs };
@@ -343,7 +358,7 @@ function renderEllipse(el) {
     ...base, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
-  svgEl('ellipse', { ...base, ...strokeAttrs(el) }, g);
+  svgEl('ellipse', { ...base, ...strokeAttrs(el), fill: fillOf(el) }, g);
   drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
   return { node: g, divs };
 }
@@ -356,7 +371,7 @@ function renderRect(el) {
     ...base, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
-  svgEl('rect', { ...base, ...strokeAttrs(el) }, g);
+  svgEl('rect', { ...base, ...strokeAttrs(el), fill: fillOf(el) }, g);
   drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
   return { node: g, divs };
 }
@@ -371,8 +386,8 @@ function renderALine(el) {
     stroke: 'transparent', 'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
   svgEl('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], ...strokeAttrs(el) }, g);
-  capGlyph(g, a, endDir(el.pts, 0), el.cap0, color, el.width || 2);
-  capGlyph(g, b, endDir(el.pts, 1), el.cap1, color, el.width || 2);
+  capGlyph(g, a, endDir(el.pts, 0), el.cap0, color, el.width || 2, el.cap0flip);
+  capGlyph(g, b, endDir(el.pts, 1), el.cap1, color, el.width || 2, el.cap1flip);
   drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color, id: el.id });
   return { node: g, divs };
 }
@@ -415,9 +430,54 @@ function renderText(el) {
   return { node: g };
 }
 
+// ---- links (filled area spanning two objects/segments/groups) ----
+
+// Boundary points of one element, in world units.
+function elOutline(el) {
+  switch (el.type) {
+    case 'path': case 'ink': case 'aline': return el.pts;
+    case 'ellipse': return ellipsePoints(el.cx, el.cy, el.rx, el.ry);
+    case 'rect': case 'card':
+      return [[el.x, el.y], [el.x + el.w, el.y], [el.x + el.w, el.y + el.h], [el.x, el.y + el.h]];
+    default: {
+      const b = elementBBox(el);
+      return [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]];
+    }
+  }
+}
+
+// Points contributed by a link endpoint reference: an element, a path segment,
+// or a whole group.
+export function linkTargetPoints(ref) {
+  if (!ref) return [];
+  if (ref.group) return groupElementMembers(ref.group).flatMap(elOutline);
+  const el = byId(ref.id);
+  if (!el) return [];
+  if (ref.seg !== undefined && el.segments?.[ref.seg]) {
+    const s = el.segments[ref.seg];
+    return subPath(el.pts, s.t0, s.t1);
+  }
+  return elOutline(el);
+}
+
+const linkHull = el => convexHull([...linkTargetPoints(el.a), ...linkTargetPoints(el.b)]);
+
+function renderLink(el) {
+  const g = svgEl('g', { 'data-id': el.id });
+  const hull = linkHull(el);
+  if (hull.length >= 3) {
+    svgEl('polygon', {
+      points: ptsAttr(hull), fill: resolveColor(el.fill) || '#8a857c',
+      'fill-opacity': el.opacity ?? 0.45, stroke: 'none',
+    }, g);
+  }
+  return { node: g };
+}
+
 const RENDERERS = {
   card: renderCard, arrow: renderArrow, path: renderPath, ink: renderInk,
   ellipse: renderEllipse, rect: renderRect, aline: renderALine, text: renderText,
+  link: renderLink,
 };
 
 // ---- node cache ----
@@ -433,6 +493,8 @@ function elKey(el, salt) {
     const a = byId(el.from), b = byId(el.to);
     key += a && b ? `|${a.x},${a.y},${a.w},${a.h}|${b.x},${b.y},${b.w},${b.h}` : '|x';
   }
+  // links trace live geometry: rekey when either endpoint's outline moves
+  if (el.type === 'link') key += '|' + ptsAttr([...linkTargetPoints(el.a), ...linkTargetPoints(el.b)]);
   return key;
 }
 
@@ -483,13 +545,16 @@ function renderSelection(overlay) {
       fill: 'none', stroke: SEL, 'stroke-width': 1.5 / s,
       'stroke-dasharray': `${5 / s} ${4 / s}`, rx: 3 / s,
     }, overlay);
-    // corner handles for a single selected card: squares resize, dragging the
-    // card border moves it (its contents ride along)
-    if (el.type === 'card' && single) {
+    // corner handles resize a single card / rectangle / ellipse. For cards,
+    // dragging the border moves it (contents ride along); the squares resize.
+    if (single && (el.type === 'card' || el.type === 'rect' || el.type === 'ellipse')) {
+      const box = el.type === 'ellipse'
+        ? [el.cx - el.rx, el.cy - el.ry, el.cx + el.rx, el.cy + el.ry]
+        : [el.x, el.y, el.x + el.w, el.y + el.h];
       const hs = 9 / s;
       for (const [hx, hy, name] of [
-        [el.x, el.y, 'nw'], [el.x + el.w, el.y, 'ne'],
-        [el.x, el.y + el.h, 'sw'], [el.x + el.w, el.y + el.h, 'se'],
+        [box[0], box[1], 'nw'], [box[2], box[1], 'ne'],
+        [box[0], box[3], 'sw'], [box[2], box[3], 'se'],
       ]) {
         svgEl('rect', {
           x: hx - hs / 2, y: hy - hs / 2, width: hs, height: hs,
@@ -524,8 +589,11 @@ function renderSelection(overlay) {
 export function render() {
   const { tx, ty, s } = state.view;
   $('world').setAttribute('transform', `translate(${tx} ${ty}) scale(${s})`);
+  $('canvasWrap').style.background = state.doc.bg || '';
   const mathLayer = $('mathLayer');
   mathLayer.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
+  const dataLayer = $('dataLayer');
+  dataLayer.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
 
   // grid: cover the visible world rect, fade out when zoomed far away
   const svg = $('canvas');
@@ -541,7 +609,7 @@ export function render() {
 
   // cards sit below everything; all other elements paint in doc order (z-order)
   const salt = JSON.stringify(state.doc.palette) + JSON.stringify(state.doc.labelSlots || []);
-  const cardNodes = [], drawNodes = [], divs = [], measures = [];
+  const cardNodes = [], linkNodes = [], drawNodes = [], divs = [], measures = [];
   const seen = new Set();
   for (const el of state.doc.elements) {
     const renderer = RENDERERS[el.type];
@@ -555,20 +623,52 @@ export function render() {
       nodeCache.set(el.id, entry);
       if (entry.measure) measures.push(entry.measure);
     }
-    (el.type === 'card' ? cardNodes : drawNodes).push(entry.node);
+    const bucket = el.type === 'card' ? cardNodes : el.type === 'link' ? linkNodes : drawNodes;
+    bucket.push(entry.node);
     if (entry.divs) divs.push(...entry.divs);
   }
   for (const id of [...nodeCache.keys()]) {
     if (!seen.has(id)) { nodeCache.delete(id); richBoxes.delete(id); }
   }
   $('layer-cards').replaceChildren(...cardNodes);
+  $('layer-links').replaceChildren(...linkNodes);
   $('layer-draw').replaceChildren(...drawNodes);
   mathLayer.replaceChildren(...divs);
   for (const m of measures) m(); // rich text sizes its hit rect post-layout
+  renderDataBoxes(dataLayer);
 
   const overlay = $('layer-overlay');
   overlay.replaceChildren();
   renderSelection(overlay);
+}
+
+// ---- data boxes (show each object's hidden notes, always or on hover) ----
+
+export const dataView = { show: false, hover: false, hoverId: null };
+
+function dataBox(el) {
+  const b = elementBBox(el);
+  const div = document.createElement('div');
+  div.className = 'data-box';
+  div.style.left = `${b[2] + 6}px`;
+  div.style.top = `${b[1]}px`;
+  const name = resolveLabel(el.label || '') || (el.title || '');
+  div.innerHTML =
+    (name ? `<b>${esc(name)}</b>` : '') +
+    (el.notes ? `<span>${esc(el.notes).replace(/\n/g, '<br>')}</span>` : '');
+  return div;
+}
+
+function renderDataBoxes(layer) {
+  const boxes = [];
+  const has = el => el && (el.notes || resolveLabel(el.label || ''));
+  if (dataView.show) {
+    for (const el of state.doc.elements) if (el.notes) boxes.push(dataBox(el));
+  } else if (dataView.hover && dataView.hoverId) {
+    const el = byId(dataView.hoverId);
+    if (has(el)) boxes.push(dataBox(el));
+  }
+  layer.replaceChildren(...boxes);
 }
 
 // ---- SVG export ----
@@ -593,7 +693,46 @@ function exportRichText(el) {
   return g;
 }
 
-export function exportSVGString() {
+// Math label → centered foreignObject at the element's label anchor.
+function exportMathLabel(el) {
+  const b = elementBBox(el);
+  const off = el.labelOff || [0, 0];
+  const cx = (b[0] + b[2]) / 2 + off[0], top = b[1] - 9 + off[1];
+  const fo = svgEl('foreignObject', {
+    x: cx - 150, y: top - 12, width: 300, height: 40, style: 'overflow:visible',
+  });
+  const div = document.createElement('div');
+  div.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+  div.style.cssText =
+    `display:flex;justify-content:center;font:600 12.5px ${FONT};color:${resolveColor(el.color) || '#2b2622'};`;
+  div.innerHTML = richHTML(resolveLabel(el.label));
+  fo.appendChild(div);
+  return fo;
+}
+
+// KaTeX CSS with its woff2 fonts baked in as data: URIs, so exported SVGs render
+// math anywhere without needing the stylesheet or font files alongside them.
+// ponytail: embeds the full ~300KB font set once per export; subset by used
+// glyphs only if file size ever becomes a complaint.
+let katexInlineCSS;
+async function katexCSS() {
+  if (katexInlineCSS !== undefined) return katexInlineCSS;
+  try {
+    const base = 'vendor/katex/';
+    let css = await (await fetch(base + 'katex.min.css')).text();
+    const fonts = [...new Set([...css.matchAll(/url\(([^)]+\.woff2)\)/g)].map(m => m[1]))];
+    for (const ref of fonts) {
+      const buf = new Uint8Array(await (await fetch(base + ref)).arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode(...buf.subarray(i, i + 8192));
+      css = css.split(`url(${ref})`).join(`url(data:font/woff2;base64,${btoa(bin)})`);
+    }
+    katexInlineCSS = css;
+  } catch { katexInlineCSS = ''; }
+  return katexInlineCSS;
+}
+
+export async function exportSVGString() {
   const box = contentBBox();
   if (!box) return null;
   const m = 40;
@@ -603,9 +742,21 @@ export function exportSVGString() {
   out.setAttribute('viewBox', `${x0} ${y0} ${x1 - x0} ${y1 - y0}`);
   out.setAttribute('width', x1 - x0);
   out.setAttribute('height', y1 - y0);
-  svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: '#ffffff' }, out);
+
+  const needsMath = state.doc.elements.some(el =>
+    (el.type === 'text' && isRichText(el)) ||
+    (el.label && !el.labelHide && hasMath(resolveLabel(el.label))));
+  if (needsMath) {
+    const css = await katexCSS();
+    if (css) {
+      const style = svgEl('style', {}, out);
+      style.textContent = css;
+    }
+  }
+
+  svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: state.doc.bg || '#ffffff' }, out);
   out.appendChild(document.querySelector('#canvas defs').cloneNode(true));
-  for (const id of ['layer-cards', 'layer-draw']) {
+  for (const id of ['layer-cards', 'layer-links', 'layer-draw']) {
     out.appendChild($(id).cloneNode(true));
   }
   for (const el of state.doc.elements) {
@@ -614,13 +765,7 @@ export function exportSVGString() {
     if (el.type === 'text' && isRichText(el)) {
       clone.replaceChildren(...exportRichText(el).childNodes);
     } else if (el.label && !el.labelHide && hasMath(resolveLabel(el.label))) {
-      // ponytail: math labels export as raw text; full KaTeX label export
-      // would need per-label foreignObjects — add if anyone asks
-      const b = elementBBox(el);
-      const off = el.labelOff || [0, 0];
-      haloText(clone, (b[0] + b[2]) / 2 + off[0], b[1] - 9 + off[1],
-        resolveLabel(el.label), 12.5, resolveColor(el.color) || '#2b2622', 600,
-        { 'text-anchor': 'middle' });
+      clone.appendChild(exportMathLabel(el));
     }
   }
   out.querySelectorAll('[data-hit], [data-ph]').forEach(n => n.remove());

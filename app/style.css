@@ -259,6 +259,32 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 4px #fff;
 }
 
+/* Data boxes: an object's hidden notes, shown always or on hover. Same
+   transform trick as the math layer so they track pan/zoom. */
+#dataLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transform-origin: 0 0;
+}
+#dataLayer .data-box {
+  position: absolute;
+  max-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 8px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--ink);
+  background: oklch(1 0 0 / 0.94);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px oklch(0.3 0.02 75 / 0.16);
+}
+#dataLayer .data-box b { font-weight: 650; }
+#dataLayer .data-box span { color: var(--muted); white-space: pre-wrap; }
+
 /* Selection halo and tool previews must never swallow clicks aimed at the
    elements beneath them; only the drag handles in the overlay are targets. */
 #layer-overlay, #layer-preview { pointer-events: none; }
@@ -556,7 +582,25 @@ body.panning #canvas { cursor: grabbing !important; }
   color: var(--muted);
 }
 
-.status-right { font-variant-numeric: tabular-nums; }
+.status-right { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+
+.status-toggle {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 550;
+  padding: 2px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 150ms ease-out, color 150ms ease-out;
+}
+.status-toggle:hover { background: var(--surface-2); }
+.status-toggle[aria-pressed="true"] {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  color: var(--primary-strong);
+}
 
 /* ---------- tooltips ---------- */
 

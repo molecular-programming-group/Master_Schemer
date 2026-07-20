@@ -149,6 +149,38 @@ export function mergePaths(aPts, aSegs, bPts, bSegs) {
 export const rectsIntersect = (a, b) =>
   a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
 
+// Convex hull (monotone chain) of a point cloud → CCW-ish boundary polygon.
+// Used to fill the area spanning two linked objects.
+export function convexHull(pts) {
+  const p = [...new Map(pts.map(q => [`${q[0]},${q[1]}`, q])).values()]
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (p.length < 3) return p;
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const q of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+    lower.push(q);
+  }
+  const upper = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    const q = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+    upper.push(q);
+  }
+  lower.pop(); upper.pop();
+  return lower.concat(upper);
+}
+
+// Sample points around an ellipse for hull/bbox math.
+export function ellipsePoints(cx, cy, rx, ry, n = 12) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    out.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]);
+  }
+  return out;
+}
+
 // Where the ray from the rect's center toward (tx,ty) exits the rect border.
 export function rectEdgePoint(cx, cy, w, h, tx, ty) {
   const dx = tx - cx, dy = ty - cy;

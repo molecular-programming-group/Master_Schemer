@@ -1,6 +1,6 @@
 [package]
 name = "master-schemer"
-version = "0.3.0"
+version = "0.4.0"
 description = "A semantic scheme editor"
 authors = ["Ian Hoffecker"]
 edition = "2021"

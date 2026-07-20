@@ -16,6 +16,14 @@ let drag = null;
 const r1 = v => Math.round(v * 10) / 10;
 const ptsAttr = pts => pts.map(p => `${p[0]},${p[1]}`).join(' ');
 
+// Annotation snapping (toggleable): grid-anchor a point unless snap is off.
+const annSnap = p => (state.snap ? snapHalfPt(p) : [r1(p[0]), r1(p[1])]);
+// Constrain a drag box to a square (Shift while drawing ellipse/rectangle).
+const squareOff = (a, b) => {
+  const d = Math.max(Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+  return [a[0] + Math.sign(b[0] - a[0] || 1) * d, a[1] + Math.sign(b[1] - a[1] || 1) * d];
+};
+
 // Snapshot-once-per-drag: history entry is pushed on the first real mutation.
 function began() {
   if (!drag.began) { beginChange(); drag.began = true; }
@@ -177,13 +185,14 @@ export function cardContents(card) {
   });
 }
 
-// Move-drag items for the current selection: cards carry their contents.
+// Move-drag items for the current selection: cards carry their contents, and a
+// selected segment moves its whole parent line (grabbing a segment behaves like
+// grabbing the object).
 function moveItems() {
   const map = new Map();
   for (const s of state.selection) {
-    if (s.seg !== undefined) continue;
     const el = byId(s.id);
-    if (!el || el.type === 'arrow') continue;
+    if (!el || el.type === 'arrow' || el.type === 'link') continue;
     map.set(el.id, el);
     if (el.type === 'card') for (const c of cardContents(el)) map.set(c.id, c);
   }
@@ -245,8 +254,10 @@ export const tools = {
       const handle = t.closest?.('[data-handle]');
       if (handle) {
         const el = byId(handle.getAttribute('data-id'));
-        drag = { mode: 'resize', el, handle: handle.getAttribute('data-handle'),
-                 orig: { x: el.x, y: el.y, w: el.w, h: el.h } };
+        const orig = el.type === 'ellipse'
+          ? { x: el.cx - el.rx, y: el.cy - el.ry, w: 2 * el.rx, h: 2 * el.ry }
+          : { x: el.x, y: el.y, w: el.w, h: el.h };
+        drag = { mode: 'resize', el, handle: handle.getAttribute('data-handle'), orig };
         return;
       }
       const pend = t.closest?.('[data-pend]');
@@ -358,15 +369,22 @@ export const tools = {
         for (const it of drag.items) applyDelta(it.el, it.orig, dx, dy);
         changed();
       } else if (drag.mode === 'resize') {
-        const o = drag.orig, h = drag.handle;
+        const o = drag.orig, h = drag.handle, el = drag.el;
         let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
-        const p = snapPt(wp);
-        if (h.includes('w')) x0 = Math.min(p[0], x1 - 2 * GRID);
-        if (h.includes('e')) x1 = Math.max(p[0], x0 + 2 * GRID);
-        if (h.includes('n')) y0 = Math.min(p[1], y1 - 2 * GRID);
-        if (h.includes('s')) y1 = Math.max(p[1], y0 + 2 * GRID);
+        // cards keep the whole-grid lattice; rect/ellipse follow the snap toggle
+        const p = el.type === 'card' ? snapPt(wp) : annSnap(wp);
+        const min = el.type === 'card' ? 2 * GRID : GRID / 2;
+        if (h.includes('w')) x0 = Math.min(p[0], x1 - min);
+        if (h.includes('e')) x1 = Math.max(p[0], x0 + min);
+        if (h.includes('n')) y0 = Math.min(p[1], y1 - min);
+        if (h.includes('s')) y1 = Math.max(p[1], y0 + min);
         began();
-        Object.assign(drag.el, { x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+        if (el.type === 'ellipse') {
+          el.rx = r1((x1 - x0) / 2); el.ry = r1((y1 - y0) / 2);
+          el.cx = r1(x0 + (x1 - x0) / 2); el.cy = r1(y0 + (y1 - y0) / 2);
+        } else {
+          Object.assign(el, { x: r1(x0), y: r1(y0), w: r1(x1 - x0), h: r1(y1 - y0) });
+        }
         changed();
       } else if (drag.mode === 'marquee') {
         clearPreview();
@@ -636,15 +654,15 @@ export const tools = {
   },
 
   ellipse: {
-    hint: 'Drag to draw a circle or ellipse annotation',
+    hint: 'Drag to draw a circle or ellipse · Shift for a circle · snaps to grid (toggle in the status bar)',
     down(e, wp) {
-      drag = { a: wp };
+      drag = { a: annSnap(wp) };
     },
     move(e, wp) {
       if (!drag) return;
-      drag.b = wp;
+      const a = drag.a, b = e.shiftKey ? squareOff(a, annSnap(wp)) : annSnap(wp);
+      drag.b = b;
       clearPreview();
-      const [a, b] = [drag.a, wp];
       svgEl('ellipse', {
         cx: (a[0] + b[0]) / 2, cy: (a[1] + b[1]) / 2,
         rx: Math.abs(b[0] - a[0]) / 2, ry: Math.abs(b[1] - a[1]) / 2,
@@ -653,7 +671,7 @@ export const tools = {
     },
     up(e, wp) {
       if (!drag) return;
-      const a = drag.a, b = drag.b || wp;
+      const a = drag.a, b = drag.b || (e.shiftKey ? squareOff(a, annSnap(wp)) : annSnap(wp));
       drag = null;
       clearPreview();
       const rx = Math.abs(b[0] - a[0]) / 2, ry = Math.abs(b[1] - a[1]) / 2;
@@ -670,15 +688,15 @@ export const tools = {
   },
 
   rect: {
-    hint: 'Drag to draw a rectangle annotation · round its corners from the panel',
+    hint: 'Drag to draw a rectangle · Shift for a square · round corners from the panel · snaps to grid',
     down(e, wp) {
-      drag = { a: wp };
+      drag = { a: annSnap(wp) };
     },
     move(e, wp) {
       if (!drag) return;
-      drag.b = wp;
+      const a = drag.a, b = e.shiftKey ? squareOff(a, annSnap(wp)) : annSnap(wp);
+      drag.b = b;
       clearPreview();
-      const [a, b] = [drag.a, wp];
       svgEl('rect', {
         x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]),
         width: Math.abs(b[0] - a[0]), height: Math.abs(b[1] - a[1]),
@@ -687,7 +705,7 @@ export const tools = {
     },
     up(e, wp) {
       if (!drag) return;
-      const a = drag.a, b = drag.b || wp;
+      const a = drag.a, b = drag.b || (e.shiftKey ? squareOff(a, annSnap(wp)) : annSnap(wp));
       drag = null;
       clearPreview();
       const w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
@@ -703,8 +721,8 @@ export const tools = {
     },
   },
 
-  aline: { hint: 'Drag to draw a free line annotation — not locked to the grid' },
-  aarrow: { hint: 'Drag to draw an arrow annotation — not locked to the grid' },
+  aline: { hint: 'Drag to draw a straight line annotation · snaps to grid (toggle in the status bar)' },
+  aarrow: { hint: 'Drag to draw an arrow annotation · snaps to grid (toggle in the status bar)' },
 
   text: {
     hint: 'Click to place a note — or drag a box to set its wrap width · $math$ for LaTeX',
@@ -745,20 +763,20 @@ export const tools = {
 // aline and aarrow share one state machine; only the arrowhead differs.
 for (const [name, cap1] of [['aline', 'none'], ['aarrow', 'barb']]) {
   Object.assign(tools[name], {
-    down(e, wp) { drag = { a: wp, b: wp }; },
+    down(e, wp) { const a = annSnap(wp); drag = { a, b: a }; },
     move(e, wp) {
       if (!drag) return;
-      drag.b = wp;
+      drag.b = annSnap(wp);
       clearPreview();
       svgEl('line', {
-        x1: drag.a[0], y1: drag.a[1], x2: wp[0], y2: wp[1],
+        x1: drag.a[0], y1: drag.a[1], x2: drag.b[0], y2: drag.b[1],
         stroke: resolveColor(state.color), 'stroke-width': state.width,
         'stroke-linecap': 'round',
       }, preview());
     },
     up(e, wp) {
       if (!drag) return;
-      const a = drag.a, b = drag.b || wp;
+      const a = drag.a, b = drag.b || annSnap(wp);
       drag = null;
       clearPreview();
       if (dist(a, b) < 4) { changed(); return; }

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   GRID, snap, snapHalf, snap8, simplify, polylineLength, pointAt, nearestOnPath,
   subPath, rectEdgePoint, mergePaths, rot90, flipPt, insertIndex,
+  convexHull, ellipsePoints,
 } from '../app/js/geom.js';
 
 test('snap rounds to grid', () => {
@@ -92,6 +93,24 @@ test('insertIndex finds the vertex slot for an arc length', () => {
   assert.equal(insertIndex(pts, 50), 1);
   assert.equal(insertIndex(pts, 150), 2);
   assert.equal(insertIndex(pts, 9999), 2); // clamped to the last slot
+});
+
+test('convexHull wraps the outer points and drops interior ones', () => {
+  const pts = [[0, 0], [10, 0], [10, 10], [0, 10], [5, 5]]; // last is interior
+  const hull = convexHull(pts);
+  assert.equal(hull.length, 4);
+  for (const corner of [[0, 0], [10, 0], [10, 10], [0, 10]]) {
+    assert.ok(hull.some(p => p[0] === corner[0] && p[1] === corner[1]));
+  }
+  assert.ok(!hull.some(p => p[0] === 5 && p[1] === 5));
+  // collinear / degenerate inputs pass through without a polygon
+  assert.equal(convexHull([[0, 0], [1, 1]]).length, 2);
+});
+
+test('ellipsePoints samples the requested count on the ellipse', () => {
+  const pts = ellipsePoints(0, 0, 10, 5, 8);
+  assert.equal(pts.length, 8);
+  for (const [x, y] of pts) assert.ok(Math.abs((x / 10) ** 2 + (y / 5) ** 2 - 1) < 1e-9);
 });
 
 test('mergePaths fuses at a shared endpoint and re-bases segments', () => {

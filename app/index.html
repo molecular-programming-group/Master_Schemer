@@ -109,12 +109,14 @@
     <g id="world">
       <rect id="gridRect" fill="url(#gridDots)"/>
       <g id="layer-cards"></g>
+      <g id="layer-links"></g>
       <g id="layer-draw"></g>
       <g id="layer-overlay"></g>
       <g id="layer-preview"></g>
     </g>
   </svg>
   <div id="mathLayer" aria-hidden="true"></div>
+  <div id="dataLayer" aria-hidden="true"></div>
 </main>
 
 <aside id="panel" aria-label="Properties">
@@ -123,7 +125,12 @@
 
 <footer id="statusbar">
   <span id="hint"></span>
-  <span class="status-right"><span id="coords">0, 0</span></span>
+  <span class="status-right">
+    <button class="status-toggle" id="snapToggle" aria-pressed="true" data-tip="Snap annotation shapes to the half-grid">Snap</button>
+    <button class="status-toggle" id="dataToggle" aria-pressed="false" data-tip="Show every object's data box">Data</button>
+    <button class="status-toggle" id="hoverToggle" aria-pressed="false" data-tip="Show an object's data when you hover it">Data on hover</button>
+    <span id="coords">0, 0</span>
+  </span>
 </footer>
 
 <input type="file" id="fileInput" accept=".json,application/json" hidden>
