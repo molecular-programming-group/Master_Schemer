@@ -22,6 +22,7 @@
     <symbol id="i-draw" viewBox="0 0 24 24"><path d="M14.5 5.5l4 4L9 19H5v-4Z"/><path d="M12.5 7.5l4 4"/></symbol>
     <symbol id="i-text" viewBox="0 0 24 24"><path d="M5 6h14M12 6v13"/></symbol>
     <symbol id="i-ellipse" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="8.5" ry="6.5"/></symbol>
+    <symbol id="i-rect" viewBox="0 0 24 24"><rect x="4" y="6.5" width="16" height="11" rx="2"/></symbol>
     <symbol id="i-aline" viewBox="0 0 24 24"><path d="M5 19 19 5"/></symbol>
     <symbol id="i-aarrow" viewBox="0 0 24 24"><path d="M5 19 18 6M18 6h-5.5M18 6v5.5"/><path d="M18 6l-2.8 6.7L13.3 8.7 8.3 12.7"/></symbol>
     <symbol id="i-hand" viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/></symbol>
@@ -46,6 +47,7 @@
     <button class="btn" id="saveBtn" data-tip="Save scheme (Ctrl+S)">Save</button>
     <button class="btn" id="saveAsBtn" data-tip="Save under a new name (Ctrl+Shift+S)">Save As</button>
     <button class="btn" id="exportBtn" data-tip="Export SVG (Ctrl+E)">Export SVG</button>
+    <button class="btn" id="csvBtn" data-tip="Export objects and their data as CSV — selection scopes it">Export CSV</button>
   </div>
   <div class="topbar-group">
     <button class="icon-btn" id="undoBtn" data-tip="Undo (Ctrl+Z)" aria-label="Undo"><svg><use href="#i-undo"/></svg></button>
@@ -71,6 +73,7 @@
   <button class="tool-btn" data-tool="draw" data-tip="Freehand — D" aria-label="Freehand tool"><svg><use href="#i-draw"/></svg></button>
   <button class="tool-btn" data-tool="text" data-tip="Note · $math$ — T" aria-label="Note tool"><svg><use href="#i-text"/></svg></button>
   <button class="tool-btn" data-tool="ellipse" data-tip="Ellipse — O" aria-label="Ellipse tool"><svg><use href="#i-ellipse"/></svg></button>
+  <button class="tool-btn" data-tool="rect" data-tip="Rectangle — B" aria-label="Rectangle tool"><svg><use href="#i-rect"/></svg></button>
   <button class="tool-btn" data-tool="aline" data-tip="Free line — N" aria-label="Free line tool"><svg><use href="#i-aline"/></svg></button>
   <button class="tool-btn" data-tool="aarrow" data-tip="Free arrow — R" aria-label="Free arrow tool"><svg><use href="#i-aarrow"/></svg></button>
   <div class="rail-rule" role="separator"></div>
@@ -80,6 +83,8 @@
 <aside id="sidebar" aria-label="Objects">
   <div class="side-head">Objects</div>
   <div id="sidebarBody"></div>
+  <div class="side-head side-head-lib">Library</div>
+  <div id="libraryBody"></div>
 </aside>
 
 <main id="canvasWrap">
@@ -109,6 +114,7 @@
       <g id="layer-preview"></g>
     </g>
   </svg>
+  <div id="mathLayer" aria-hidden="true"></div>
 </main>
 
 <aside id="panel" aria-label="Properties">
@@ -121,6 +127,7 @@
 </footer>
 
 <input type="file" id="fileInput" accept=".json,application/json" hidden>
+<input type="file" id="libInput" accept=".json,application/json" hidden>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

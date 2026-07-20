@@ -30,8 +30,21 @@ export function resolveColor(c) {
   return c;
 }
 
+// Labels use the same trick: 'slot:<id>' points into doc.labelSlots, so
+// editing a shared label retitles every element that references it.
+export function resolveLabel(l) {
+  if (typeof l === 'string' && l.startsWith('slot:')) {
+    const slot = state.doc.labelSlots?.find(s => s.id === l.slice(5));
+    return slot ? slot.text : '';
+  }
+  return l;
+}
+
+export const groupMembers = gid =>
+  state.doc.elements.filter(el => el.group === gid);
+
 export const state = {
-  doc: { version: 2, elements: [], palette: [] },
+  doc: { version: 3, elements: [], palette: [], groups: [], labelSlots: [] },
   // selection entries: { id } for an element, { id, seg: i } for a path segment
   selection: [],
   tool: 'select',
@@ -105,8 +118,15 @@ export function deleteSelection() {
   const ids = new Set(state.selection.filter(s => s.seg === undefined).map(s => s.id));
   state.doc.elements = state.doc.elements.filter(el =>
     !ids.has(el.id) && !(el.type === 'arrow' && (ids.has(el.from) || ids.has(el.to))));
+  pruneGroups();
   state.selection = [];
   changed();
+}
+
+// Groups with no remaining members disappear.
+export function pruneGroups() {
+  state.doc.groups = (state.doc.groups || []).filter(g =>
+    state.doc.elements.some(el => el.group === g.id));
 }
 
 export const isSelected = (id, seg) =>
@@ -140,6 +160,18 @@ export function cloneElements(ids) {
     c.from = idMap.get(c.from); c.to = idMap.get(c.to);
     return true;
   });
+  // cloned group members land in fresh groups, not the originals'
+  const groupMap = new Map();
+  for (const c of out) {
+    if (!c.group) continue;
+    if (!groupMap.has(c.group)) {
+      const src = state.doc.groups.find(g => g.id === c.group);
+      const ng = { id: newId(), name: src ? `${src.name} copy` : 'group' };
+      state.doc.groups.push(ng);
+      groupMap.set(c.group, ng.id);
+    }
+    c.group = groupMap.get(c.group);
+  }
   state.doc.elements.push(...out);
   return out;
 }
@@ -168,13 +200,15 @@ export function reorder(dir) {
 
 function migrate(doc) {
   doc.palette ||= [];
-  doc.version = 2;
+  doc.groups ||= [];
+  doc.labelSlots ||= [];
+  doc.version = 3;
   return doc;
 }
 
 export function newDoc() {
   beginChange();
-  state.doc = { version: 2, elements: [], palette: [] };
+  state.doc = { version: 3, elements: [], palette: [], groups: [], labelSlots: [] };
   state.selection = [];
   changed();
 }

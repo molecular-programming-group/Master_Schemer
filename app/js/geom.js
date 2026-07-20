@@ -13,16 +13,36 @@ export const dist = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
 export const dirOf = (a, b) => [Math.sign(b[0] - a[0]), Math.sign(b[1] - a[1])];
 
 // Project q (relative to anchor a) onto the nearest of the 8 compass directions,
-// quantized to whole grid steps along that direction. Never goes behind the anchor.
-export function snap8(a, q) {
+// quantized to whole `step` increments along that direction (default: grid).
+// Never goes behind the anchor.
+export function snap8(a, q, step = GRID) {
   const dx = q[0] - a[0], dy = q[1] - a[1];
   if (dx === 0 && dy === 0) return [a[0], a[1]];
   const oct = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
   const ux = Math.round(Math.cos(oct * Math.PI / 4));
   const uy = Math.round(Math.sin(oct * Math.PI / 4));
   const t = (dx * ux + dy * uy) / (ux * ux + uy * uy);
-  const n = Math.max(0, Math.round(t / GRID));
-  return [(a[0] + n * GRID * ux) || 0, (a[1] + n * GRID * uy) || 0];
+  const n = Math.max(0, Math.round(t / step));
+  return [(a[0] + n * step * ux) || 0, (a[1] + n * step * uy) || 0];
+}
+
+// Rotate p 90° about c. dir > 0 = clockwise in screen coords (y down).
+export const rot90 = (p, c, dir) => dir > 0
+  ? [c[0] - (p[1] - c[1]), c[1] + (p[0] - c[0])]
+  : [c[0] + (p[1] - c[1]), c[1] - (p[0] - c[0])];
+
+// Mirror p about c along an axis: 'h' flips left-right, 'v' flips top-bottom.
+export const flipPt = (p, c, axis) => axis === 'h'
+  ? [2 * c[0] - p[0], p[1]] : [p[0], 2 * c[1] - p[1]];
+
+// Vertex index at which to insert a point that sits at arc length t.
+export function insertIndex(pts, t) {
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    acc += dist(pts[i - 1], pts[i]);
+    if (t < acc) return i;
+  }
+  return pts.length - 1;
 }
 
 // Drop consecutive duplicates and collinear middle points. Sign-based collinearity

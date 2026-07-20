@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   GRID, snap, snapHalf, snap8, simplify, polylineLength, pointAt, nearestOnPath,
-  subPath, rectEdgePoint, mergePaths,
+  subPath, rectEdgePoint, mergePaths, rot90, flipPt, insertIndex,
 } from '../app/js/geom.js';
 
 test('snap rounds to grid', () => {
@@ -72,6 +72,26 @@ test('snapHalf rounds to the half-grid lattice', () => {
   assert.equal(snapHalf(16), 20);
   assert.equal(snapHalf(-4), 0);
   assert.equal(snapHalf(-6), -10);
+});
+
+test('snap8 accepts a finer step for half-grid lines', () => {
+  assert.deepEqual(snap8([0, 0], [67, 3], GRID / 2), [70, 0]);
+  assert.deepEqual(snap8([0, 0], [48, 44], GRID / 2), [50, 50]);
+});
+
+test('rot90 rotates about a center; flipPt mirrors', () => {
+  assert.deepEqual(rot90([10, 0], [0, 0], 1), [0, 10]);   // cw in screen coords
+  assert.deepEqual(rot90([10, 0], [0, 0], -1), [0, -10]); // ccw
+  assert.deepEqual(rot90([30, 20], [20, 20], 1), [20, 30]);
+  assert.deepEqual(flipPt([30, 5], [20, 20], 'h'), [10, 5]);
+  assert.deepEqual(flipPt([30, 5], [20, 20], 'v'), [30, 35]);
+});
+
+test('insertIndex finds the vertex slot for an arc length', () => {
+  const pts = [[0, 0], [100, 0], [100, 100]];
+  assert.equal(insertIndex(pts, 50), 1);
+  assert.equal(insertIndex(pts, 150), 2);
+  assert.equal(insertIndex(pts, 9999), 2); // clamped to the last slot
 });
 
 test('mergePaths fuses at a shared endpoint and re-bases segments', () => {

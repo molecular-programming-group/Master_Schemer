@@ -1,5 +1,7 @@
-// SVG rendering: full redraw of the document + selection overlay.
-import { state, byId, resolveColor } from './model.js';
+// SVG rendering with a per-element node cache: only elements whose data
+// changed since the last frame rebuild their DOM, everything else is re-slotted
+// in document order (which is what gives us z-order for free).
+import { state, byId, resolveColor, resolveLabel } from './model.js';
 import { GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint } from './geom.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -25,11 +27,49 @@ export const worldToScreen = p => [
   p[1] * state.view.s + state.view.ty,
 ];
 
+// ---- KaTeX / rich text ----
+// Math and wrapped text render as HTML divs in #mathLayer, a plain HTML layer
+// that pans/zooms via one CSS transform. SVG foreignObject would be simpler,
+// but WebKitGTK (the Tauri webview on Linux) ignores ancestor SVG transforms
+// on foreignObject content — notes drifted and refused to zoom.
+
+const texCache = new Map();
+function katexHTML(tex) {
+  if (!texCache.has(tex)) {
+    let html = tex;
+    try { html = window.katex.renderToString(tex, { throwOnError: false }); } catch { /* raw */ }
+    texCache.set(tex, html);
+  }
+  return texCache.get(tex);
+}
+
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+export const hasMath = text => text.includes('$') && !!window.katex;
+
+// A text element is "rich" (HTML-rendered) when it has math or a wrap box.
+export const isRichText = el => hasMath(el.text) || !!el.w;
+
+export function richHTML(text) {
+  return text.split('\n').map(line =>
+    line.split(/\$([^$]+)\$/)
+      .map((part, i) => i % 2 ? katexHTML(part) : esc(part))
+      .join('') || '&nbsp;'
+  ).map(h => `<div>${h}</div>`).join('');
+}
+
+// Measured world-unit sizes of rich text elements, filled after first paint.
+const richBoxes = new Map();
+
 // ---- element bounding boxes (world units) ----
 
 export function elementBBox(el) {
   switch (el.type) {
     case 'card': return [el.x, el.y, el.x + el.w, el.y + el.h];
+    case 'rect': {
+      const m = (el.width || 2) + 2;
+      return [el.x - m, el.y - m, el.x + el.w + m, el.y + el.h + m];
+    }
     case 'path': case 'ink': case 'aline': {
       const b = bboxOfPts(el.pts), m = (el.width || 2) + 4;
       return [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
@@ -39,8 +79,11 @@ export function elementBBox(el) {
       return [el.cx - el.rx - m, el.cy - el.ry - m, el.cx + el.rx + m, el.cy + el.ry + m];
     }
     case 'text': {
+      const top = el.y - el.size * 1.15;
+      const box = richBoxes.get(el.id);
+      if (box) return [el.x, top, el.x + box[0], top + box[1]];
       const lines = el.text.split('\n');
-      const w = Math.max(...lines.map(l => l.length)) * el.size * 0.6;
+      const w = el.w || Math.max(...lines.map(l => l.length)) * el.size * 0.6;
       return [el.x, el.y - el.size, el.x + w, el.y - el.size + lines.length * el.size * 1.3];
     }
     case 'arrow': {
@@ -74,10 +117,14 @@ export function dashArray(dash, w) {
   return null;
 }
 
+export const LINECAPS = ['round', 'butt', 'square'];
+
 function strokeAttrs(el) {
+  // dotted strokes need round caps or the dots vanish
+  const cap = el.dash === 'dotted' ? 'round' : (el.linecap || 'round');
   const attrs = {
     fill: 'none', stroke: resolveColor(el.color), 'stroke-width': el.width || 2,
-    'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+    'stroke-linejoin': cap === 'round' ? 'round' : 'miter', 'stroke-linecap': cap,
   };
   const da = dashArray(el.dash, el.width || 2);
   if (da) attrs['stroke-dasharray'] = da;
@@ -95,7 +142,7 @@ function endDir(pts, end) {
   return [dx / n, dy / n];
 }
 
-export const CAPS = ['none', 'arrow', 'barb', 'square', 'circle'];
+export const CAPS = ['none', 'arrow', 'harpoon', 'barb', 'square', 'circle'];
 
 // End-cap glyph at p pointing along outward unit dir d.
 function capGlyph(parent, p, d, cap, color, w) {
@@ -108,8 +155,9 @@ function capGlyph(parent, p, d, cap, color, w) {
   }, parent);
   if (cap === 'arrow') poly([P(s * 0.75, 0), P(-s * 0.55, s * 0.55), P(-s * 0.55, -s * 0.55)]);
   else if (cap === 'barb') { // swept-back barbed head
-    const path = [P(s * 0.8, 0), P(-s * 0.75, s * 0.7), P(-s * 0.3, 0), P(-s * 0.75, -s * 0.7)];
-    poly(path);
+    poly([P(s * 0.8, 0), P(-s * 0.75, s * 0.7), P(-s * 0.3, 0), P(-s * 0.75, -s * 0.7)]);
+  } else if (cap === 'harpoon') { // one-sided barb
+    poly([P(s * 0.8, 0), P(-s * 0.75, s * 0.7), P(-s * 0.25, 0)]);
   } else if (cap === 'square') {
     const h = s * 0.42;
     poly([P(h, h), P(h, -h), P(-h, -h), P(-h, h)]);
@@ -119,6 +167,9 @@ function capGlyph(parent, p, d, cap, color, w) {
 }
 
 // ---- element renderers ----
+// Each returns { node, divs?, measure? }. divs go in #mathLayer; measure runs
+// once after the fresh nodes are attached (rich text needs layout to size its
+// hit target).
 
 function haloText(parent, x, y, text, size, color, weight = 500, extra = {}) {
   const t = svgEl('text', {
@@ -145,8 +196,35 @@ function labelPos(pts, t, off, side) {
   return [m[0] + nx * off * -side, m[1] + ny * off * -side];
 }
 
-function renderCard(el, parent) {
-  const g = svgEl('g', { 'data-id': el.id }, parent);
+// Object/segment label at anchor + user offset. Draggable via data-labelfor;
+// math labels render as overlay divs instead (ponytail: those aren't
+// draggable on canvas — move them from the panel offset if needed).
+function drawLabel(g, divs, owner, anchor, opts) {
+  if (owner.labelHide) return;
+  const text = resolveLabel(owner.label);
+  if (!text) return;
+  const off = owner.labelOff || [0, 0];
+  const p = [anchor[0] + off[0], anchor[1] + off[1]];
+  if (hasMath(text)) {
+    const div = document.createElement('div');
+    div.className = 'math-label';
+    div.style.left = `${p[0]}px`;
+    div.style.top = `${p[1]}px`;
+    div.style.font = `600 ${opts.size}px ${FONT}`;
+    div.style.color = opts.color;
+    div.innerHTML = richHTML(text);
+    divs.push(div);
+    return;
+  }
+  haloText(g, p[0], p[1], text, opts.size, opts.color, 600, {
+    'text-anchor': 'middle', 'dominant-baseline': 'middle',
+    'data-labelfor': opts.id, ...(opts.segi !== undefined ? { 'data-segi': opts.segi } : {}),
+    style: 'cursor:move',
+  });
+}
+
+function renderCard(el) {
+  const g = svgEl('g', { 'data-id': el.id });
   svgEl('rect', {
     x: el.x, y: el.y, width: el.w, height: el.h, rx: 10,
     fill: '#ffffff', stroke: CARD_STROKE, 'stroke-width': 1.25,
@@ -160,12 +238,13 @@ function renderCard(el, parent) {
   }, g);
   if (!el.title) t.setAttribute('data-ph', '1');
   t.textContent = title;
-  return g;
+  return { node: g };
 }
 
-function renderArrow(el, parent) {
+function renderArrow(el) {
+  const g = svgEl('g', { 'data-id': el.id });
   const a = byId(el.from), b = byId(el.to);
-  if (!a || !b) return;
+  if (!a || !b) return { node: g };
   const c1 = [a.x + a.w / 2, a.y + a.h / 2], c2 = [b.x + b.w / 2, b.y + b.h / 2];
   const p1 = rectEdgePoint(c1[0], c1[1], a.w, a.h, c2[0], c2[1]);
   let p2 = rectEdgePoint(c2[0], c2[1], b.w, b.h, c1[0], c1[1]);
@@ -173,7 +252,6 @@ function renderArrow(el, parent) {
   if (d > 8) { // back off so the arrowhead tip meets the card edge
     p2 = [p2[0] - (p2[0] - p1[0]) / d * 3, p2[1] - (p2[1] - p1[1]) / d * 3];
   }
-  const g = svgEl('g', { 'data-id': el.id }, parent);
   svgEl('line', {
     x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1],
     stroke: 'transparent', 'stroke-width': 14, 'data-hit': '1',
@@ -182,14 +260,18 @@ function renderArrow(el, parent) {
     x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1],
     stroke: '#55504a', 'stroke-width': 1.75, 'marker-end': 'url(#arrowHead)',
   }, g);
-  if (el.label) {
-    haloText(g, (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2 - 8, el.label, 12.5, '#55504a',
-      500, { 'text-anchor': 'middle' });
+  if (el.label && !el.labelHide) {
+    const off = el.labelOff || [0, 0];
+    haloText(g, (p1[0] + p2[0]) / 2 + off[0], (p1[1] + p2[1]) / 2 - 8 + off[1],
+      resolveLabel(el.label), 12.5, '#55504a', 500,
+      { 'text-anchor': 'middle', 'data-labelfor': el.id, style: 'cursor:move' });
   }
+  return { node: g };
 }
 
-function renderPath(el, parent) {
-  const g = svgEl('g', { 'data-id': el.id }, parent);
+function renderPath(el) {
+  const g = svgEl('g', { 'data-id': el.id });
+  const divs = [];
   const pts = ptsAttr(el.pts);
   const w = el.width || 2;
   const color = resolveColor(el.color);
@@ -211,19 +293,14 @@ function renderPath(el, parent) {
       points: sa, fill: 'none', stroke: segColor, 'stroke-width': w + 2.5,
       'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'data-seg': i,
     }, g);
-    if (seg.label) {
-      const m = labelPos(el.pts, (seg.t0 + seg.t1) / 2, 16, 1);
-      haloText(g, m[0], m[1], seg.label, 12, segColor, 600,
-        { 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
-    }
+    drawLabel(g, divs, seg, labelPos(el.pts, (seg.t0 + seg.t1) / 2, 16, 1),
+      { size: 12, color: segColor, id: el.id, segi: i });
   });
   capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, color, w);
   capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, color, w);
-  if (el.label) {
-    const m = labelPos(el.pts, len / 2, 14, -1);
-    haloText(g, m[0], m[1], el.label, 12.5, color, 600,
-      { 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
-  }
+  drawLabel(g, divs, el, labelPos(el.pts, len / 2, 14, -1),
+    { size: 12.5, color, id: el.id });
+  return { node: g, divs };
 }
 
 // Freehand ink: quadratic smoothing through midpoints.
@@ -239,65 +316,94 @@ export function inkD(pts) {
   return d;
 }
 
-function renderInk(el, parent) {
-  const g = svgEl('g', { 'data-id': el.id }, parent);
+// Anchor for the label of a bbox-shaped element: top-center, just above.
+const bboxLabelAnchor = el => {
+  const b = elementBBox(el);
+  return [(b[0] + b[2]) / 2, b[1] - 9];
+};
+
+function renderInk(el) {
+  const g = svgEl('g', { 'data-id': el.id });
+  const divs = [];
   const d = inkD(el.pts);
   svgEl('path', {
     d, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
   svgEl('path', { d, ...strokeAttrs(el) }, g);
+  drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
+  return { node: g, divs };
 }
 
-function renderEllipse(el, parent) {
-  const g = svgEl('g', { 'data-id': el.id }, parent);
+function renderEllipse(el) {
+  const g = svgEl('g', { 'data-id': el.id });
+  const divs = [];
   const base = { cx: el.cx, cy: el.cy, rx: el.rx, ry: el.ry };
   svgEl('ellipse', {
     ...base, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
-  const attrs = strokeAttrs(el);
-  svgEl('ellipse', { ...base, ...attrs }, g);
+  svgEl('ellipse', { ...base, ...strokeAttrs(el) }, g);
+  drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
+  return { node: g, divs };
 }
 
-function renderALine(el, parent) {
-  const g = svgEl('g', { 'data-id': el.id }, parent);
+function renderRect(el) {
+  const g = svgEl('g', { 'data-id': el.id });
+  const divs = [];
+  const base = { x: el.x, y: el.y, width: el.w, height: el.h, rx: el.r || 0 };
+  svgEl('rect', {
+    ...base, fill: 'none', stroke: 'transparent',
+    'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
+  }, g);
+  svgEl('rect', { ...base, ...strokeAttrs(el) }, g);
+  drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
+  return { node: g, divs };
+}
+
+function renderALine(el) {
+  const g = svgEl('g', { 'data-id': el.id });
+  const divs = [];
   const [a, b] = el.pts;
   const color = resolveColor(el.color);
   svgEl('line', {
     x1: a[0], y1: a[1], x2: b[0], y2: b[1],
     stroke: 'transparent', 'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
-  const attrs = strokeAttrs(el);
-  svgEl('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], ...attrs }, g);
+  svgEl('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], ...strokeAttrs(el) }, g);
   capGlyph(g, a, endDir(el.pts, 0), el.cap0, color, el.width || 2);
   capGlyph(g, b, endDir(el.pts, 1), el.cap1, color, el.width || 2);
+  drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color, id: el.id });
+  return { node: g, divs };
 }
 
-// Math notes: lines containing $…$ render through KaTeX in a foreignObject.
-// ponytail: exported SVGs show math correctly in browsers only if KaTeX CSS is
-// available; plain-text notes stay portable SVG <text>.
-function renderText(el, parent) {
-  const g = svgEl('g', { 'data-id': el.id }, parent);
+function renderText(el) {
+  const g = svgEl('g', { 'data-id': el.id });
   const color = resolveColor(el.color);
-  if (el.text.includes('$') && window.katex) {
-    const fo = svgEl('foreignObject', {
-      x: el.x, y: el.y - el.size * 1.1, width: 2000, height: 1000,
-      style: 'overflow:visible', 'pointer-events': 'none',
-    }, g);
+  if (isRichText(el)) {
+    const top = el.y - el.size * 1.15;
     const div = document.createElement('div');
-    div.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
-    div.style.cssText = `font:${el.size}px ${FONT};color:${color};line-height:1.3;` +
-      'white-space:pre-wrap;width:max-content;max-width:1000px;pointer-events:auto';
-    div.innerHTML = el.text.split('\n').map(line =>
-      line.replace(/\$([^$]+)\$/g, (_, tex) => {
-        try { return window.katex.renderToString(tex, { throwOnError: false }); }
-        catch { return tex; }
-      }) || '&nbsp;'
-    ).map(html => `<div>${html}</div>`).join('');
-    fo.appendChild(div);
-    return;
+    div.className = 'math-note';
+    div.style.left = `${el.x}px`;
+    div.style.top = `${top}px`;
+    div.style.font = `${el.size}px ${FONT}`;
+    div.style.color = color;
+    div.style.width = el.w ? `${el.w}px` : 'max-content';
+    div.innerHTML = richHTML(el.text);
+    // invisible SVG twin so clicks and marquees still find the note
+    const hit = svgEl('rect', {
+      x: el.x, y: top, width: el.w || el.size, height: el.size * 1.3,
+      fill: 'transparent', 'data-hit': '1',
+    }, g);
+    const measure = () => {
+      const w = el.w || div.offsetWidth, h = div.offsetHeight || el.size * 1.3;
+      richBoxes.set(el.id, [w, h]);
+      hit.setAttribute('width', w);
+      hit.setAttribute('height', h);
+    };
+    return { node: g, divs: [div], measure };
   }
+  richBoxes.delete(el.id);
   const t = svgEl('text', {
     x: el.x, y: el.y, 'font-size': el.size, 'font-family': FONT,
     fill: color, 'data-role': 'text-body',
@@ -306,7 +412,31 @@ function renderText(el, parent) {
     const span = svgEl('tspan', { x: el.x, dy: i === 0 ? 0 : el.size * 1.3 }, t);
     span.textContent = line || ' ';
   });
+  return { node: g };
 }
+
+const RENDERERS = {
+  card: renderCard, arrow: renderArrow, path: renderPath, ink: renderInk,
+  ellipse: renderEllipse, rect: renderRect, aline: renderALine, text: renderText,
+};
+
+// ---- node cache ----
+
+const nodeCache = new Map(); // id → { key, node, divs }
+
+// Cache key: the element's full JSON, plus whatever external data its pixels
+// depend on (palette/label slots for 'slot:' refs, endpoint cards for arrows).
+function elKey(el, salt) {
+  let key = JSON.stringify(el);
+  if (key.includes('slot:')) key += salt;
+  if (el.type === 'arrow') {
+    const a = byId(el.from), b = byId(el.to);
+    key += a && b ? `|${a.x},${a.y},${a.w},${a.h}|${b.x},${b.y},${b.w},${b.h}` : '|x';
+  }
+  return key;
+}
+
+export const invalidateRenderCache = () => nodeCache.clear();
 
 // ---- selection overlay ----
 
@@ -394,6 +524,8 @@ function renderSelection(overlay) {
 export function render() {
   const { tx, ty, s } = state.view;
   $('world').setAttribute('transform', `translate(${tx} ${ty}) scale(${s})`);
+  const mathLayer = $('mathLayer');
+  mathLayer.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
 
   // grid: cover the visible world rect, fade out when zoomed far away
   const svg = $('canvas');
@@ -408,24 +540,58 @@ export function render() {
   grid.setAttribute('opacity', s < 0.4 ? 0 : Math.min(1, (s - 0.4) / 0.2 + 0.35));
 
   // cards sit below everything; all other elements paint in doc order (z-order)
-  const cards = $('layer-cards'), draw = $('layer-draw');
-  cards.replaceChildren();
-  draw.replaceChildren();
+  const salt = JSON.stringify(state.doc.palette) + JSON.stringify(state.doc.labelSlots || []);
+  const cardNodes = [], drawNodes = [], divs = [], measures = [];
+  const seen = new Set();
   for (const el of state.doc.elements) {
-    if (el.type === 'card') renderCard(el, cards);
-    else if (el.type === 'arrow') renderArrow(el, draw);
-    else if (el.type === 'path') renderPath(el, draw);
-    else if (el.type === 'ink') renderInk(el, draw);
-    else if (el.type === 'ellipse') renderEllipse(el, draw);
-    else if (el.type === 'aline') renderALine(el, draw);
-    else if (el.type === 'text') renderText(el, draw);
+    const renderer = RENDERERS[el.type];
+    if (!renderer) continue;
+    seen.add(el.id);
+    const key = elKey(el, salt);
+    let entry = nodeCache.get(el.id);
+    if (!entry || entry.key !== key) {
+      entry = renderer(el);
+      entry.key = key;
+      nodeCache.set(el.id, entry);
+      if (entry.measure) measures.push(entry.measure);
+    }
+    (el.type === 'card' ? cardNodes : drawNodes).push(entry.node);
+    if (entry.divs) divs.push(...entry.divs);
   }
+  for (const id of [...nodeCache.keys()]) {
+    if (!seen.has(id)) { nodeCache.delete(id); richBoxes.delete(id); }
+  }
+  $('layer-cards').replaceChildren(...cardNodes);
+  $('layer-draw').replaceChildren(...drawNodes);
+  mathLayer.replaceChildren(...divs);
+  for (const m of measures) m(); // rich text sizes its hit rect post-layout
+
   const overlay = $('layer-overlay');
   overlay.replaceChildren();
   renderSelection(overlay);
 }
 
 // ---- SVG export ----
+
+// Rich text lives in the HTML overlay at runtime; exports rebuild it as
+// foreignObject, which browsers render fine (Tauri's WebKitGTK quirk is a
+// live-transform problem, not a file-format one).
+function exportRichText(el) {
+  const g = svgEl('g');
+  const box = richBoxes.get(el.id);
+  const fo = svgEl('foreignObject', {
+    x: el.x, y: el.y - el.size * 1.15,
+    width: el.w || box?.[0] || 2000, height: (box?.[1] || 1000) + 4,
+    style: 'overflow:visible',
+  }, g);
+  const div = document.createElement('div');
+  div.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+  div.style.cssText = `font:${el.size}px ${FONT};color:${resolveColor(el.color)};` +
+    `line-height:1.3;${el.w ? '' : 'width:max-content;'}`;
+  div.innerHTML = richHTML(el.text);
+  fo.appendChild(div);
+  return g;
+}
 
 export function exportSVGString() {
   const box = contentBBox();
@@ -441,6 +607,21 @@ export function exportSVGString() {
   out.appendChild(document.querySelector('#canvas defs').cloneNode(true));
   for (const id of ['layer-cards', 'layer-draw']) {
     out.appendChild($(id).cloneNode(true));
+  }
+  for (const el of state.doc.elements) {
+    const clone = out.querySelector(`[data-id="${el.id}"]`);
+    if (!clone) continue;
+    if (el.type === 'text' && isRichText(el)) {
+      clone.replaceChildren(...exportRichText(el).childNodes);
+    } else if (el.label && !el.labelHide && hasMath(resolveLabel(el.label))) {
+      // ponytail: math labels export as raw text; full KaTeX label export
+      // would need per-label foreignObjects — add if anyone asks
+      const b = elementBBox(el);
+      const off = el.labelOff || [0, 0];
+      haloText(clone, (b[0] + b[2]) / 2 + off[0], b[1] - 9 + off[1],
+        resolveLabel(el.label), 12.5, resolveColor(el.color) || '#2b2622', 600,
+        { 'text-anchor': 'middle' });
+    }
   }
   out.querySelectorAll('[data-hit], [data-ph]').forEach(n => n.remove());
   return new XMLSerializer().serializeToString(out);

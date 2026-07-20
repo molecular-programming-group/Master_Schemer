@@ -3,8 +3,8 @@ import {
   state, byId, beginChange, changed, addElement, isSelected, cloneElements, resolveColor,
 } from './model.js';
 import {
-  GRID, snap, snapPt, snapHalfPt, eq, dirOf, snap8, simplify, polylineLength,
-  nearestOnPath, pointAt, subPath, dist, rectsIntersect,
+  GRID, snap, snapPt, snapHalf, snapHalfPt, eq, dirOf, snap8, simplify, polylineLength,
+  nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex,
 } from './geom.js';
 import { svgEl, SEL, inkD, worldToScreen, elementBBox } from './render.js';
 
@@ -46,6 +46,7 @@ export function startInlineEdit(el, opts) {
   node.value = opts.value ?? el[opts.field] ?? '';
   node.style.left = `${sp[0] - 4}px`;
   node.style.top = `${sp[1] - 4}px`;
+  if (opts.width) node.style.width = `${opts.width * s + 8}px`;
   node.style.fontSize = `${opts.size * s}px`;
   node.style.fontWeight = opts.weight || 400;
   node.style.color = opts.color || '#2b2622';
@@ -78,7 +79,7 @@ export function editElementText(el) {
   if (el.type === 'text') {
     startInlineEdit(el, {
       field: 'text', multiline: true, size: el.size, color: resolveColor(el.color),
-      world: [el.x, el.y - el.size],
+      world: [el.x, el.y - el.size], width: el.w,
       onDone: v => {
         if (v === null || v === el.text) return changed();
         beginChange();
@@ -103,11 +104,12 @@ export function editElementText(el) {
   }
 }
 
-function createTextAt(wp) {
+function createTextAt(wp, w) {
   const el = { type: 'text', x: wp[0], y: wp[1], text: '', size: 14, color: state.color };
+  if (w) el.w = w; // wrap box: text folds at this width
   startInlineEdit(el, {
     field: 'text', multiline: true, size: el.size, color: resolveColor(el.color),
-    world: [el.x, el.y - el.size], value: '',
+    world: [el.x, el.y - el.size], value: '', width: w,
     onDone: v => {
       if (!v || v.trim() === '') return;
       beginChange();
@@ -198,12 +200,12 @@ function beginExtend(el, end) {
 function moveExtend(wp) {
   const pts = drag.pts;
   const a = pts[pts.length - 2], prov = pts[pts.length - 1];
-  const p = snap8(a, wp);
+  const p = snap8(a, wp, GRID / 2);
   const dNew = dirOf(a, p), dProv = dirOf(a, prov);
   if (eq(prov, a) || eq(p, a) || (dNew[0] === dProv[0] && dNew[1] === dProv[1])) {
     pts[pts.length - 1] = p;
   } else {
-    const q = snap8(prov, wp);
+    const q = snap8(prov, wp, GRID / 2);
     if (!eq(q, prov)) pts.push(q);
   }
   clearPreview();
@@ -260,6 +262,20 @@ export const tools = {
         };
         return;
       }
+      // dragging a selected object's label repositions the label, not the object
+      const lab = t.closest?.('[data-labelfor]');
+      if (lab) {
+        const id = lab.getAttribute('data-labelfor');
+        const segAttr = lab.getAttribute('data-segi');
+        const owner = byId(id);
+        if (owner && (isSelected(id, undefined) || (segAttr !== null && isSelected(id, +segAttr)))) {
+          const target = segAttr !== null ? owner.segments?.[+segAttr] : owner;
+          if (target) {
+            drag = { mode: 'label', target, start: wp, orig: target.labelOff || [0, 0] };
+            return;
+          }
+        }
+      }
       const group = t.closest?.('[data-id]');
       if (group) {
         const id = group.getAttribute('data-id');
@@ -272,7 +288,12 @@ export const tools = {
           changed();
           return;
         }
-        if (!isSelected(entry.id, entry.seg)) state.selection = [entry];
+        if (!isSelected(entry.id, entry.seg)) {
+          // clicking a group member picks up the whole group
+          state.selection = (entry.seg === undefined && el?.group)
+            ? state.doc.elements.filter(x => x.group === el.group).map(x => ({ id: x.id }))
+            : [entry];
+        }
         changed();
         // Ctrl+drag clones the selection and moves the copies
         if (e.ctrlKey || e.metaKey) {
@@ -321,8 +342,17 @@ export const tools = {
         changed();
         return;
       }
+      if (drag.mode === 'label') {
+        began();
+        drag.target.labelOff = [
+          r1(drag.orig[0] + wp[0] - drag.start[0]),
+          r1(drag.orig[1] + wp[1] - drag.start[1]),
+        ];
+        changed();
+        return;
+      }
       if (drag.mode === 'move') {
-        const dx = snap(wp[0] - drag.start[0]), dy = snap(wp[1] - drag.start[1]);
+        const dx = snapHalf(wp[0] - drag.start[0]), dy = snapHalf(wp[1] - drag.start[1]);
         if (dx === 0 && dy === 0 && !drag.began) return;
         began();
         for (const it of drag.items) applyDelta(it.el, it.orig, dx, dy);
@@ -387,7 +417,7 @@ export const tools = {
         if (dist(wp, el.pts[0]) <= threshold) return beginExtend(el, 0);
         if (dist(wp, el.pts[el.pts.length - 1]) <= threshold) return beginExtend(el, 1);
       }
-      const a = snapPt(wp);
+      const a = snapHalfPt(wp); // lines live on the half-grid lattice
       drag = { pts: [a, [a[0], a[1]]] };
     },
     move(e, wp) {
@@ -395,13 +425,13 @@ export const tools = {
       if (drag.mode === 'extend') { moveExtend(wp); return; }
       const pts = drag.pts;
       const a = pts[pts.length - 2], prov = pts[pts.length - 1];
-      const p = snap8(a, wp);
+      const p = snap8(a, wp, GRID / 2);
       const dNew = dirOf(a, p), dProv = dirOf(a, prov);
       if (eq(prov, a) || eq(p, a) || (dNew[0] === dProv[0] && dNew[1] === dProv[1])) {
         pts[pts.length - 1] = p;
       } else {
         // direction changed: the provisional point becomes a committed corner
-        const q = snap8(prov, wp);
+        const q = snap8(prov, wp, GRID / 2);
         if (!eq(q, prov)) pts.push(q);
       }
       clearPreview();
@@ -464,7 +494,7 @@ export const tools = {
   },
 
   edit: {
-    hint: 'Click a line to select it · drag a square handle to reshape its path',
+    hint: 'Click a line to select it · drag a square handle to reshape · click the selected line to add a vertex',
     down(e, wp) {
       const v = e.target.closest?.('[data-vertex]');
       if (v) {
@@ -472,13 +502,23 @@ export const tools = {
         return;
       }
       const hit = nearestPath(wp);
+      // clicking the already-selected line inserts a vertex there and grabs it
+      if (hit && isSelected(hit.el.id, undefined)) {
+        beginChange();
+        const t = nearestOnPath(hit.el.pts, wp).t;
+        const i = insertIndex(hit.el.pts, t);
+        hit.el.pts.splice(i, 0, snapHalfPt(pointAt(hit.el.pts, t)));
+        drag = { mode: 'vertex', el: hit.el, i, began: true };
+        changed();
+        return;
+      }
       state.selection = hit ? [{ id: hit.el.id }] : [];
       changed();
     },
     move(e, wp) {
       if (!drag) return;
       began();
-      drag.el.pts[drag.i] = snapPt(wp);
+      drag.el.pts[drag.i] = snapHalfPt(wp);
       changed();
     },
     up() {
@@ -629,17 +669,75 @@ export const tools = {
     },
   },
 
+  rect: {
+    hint: 'Drag to draw a rectangle annotation · round its corners from the panel',
+    down(e, wp) {
+      drag = { a: wp };
+    },
+    move(e, wp) {
+      if (!drag) return;
+      drag.b = wp;
+      clearPreview();
+      const [a, b] = [drag.a, wp];
+      svgEl('rect', {
+        x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]),
+        width: Math.abs(b[0] - a[0]), height: Math.abs(b[1] - a[1]),
+        fill: 'none', stroke: resolveColor(state.color), 'stroke-width': state.width,
+      }, preview());
+    },
+    up(e, wp) {
+      if (!drag) return;
+      const a = drag.a, b = drag.b || wp;
+      drag = null;
+      clearPreview();
+      const w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
+      if (w < 4 && h < 4) { changed(); return; }
+      beginChange();
+      const el = addElement({
+        type: 'rect', x: r1(Math.min(a[0], b[0])), y: r1(Math.min(a[1], b[1])),
+        w: r1(Math.max(w, 4)), h: r1(Math.max(h, 4)), r: 0,
+        color: state.color, width: state.width,
+      });
+      state.selection = [{ id: el.id }];
+      changed();
+    },
+  },
+
   aline: { hint: 'Drag to draw a free line annotation — not locked to the grid' },
   aarrow: { hint: 'Drag to draw an arrow annotation — not locked to the grid' },
 
   text: {
-    hint: 'Click to place a note · wrap math in $…$ for LaTeX · Ctrl+Enter or click away to finish',
+    hint: 'Click to place a note — or drag a box to set its wrap width · $math$ for LaTeX',
     // editor opens on pointerup: opening on pointerdown gets blurred by the
     // browser's default mousedown focus handling before typing can start
-    down() {},
-    move() {},
+    down(e, wp) {
+      drag = { a: wp };
+    },
+    move(e, wp) {
+      if (!drag) return;
+      drag.b = wp;
+      if (Math.abs(wp[0] - drag.a[0]) < GRID) { clearPreview(); return; }
+      clearPreview();
+      const [a, b] = [drag.a, wp];
+      svgEl('rect', {
+        x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]),
+        width: Math.abs(b[0] - a[0]), height: Math.abs(b[1] - a[1]),
+        fill: 'none', stroke: SEL, 'stroke-width': 1 / state.view.s,
+        'stroke-dasharray': `${4 / state.view.s}`,
+      }, preview());
+    },
     up(e, wp) {
-      createTextAt(snapPt(wp));
+      const a = drag?.a, b = drag?.b;
+      drag = null;
+      clearPreview();
+      if (a && b && Math.abs(b[0] - a[0]) >= 2 * GRID) {
+        // dragged a box: the note wraps at its width
+        const x = snapHalf(Math.min(a[0], b[0]));
+        const yTop = snapHalf(Math.min(a[1], b[1]));
+        createTextAt([x, yTop + 14], snapHalf(Math.abs(b[0] - a[0])));
+      } else {
+        createTextAt(snapPt(wp));
+      }
     },
   },
 };
