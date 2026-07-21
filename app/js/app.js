@@ -7,13 +7,24 @@ import {
 } from './model.js';
 import { GRID, mergePaths, rot90, flipPt, snapHalf } from './geom.js';
 import {
-  render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, dataView,
+  render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView,
 } from './render.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
 
 const $ = id => document.getElementById(id);
 const svg = $('canvas');
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// Brief floating acknowledgement (e.g. after a save), fades on its own.
+let toastTimer = null;
+function toast(msg) {
+  let el = $('toast');
+  if (!el) { el = document.createElement('div'); el.id = 'toast'; document.body.appendChild(el); }
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1600);
+}
 
 // ---- refresh pipeline ----
 
@@ -99,6 +110,18 @@ svg.addEventListener('pointerup', e => {
 
 svg.addEventListener('dblclick', e => {
   if (state.tool === 'select') tools.select.dbl(e);
+});
+
+// Drop a library asset onto the canvas at the cursor.
+svg.addEventListener('dragover', e => {
+  if (e.dataTransfer.types.includes('text/asset-id')) e.preventDefault();
+});
+svg.addEventListener('drop', e => {
+  const id = e.dataTransfer.getData('text/asset-id');
+  if (!id) return;
+  e.preventDefault();
+  const asset = library.find(a => a.id === id);
+  if (asset) placeAsset(asset, screenToWorld(eventScreen(e)));
 });
 
 svg.addEventListener('contextmenu', e => e.preventDefault());
@@ -304,7 +327,18 @@ function linkTargetsFromSelection() {
   return null;
 }
 
+// Identity of a link endpoint, so we can spot a link that already spans the
+// same two targets (in either order).
+const linkKey = t => (t.group ? `g:${t.group}` : `e:${t.id}${t.seg !== undefined ? `.${t.seg}` : ''}`);
+function findLink(a, b) {
+  const ka = linkKey(a), kb = linkKey(b);
+  return state.doc.elements.find(el => el.type === 'link' &&
+    ((linkKey(el.a) === ka && linkKey(el.b) === kb) ||
+     (linkKey(el.a) === kb && linkKey(el.b) === ka)));
+}
+
 function createLink(targets) {
+  if (findLink(targets[0], targets[1])) return; // never stack a second link on the same pair
   beginChange();
   const el = addElement({
     type: 'link', a: targets[0], b: targets[1],
@@ -325,6 +359,8 @@ window.addEventListener('keydown', e => {
     if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
     else if (k === 'y') { e.preventDefault(); redo(); }
     else if (k === 's') { e.preventDefault(); saveJSON(e.shiftKey); }
+    else if (k === 'c') { e.preventDefault(); copySelection(); }
+    else if (k === 'v') { e.preventDefault(); pasteClipboard(); }
     else if (k === 'e') { e.preventDefault(); exportSVG(); }
     else if (k === 'o') { e.preventDefault(); openFile(); }
     else if (k === 'g') { e.preventDefault(); e.shiftKey ? ungroupSelection() : groupSelection(); }
@@ -390,12 +426,26 @@ function displayName(el, i) {
   return label || `${names[el.type] || el.type} ${i + 1}`;
 }
 
+// A line's domain string: its segments' `string` fields concatenated in path
+// order. Derived (never stored), so it always reflects the current segments.
+const domainString = el => (el.segments || [])
+  .slice().sort((a, b) => a.t0 - b.t0).map(s => s.string || '').join('');
+
 // Inline rename on double-click; single click selects.
-function sideItem({ depth, name, color, selected, onSelect, onRename }) {
+function sideItem({ depth, name, color, selected, onSelect, onRename, collapsible, collapsed, onToggle }) {
   const row = document.createElement('div');
   row.className = 'side-item';
   row.style.paddingLeft = `${8 + depth * 14}px`;
   if (selected) row.setAttribute('aria-current', 'true');
+  // caret column: a toggle for parents, an empty spacer for leaves (keeps labels aligned)
+  const caret = document.createElement('span');
+  caret.className = 'side-caret';
+  if (collapsible) {
+    caret.classList.add('is-toggle');
+    caret.textContent = collapsed ? '▸' : '▾';
+    caret.addEventListener('click', e => { e.stopPropagation(); onToggle(); });
+  }
+  row.appendChild(caret);
   if (color) {
     const dot = document.createElement('span');
     dot.className = 'seg-dot';
@@ -448,6 +498,30 @@ function sideItem({ depth, name, color, selected, onSelect, onRename }) {
   return row;
 }
 
+// Which sidebar parents are collapsed (persisted, keyed g:/c:/p:<id>).
+let sideCollapsed = new Set();
+try { sideCollapsed = new Set(JSON.parse(localStorage.getItem('master-schemer-collapsed') || '[]')); }
+catch { sideCollapsed = new Set(); }
+function toggleCollapse(key) {
+  if (sideCollapsed.has(key)) sideCollapsed.delete(key); else sideCollapsed.add(key);
+  try { localStorage.setItem('master-schemer-collapsed', JSON.stringify([...sideCollapsed])); } catch { /* full */ }
+  renderSidebar();
+}
+
+// Append a parent row; return a child container to fill (null when it has no
+// children or is collapsed, so callers just skip rendering the subtree).
+function parentNode(into, key, opts, hasChildren) {
+  if (!hasChildren) { const row = sideItem(opts); into.appendChild(row); return { row, box: null }; }
+  const collapsed = sideCollapsed.has(key);
+  const row = sideItem({ ...opts, collapsible: true, collapsed, onToggle: () => toggleCollapse(key) });
+  into.appendChild(row);
+  if (collapsed) return { row, box: null };
+  const box = document.createElement('div');
+  box.className = 'side-children';
+  into.appendChild(box);
+  return { row, box };
+}
+
 function segItems(el, depth, into) {
   (el.segments || []).forEach((seg, i) => {
     into.appendChild(sideItem({
@@ -462,14 +536,16 @@ function segItems(el, depth, into) {
 function objectItems(els, depth, into) {
   els.forEach(el => {
     const i = state.doc.elements.indexOf(el);
-    into.appendChild(sideItem({
+    const opts = {
       depth, name: displayName(el, i),
       color: el.color !== undefined ? resolveColor(el.color) : null,
       selected: state.selection.some(s => s.id === el.id && s.seg === undefined),
       onSelect: () => { state.selection = [{ id: el.id }]; refresh(); },
       onRename: v => { setLabel(el, v); },
-    }));
-    if (el.type === 'path') segItems(el, depth + 1, into);
+    };
+    const segs = el.type === 'path' && (el.segments || []).length;
+    const { box } = parentNode(into, `p:${el.id}`, opts, segs);
+    if (box) segItems(el, depth + 1, box);
   });
 }
 
@@ -478,17 +554,19 @@ function objectItems(els, depth, into) {
 function renderGroupTree(gid, depth, into, placed) {
   const g = byGroup(gid);
   const members = groupElementMembers(gid);
-  into.appendChild(sideItem({
+  members.forEach(m => placed.add(m.id)); // claim the whole subtree even when collapsed
+  const direct = state.doc.elements.filter(el => el.group === gid);
+  const { row, box } = parentNode(into, `g:${gid}`, {
     depth, name: g.name || 'group', color: null,
     selected: members.length > 0 &&
       members.every(m => state.selection.some(s => s.id === m.id && s.seg === undefined)),
     onSelect: () => { state.selection = members.map(m => ({ id: m.id })); refresh(); },
     onRename: v => { g.name = v; },
-  })).classList.add('side-card');
-  for (const cg of childGroups(gid)) renderGroupTree(cg.id, depth + 1, into, placed);
-  const direct = state.doc.elements.filter(el => el.group === gid);
-  direct.forEach(el => placed.add(el.id));
-  objectItems(direct, depth + 1, into);
+  }, childGroups(gid).length || direct.length);
+  row.classList.add('side-card');
+  if (!box) return;
+  for (const cg of childGroups(gid)) renderGroupTree(cg.id, depth + 1, box, placed);
+  objectItems(direct, depth + 1, box);
 }
 
 function renderSidebar() {
@@ -500,20 +578,41 @@ function renderSidebar() {
   const tracked = els.filter(el => el.type !== 'card' && el.type !== 'arrow' && isSemantic(el));
   const placed = new Set();
 
-  // user groups first: the explicit hierarchy, nested to any depth
-  for (const g of topLevelGroups()) renderGroupTree(g.id, 0, body, placed);
+  // A top-level group nests under a card when every one of its members lives on
+  // that card; a group straddling the card border stays at canvas top level.
+  const cardOfGroup = g => {
+    const m = groupElementMembers(g.id);
+    if (!m.length) return null;
+    return cards.find(c => { const inside = cardContents(c); return m.every(x => inside.includes(x)); }) || null;
+  };
+  const groupsByCard = new Map();
+  const looseGroups = [];
+  for (const g of topLevelGroups()) {
+    const c = cardOfGroup(g);
+    if (c) { const arr = groupsByCard.get(c.id) || []; arr.push(g); groupsByCard.set(c.id, arr); }
+    else looseGroups.push(g);
+  }
+
+  // top-level groups not tied to a card: the explicit hierarchy, nested to any depth
+  for (const g of looseGroups) renderGroupTree(g.id, 0, body, placed);
 
   for (const card of cards) {
     if (placed.has(card.id)) continue;
-    body.appendChild(sideItem({
+    const groupsHere = groupsByCard.get(card.id) || [];
+    for (const g of groupsHere) groupElementMembers(g.id).forEach(m => placed.add(m.id));
+    const inside = cardContents(card).filter(el => tracked.includes(el) && !placed.has(el.id));
+    inside.forEach(el => placed.add(el.id)); // claim before the collapse check, so collapsing hides them
+    const { row, box } = parentNode(body, `c:${card.id}`, {
       depth: 0, name: displayName(card), color: null,
       selected: state.selection.some(s => s.id === card.id),
       onSelect: () => { state.selection = [{ id: card.id }]; refresh(); },
       onRename: v => { card.title = v; },
-    })).classList.add('side-card');
-    const inside = cardContents(card).filter(el => tracked.includes(el) && !placed.has(el.id));
-    inside.forEach(el => placed.add(el.id));
-    objectItems(inside, 1, body);
+    }, groupsHere.length + inside.length);
+    row.classList.add('side-card');
+    if (box) {
+      for (const g of groupsHere) renderGroupTree(g.id, 1, box, placed);
+      objectItems(inside, 1, box);
+    }
   }
   const loose = tracked.filter(el => !placed.has(el.id));
   if (loose.length && (cards.length || state.doc.groups.length)) {
@@ -540,6 +639,22 @@ try { library = JSON.parse(localStorage.getItem(LIB_KEY) || '[]'); } catch { lib
 const saveLibrary = () => {
   try { localStorage.setItem(LIB_KEY, JSON.stringify(library)); } catch { /* full/blocked */ }
 };
+
+// One-time starter assets: glowing fluorophore dots. Seeded once (tracked by a
+// flag) so deleting them sticks and they don't reappear on reload.
+const fluorAsset = (color, name) => ({
+  id: newId(), name,
+  elements: [{ type: 'ellipse', id: newId(), cx: 0, cy: 0, rx: 16, ry: 16, glow: true, fill: color, color, width: 0 }],
+  groups: [],
+});
+try {
+  const SEED_KEY = 'master-schemer-lib-seeded';
+  if (!localStorage.getItem(SEED_KEY)) {
+    library.unshift(fluorAsset('#2fd15a', 'fluorophore (green)'), fluorAsset('#ff3b3b', 'fluorophore (red)'));
+    localStorage.setItem(SEED_KEY, '1');
+    saveLibrary();
+  }
+} catch { /* storage blocked — skip seeding */ }
 
 function assetFromSelection() {
   const ids = new Set();
@@ -574,13 +689,16 @@ function assetFromSelection() {
   $('hint').textContent = 'Saved to library — double-click its entry to rename it.';
 }
 
-function placeAsset(asset) {
-  beginChange();
-  const els = JSON.parse(JSON.stringify(asset.elements));
+// Deep-copy a set of elements + their groups into the doc with fresh ids,
+// remapping internal arrow/link/group references. `positioner(solidEls)` (run
+// after they land, so link bboxes resolve) places the copies. Caller wraps this
+// in beginChange(). Selects the placed non-arrow elements.
+function insertElements(srcElements, srcGroups, positioner) {
+  const els = JSON.parse(JSON.stringify(srcElements));
   const idMap = new Map();
   for (const el of els) { const nid = newId(); idMap.set(el.id, nid); el.id = nid; }
   const groupMap = new Map();
-  for (const g of asset.groups || []) {
+  for (const g of srcGroups || []) {
     const ng = { id: newId(), name: g.name };
     state.doc.groups.push(ng);
     groupMap.set(g.id, ng.id);
@@ -603,16 +721,57 @@ function placeAsset(asset) {
   });
   state.doc.elements.push(...placed);
   const solid = placed.filter(el => el.type !== 'arrow');
-  const box = combinedBBox(solid);
-  if (box) {
-    const c = screenToWorld([svg.clientWidth / 2, svg.clientHeight / 2]);
-    const dx = snapHalf(c[0] - (box[0] + box[2]) / 2);
-    const dy = snapHalf(c[1] - (box[1] + box[3]) / 2);
-    for (const el of solid) shiftEl(el, dx, dy);
-  }
+  positioner(solid);
   pruneGroups();
   state.selection = solid.map(el => ({ id: el.id }));
   changed();
+}
+
+function placeAsset(asset, atWorld) {
+  beginChange();
+  insertElements(asset.elements, asset.groups, solid => {
+    const box = combinedBBox(solid);
+    if (box) {
+      const c = atWorld || screenToWorld([svg.clientWidth / 2, svg.clientHeight / 2]);
+      const dx = snapHalf(c[0] - (box[0] + box[2]) / 2);
+      const dy = snapHalf(c[1] - (box[1] + box[3]) / 2);
+      for (const el of solid) shiftEl(el, dx, dy);
+    }
+  });
+}
+
+// ---- clipboard (copy/paste within the doc, keeps palette/label slot refs) ----
+
+let clipboard = null;
+let pasteCount = 0;
+
+function copySelection() {
+  const ids = new Set();
+  for (const s of state.selection) {
+    if (s.seg !== undefined) continue;
+    const el = byId(s.id);
+    if (!el) continue;
+    ids.add(el.id);
+    if (el.type === 'card') for (const c of cardContents(el)) ids.add(c.id);
+    if (el.group) for (const m of state.doc.elements) if (m.group === el.group) ids.add(m.id);
+  }
+  if (!ids.size) { $('hint').textContent = 'Select something first, then copy it.'; return; }
+  const els = state.doc.elements.filter(el => ids.has(el.id))
+    .map(el => JSON.parse(JSON.stringify(el)));
+  const groups = state.doc.groups.filter(g => els.some(el => el.group === g.id)).map(g => ({ ...g }));
+  clipboard = { elements: els, groups };
+  pasteCount = 0;
+  $('hint').textContent = `Copied ${els.length} object${els.length === 1 ? '' : 's'}.`;
+}
+
+function pasteClipboard() {
+  if (!clipboard) return;
+  beginChange();
+  const off = GRID * ++pasteCount; // each paste steps further so copies don't stack
+  insertElements(clipboard.elements, clipboard.groups, solid => {
+    for (const el of solid) shiftEl(el, off, off);
+  });
+  $('hint').textContent = 'Pasted.';
 }
 
 async function exportLibrary() {
@@ -660,6 +819,36 @@ async function importLibrary() {
   }
 }
 
+// Tiny geometry-only preview of an asset's shapes (no text/link glyphs, flat
+// fills — glows show as a solid dot). Scaled to fit a fixed thumbnail box.
+const SVGNS = 'http://www.w3.org/2000/svg';
+function assetThumbnail(asset) {
+  const svgt = document.createElementNS(SVGNS, 'svg');
+  svgt.setAttribute('class', 'lib-thumb');
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const acc = (x, y) => { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; };
+  const mk = attrs => { const n = document.createElementNS(SVGNS, attrs.tag); for (const k in attrs) if (k !== 'tag') n.setAttribute(k, attrs[k]); svgt.appendChild(n); };
+  for (const el of asset.elements) {
+    const stroke = el.color || '#55504a', sw = el.width || 2;
+    if (el.type === 'ellipse') {
+      acc(el.cx - el.rx, el.cy - el.ry); acc(el.cx + el.rx, el.cy + el.ry);
+      mk({ tag: 'ellipse', cx: el.cx, cy: el.cy, rx: el.rx, ry: el.ry,
+        fill: el.glow ? (el.fill || stroke) : (el.fill || 'none'), stroke: el.glow ? 'none' : stroke, 'stroke-width': sw });
+    } else if (el.type === 'rect' || el.type === 'card') {
+      acc(el.x, el.y); acc(el.x + el.w, el.y + el.h);
+      mk({ tag: 'rect', x: el.x, y: el.y, width: el.w, height: el.h, rx: el.r || 0,
+        fill: el.type === 'card' ? (el.fill || '#ffffff') : (el.fill || 'none'), stroke, 'stroke-width': sw });
+    } else if (Array.isArray(el.pts) && el.pts.length) {
+      for (const p of el.pts) acc(p[0], p[1]);
+      mk({ tag: 'polyline', points: el.pts.map(p => p.join(',')).join(' '), fill: 'none', stroke, 'stroke-width': sw });
+    }
+  }
+  if (!isFinite(x0)) { x0 = 0; y0 = 0; x1 = 1; y1 = 1; }
+  const pad = Math.max(4, (x1 - x0 + y1 - y0) * 0.08);
+  svgt.setAttribute('viewBox', `${x0 - pad} ${y0 - pad} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad}`);
+  return svgt;
+}
+
 function renderLibrary() {
   const body = $('libraryBody');
   if (body.contains(document.activeElement)) return; // mid-rename
@@ -670,7 +859,10 @@ function renderLibrary() {
       onSelect: () => placeAsset(asset),
       onRename: v => { asset.name = v; saveLibrary(); },
     });
-    row.title = 'Click to place · double-click to rename';
+    row.insertBefore(assetThumbnail(asset), row.querySelector('.side-name'));
+    row.draggable = true;
+    row.addEventListener('dragstart', e => e.dataTransfer.setData('text/asset-id', asset.id));
+    row.title = 'Click or drag onto the canvas to place · double-click to rename';
     const del = document.createElement('button');
     del.className = 'side-del';
     del.textContent = '×';
@@ -749,12 +941,22 @@ function colorTargets() {
   return out;
 }
 
-function applyColor(c) {
+// Apply a colour to the selection. When `slot` carries a pattern combo, the
+// slot's pattern (+bg/scale) is applied too, so a slot can be a remembered
+// colour+pattern preset. A slot with no pattern leaves the target's pattern be.
+function applyColor(c, slot) {
   state.color = c;
   const targets = colorTargets();
   if (targets.length) {
     beginChange();
-    for (const t of targets) t.color = c;
+    for (const t of targets) {
+      t.color = c;
+      if (slot && slot.pattern) {
+        t.pattern = slot.pattern;
+        if (slot.patternBg) t.patternBg = slot.patternBg; else delete t.patternBg;
+        if (slot.patternScale != null) t.patternScale = slot.patternScale; else delete t.patternScale;
+      }
+    }
     changed();
   } else refresh();
   renderPanel();
@@ -927,7 +1129,7 @@ function paletteSection() {
     if (currentColor() === `slot:${slot.id}`) b.setAttribute('aria-pressed', 'true');
     b.addEventListener('click', () => {
       if (state.color === `slot:${slot.id}` || activeSlot === slot.id) activeSlot = slot.id;
-      applyColor(`slot:${slot.id}`);
+      applyColor(`slot:${slot.id}`, slot);
     });
     b.addEventListener('dblclick', () => { activeSlot = slot.id; renderPanel(); });
     slotsWrap.appendChild(b);
@@ -975,7 +1177,8 @@ function paletteSection() {
       activeSlot = null;
       changed();
     });
-    ed.append(fieldRow('Slot color', slotPick), fieldRow('Slot name', nInput), del);
+    ed.append(fieldRow('Slot color', slotPick), fieldRow('Slot name', nInput),
+      patternControls(slot, `slot:${slot.id}`), del);
     sec.appendChild(ed);
   }
   return sec;
@@ -1023,6 +1226,119 @@ function selectControl(options, get, set) {
   }
   node.value = get();
   node.addEventListener('change', () => { beginChange(); set(node.value); changed(); });
+  return node;
+}
+
+// Like selectControl but option values and display labels differ ({value: label}).
+function mappedSelect(map, get, set) {
+  const node = document.createElement('select');
+  for (const [val, label] of Object.entries(map)) {
+    const opt = document.createElement('option');
+    opt.value = val; opt.textContent = label;
+    node.appendChild(opt);
+  }
+  node.value = get();
+  node.addEventListener('change', () => { beginChange(); set(node.value); changed(); });
+  return node;
+}
+
+// Range slider bound to a live doc value (min/max/step configurable).
+function rangeControl(get, set, { min = 0, max = 1, step = 0.1 } = {}) {
+  const node = document.createElement('input');
+  node.type = 'range';
+  node.min = min; node.max = max; node.step = step;
+  node.value = get();
+  let editing = false;
+  node.addEventListener('input', () => {
+    if (!editing) { beginChange(); editing = true; }
+    set(+node.value);
+    render();
+  });
+  node.addEventListener('change', () => { if (editing) { editing = false; changed(); } });
+  return node;
+}
+
+// Pattern kind + (when patterned) a second colour and lattice-scale slider.
+// Works on any object with .pattern/.patternBg/.patternScale (element or segment).
+// `fg` is the object's own colour, shown only via render — the bg defaults to
+// transparent (canvas shows through) until a colour is picked.
+function patternControls(obj, key) {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(fieldRow('Pattern', mappedSelect(
+    PATTERNS,
+    () => obj.pattern || 'none',
+    v => { if (v === 'none') delete obj.pattern; else obj.pattern = v; })));
+  if (obj.pattern && obj.pattern !== 'none') {
+    frag.appendChild(fieldRow('Pattern bg', patternBgControl(obj, key)));
+    frag.appendChild(fieldRow('Pattern scale', rangeControl(
+      () => obj.patternScale ?? 1,
+      v => { obj.patternScale = v; },
+      { min: 0.5, max: 4, step: 0.25 })));
+  }
+  return frag;
+}
+
+// Pattern-background chooser: transparent (the default) + memory-slot swatches +
+// a custom picker. Stored as a colour ref (hex or slot:<id>) resolved at paint,
+// so a slot-backed bg recolours live when the slot changes.
+function patternBgControl(obj, key) {
+  const wrap = document.createElement('div');
+  const row = document.createElement('div');
+  row.className = 'swatches';
+  const swatch = (bg, title, active, onPick) => {
+    const b = document.createElement('button');
+    b.className = bg ? 'swatch slot' : 'swatch swatch-none';
+    if (bg) b.style.background = bg;
+    b.title = title;
+    if (active) b.setAttribute('aria-pressed', 'true');
+    b.addEventListener('click', () => { beginChange(); onPick(); changed(); });
+    return b;
+  };
+  row.appendChild(swatch(null, 'Transparent', !obj.patternBg, () => { delete obj.patternBg; }));
+  for (const slot of state.doc.palette) {
+    row.appendChild(swatch(slot.color, slot.name || 'slot',
+      obj.patternBg === `slot:${slot.id}`, () => { obj.patternBg = `slot:${slot.id}`; }));
+  }
+  wrap.appendChild(row);
+  wrap.appendChild(colorPicker(`patbg:${key}`,
+    () => (/^#[0-9a-f]{6}$/i.test(obj.patternBg || '') ? obj.patternBg : '#ffffff'),
+    Object.assign(hex => { obj.patternBg = hex; render(); }, { begin: beginChange }),
+    changed));
+  return wrap;
+}
+
+// Range + number pair bound to a live doc value (e.g. grid-snappy corner radius).
+function sliderNum(get, set, { min = 0, max = 100, step = 1 } = {}) {
+  const row = document.createElement('div');
+  row.className = 'width-row';
+  const range = document.createElement('input');
+  range.type = 'range';
+  range.min = min; range.max = max; range.step = step; range.value = get();
+  const num = document.createElement('input');
+  num.type = 'number';
+  num.min = min; num.max = max; num.step = step; num.value = get();
+  let editing = false;
+  range.addEventListener('input', () => {
+    if (!editing) { beginChange(); editing = true; }
+    set(+range.value); num.value = range.value; render();
+  });
+  range.addEventListener('change', () => { if (editing) { editing = false; changed(); } });
+  num.addEventListener('change', () => {
+    const v = clamp(+num.value || 0, min, max);
+    num.value = v; range.value = v;
+    beginChange(); set(v); changed();
+  });
+  row.append(range, num);
+  return row;
+}
+
+// Read-only display field (derived values the user can see but not edit).
+function readOnlyField(value) {
+  const node = document.createElement('input');
+  node.type = 'text';
+  node.value = value;
+  node.readOnly = true;
+  node.tabIndex = -1;
   return node;
 }
 
@@ -1116,6 +1432,7 @@ function fillControl(el, { label = 'Fill', optional = true } = {}) {
       Object.assign(hex => { el.fill = hex; render(); }, { begin: beginChange }),
       changed);
     frag.appendChild(fieldRow(`${label} colour`, pick));
+    frag.appendChild(patternControls(el, `fill:${el.id}`));
   }
   return frag;
 }
@@ -1204,6 +1521,13 @@ function renderPanel() {
         CAPS, () => el.cap1 || 'none', v => { el.cap1 = v; })));
       styleSec.appendChild(harpoonFlips(el));
     }
+    if (el.type === 'path') {
+      styleSec.appendChild(patternControls(el, `line:${el.id}`));
+      styleSec.appendChild(fieldRow('Corner radius', sliderNum(
+        () => el.corner || 0,
+        v => { if (v) el.corner = v; else delete el.corner; },
+        { min: 0, max: 8 * GRID, step: GRID / 2 })));
+    }
     if (el.type === 'rect') {
       styleSec.appendChild(fieldRow('Corner radius', numberControl(
         () => el.r || 0,
@@ -1249,8 +1573,17 @@ function renderPanel() {
     }
     const linkT = linkTargetsFromSelection();
     if (linkT) {
-      row.append(smallButton('Link', () => createLink(linkT),
-        'Fill the area spanning the two selected items'));
+      const existing = findLink(linkT[0], linkT[1]);
+      if (existing) {
+        row.append(smallButton('Unlink', () => {
+          beginChange();
+          state.doc.elements = state.doc.elements.filter(e => e !== existing);
+          changed();
+        }, 'Remove the link between these two items'));
+      } else {
+        row.append(smallButton('Link', () => createLink(linkT),
+          'Fill the area spanning the two selected items'));
+      }
     }
     const join = joinSelectedPaths();
     if (join) {
@@ -1269,8 +1602,20 @@ function renderPanel() {
   } else if (single.seg !== undefined) {
     const el = single.el, seg = el.segments[single.seg];
     sec.appendChild(sectionTitle('Segment'));
+    sec.appendChild(fieldRow('Thickness', widthControl(
+      () => seg.width ?? ((el.width || 2) + 2.5),
+      v => { seg.width = v; },
+      true)));
+    sec.appendChild(fieldRow('Line ends', selectControl(
+      ['rounded', 'flat', 'square'],
+      () => LINECAP_NAMES[seg.linecap || 'round'],
+      v => { seg.linecap = LINECAP_VALUES[v]; })));
+    sec.appendChild(patternControls(seg, `seg:${el.id}.${single.seg}`));
     sec.appendChild(labelFields(seg, 'e.g. domain a'));
     sec.appendChild(labelDisplayFields(seg));
+    sec.appendChild(fieldRow('String', boundInput(
+      () => seg.string || '', v => { seg.string = v; },
+      { placeholder: 'e.g. domain sequence' })));
     sec.appendChild(fieldRow('Data (not displayed)', boundInput(
       () => seg.notes || '', v => { seg.notes = v; }, { textarea: true, placeholder: 'notes, metadata…' })));
     sec.appendChild(deleteButton('Delete segment'));
@@ -1315,6 +1660,15 @@ function renderPanel() {
     if (el.type === 'card') {
       sec.appendChild(fieldRow('Title', boundInput(
         () => el.title, v => { el.title = v; }, { placeholder: 'section title' })));
+      sec.appendChild(fieldRow('Card color', colorPicker(`fill:${el.id}`,
+        () => (/^#[0-9a-f]{6}$/i.test(el.fill || '') ? el.fill : '#ffffff'),
+        Object.assign(hex => { el.fill = hex; render(); }, { begin: beginChange }),
+        changed)));
+      if (el.fill && el.fill !== '#ffffff') {
+        sec.appendChild(smallButton('Reset card color', () => {
+          beginChange(); delete el.fill; changed();
+        }, 'Back to white'));
+      }
     } else if (el.type !== 'text' || isSemantic(el)) {
       sec.appendChild(labelFields(el, 'name this object'));
       if (el.type !== 'text') sec.appendChild(labelDisplayFields(el));
@@ -1370,6 +1724,8 @@ function renderPanel() {
         list.appendChild(item);
       });
       sec.appendChild(list);
+      const ds = domainString(el);
+      if (ds) sec.appendChild(fieldRow('Domain string', readOnlyField(ds)));
     }
     sec.appendChild(deleteButton());
   }
@@ -1457,6 +1813,7 @@ async function saveJSON(saveAs = false) {
       download('scheme.schemer.json', text, 'application/json');
     }
     $('hint').textContent = 'Saved.';
+    toast('Saved ✓');
   } catch (err) {
     if (err?.name !== 'AbortError') $('hint').textContent = `Save failed: ${err.message || err}`;
   }
@@ -1524,15 +1881,16 @@ function csvText() {
   const cardOf = el =>
     el.type === 'card' ? '' : (cards.find(c => cardContents(c).includes(el))?.title || '');
   const groupName = el => state.doc.groups.find(g => g.id === el.group)?.name || '';
-  const rows = [['id', 'type', 'name', 'group', 'card', 'color', 'width', 'notes']];
+  const rows = [['id', 'type', 'name', 'group', 'card', 'color', 'width', 'notes', 'string']];
   for (const el of els) {
     const name = el.type === 'card' ? (el.title || '')
       : resolveLabel(el.label || '') || (el.type === 'text' ? el.text : '');
     rows.push([el.id, el.type, name, groupName(el), cardOf(el),
-      el.color !== undefined ? resolveColor(el.color) : '', el.width ?? '', el.notes || '']);
+      el.color !== undefined ? resolveColor(el.color) : '', el.width ?? '', el.notes || '',
+      el.type === 'path' ? domainString(el) : '']);
     (el.segments || []).forEach((seg, i) => {
       rows.push([`${el.id}.s${i + 1}`, 'segment', resolveLabel(seg.label || ''),
-        groupName(el), cardOf(el), resolveColor(seg.color), '', seg.notes || '']);
+        groupName(el), cardOf(el), resolveColor(seg.color), '', seg.notes || '', seg.string || '']);
     });
   }
   return rows.map(r => r.map(csvEscape).join(',')).join('\n');
@@ -1583,6 +1941,8 @@ $('libInput').addEventListener('change', async e => {
 });
 $('saveBtn').addEventListener('click', () => saveJSON(false));
 $('saveAsBtn').addEventListener('click', () => saveJSON(true));
+$('copyBtn').addEventListener('click', copySelection);
+$('pasteBtn').addEventListener('click', pasteClipboard);
 $('exportBtn').addEventListener('click', exportSVG);
 $('csvBtn').addEventListener('click', exportCSV);
 $('undoBtn').addEventListener('click', undo);

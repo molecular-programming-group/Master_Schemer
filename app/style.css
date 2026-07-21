@@ -183,6 +183,29 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 .side-item[aria-current="true"] { background: var(--primary-soft); }
 .side-item.side-card { font-weight: 600; margin-top: 4px; }
 
+.side-caret {
+  flex: none;
+  width: 12px;
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+  color: var(--muted);
+  user-select: none;
+}
+.side-caret.is-toggle { cursor: pointer; }
+.side-caret.is-toggle:hover { color: var(--ink); }
+
+.lib-thumb {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #ffffff;
+  padding: 2px;
+  box-sizing: border-box;
+}
+
 .side-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -289,7 +312,28 @@ input, textarea { user-select: text; -webkit-user-select: text; }
    elements beneath them; only the drag handles in the overlay are targets. */
 #layer-overlay, #layer-preview { pointer-events: none; }
 #layer-overlay [data-handle], #layer-overlay [data-pend],
-#layer-overlay [data-seghandle], #layer-overlay [data-vertex] { pointer-events: auto; }
+#layer-overlay [data-seghandle], #layer-overlay [data-vertex],
+#layer-overlay [data-aend] { pointer-events: auto; }
+
+/* transient save/action acknowledgement */
+#toast {
+  position: fixed;
+  bottom: 46px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  background: var(--ink);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: var(--z-tooltip);
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 body[data-tool="select"] #canvas { cursor: default; }
 body[data-tool="path"] #canvas,
@@ -405,6 +449,14 @@ body.panning #canvas { cursor: grabbing !important; }
 .btn-row .btn { align-self: auto; }
 
 .swatch.slot { border: 1px solid var(--line); }
+
+/* transparent option: white tile with a diagonal red slash (the "no fill" glyph) */
+.swatch.swatch-none {
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(to top right, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%),
+    #ffffff;
+}
 
 .swatch.slot-add {
   background: var(--bg);

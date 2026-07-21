@@ -50,6 +50,10 @@
     <button class="btn" id="csvBtn" data-tip="Export objects and their data as CSV — selection scopes it">Export CSV</button>
   </div>
   <div class="topbar-group">
+    <button class="btn" id="copyBtn" data-tip="Copy selection (Ctrl+C)">Copy</button>
+    <button class="btn" id="pasteBtn" data-tip="Paste, offset from the original (Ctrl+V)">Paste</button>
+  </div>
+  <div class="topbar-group">
     <button class="icon-btn" id="undoBtn" data-tip="Undo (Ctrl+Z)" aria-label="Undo"><svg><use href="#i-undo"/></svg></button>
     <button class="icon-btn" id="redoBtn" data-tip="Redo (Ctrl+Shift+Z)" aria-label="Redo"><svg><use href="#i-redo"/></svg></button>
   </div>
@@ -104,6 +108,9 @@
       </marker>
       <filter id="cardShadow" x="-8%" y="-8%" width="116%" height="120%">
         <feDropShadow dx="0" dy="1.5" stdDeviation="3" flood-color="#3a3020" flood-opacity="0.13"/>
+      </filter>
+      <filter id="glowBlur" x="-80%" y="-80%" width="260%" height="260%">
+        <feGaussianBlur stdDeviation="4"/>
       </filter>
     </defs>
     <g id="world">

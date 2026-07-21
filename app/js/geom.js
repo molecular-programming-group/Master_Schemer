@@ -116,6 +116,35 @@ export function subPath(pts, t0, t1) {
   return out;
 }
 
+// SVG path data for a polyline with every interior vertex filleted by a
+// circular arc of `radius` (world units) — the "elbow bend" of the curve tool.
+// Endpoints stay sharp, and corners whose adjacent edges are too short for the
+// radius round by as much as fits. radius 0 (or <3 pts) gives straight corners.
+export function roundedPathD(pts, radius) {
+  const r3 = v => Math.round(v * 1000) / 1000; // trim float noise from the path data
+  if (!radius || pts.length < 3) return `M${pts.map(p => p.join(' ')).join(' L')}`;
+  let d = `M${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const A = pts[i - 1], V = pts[i], C = pts[i + 1];
+    let din = [V[0] - A[0], V[1] - A[1]], dout = [C[0] - V[0], C[1] - V[1]];
+    const lin = Math.hypot(din[0], din[1]), lout = Math.hypot(dout[0], dout[1]);
+    if (lin === 0 || lout === 0) continue;
+    din = [din[0] / lin, din[1] / lin]; dout = [dout[0] / lout, dout[1] / lout];
+    const delta = Math.acos(Math.max(-1, Math.min(1, din[0] * dout[0] + din[1] * dout[1])));
+    if (delta < 1e-3) continue; // straight through: no corner to round
+    const half = Math.tan(delta / 2);
+    const t = Math.min(radius * half, lin / 2, lout / 2); // clamp so fillets never overlap
+    const rEff = r3(t / half);
+    const P1 = [r3(V[0] - din[0] * t), r3(V[1] - din[1] * t)];
+    const P2 = [r3(V[0] + dout[0] * t), r3(V[1] + dout[1] * t)];
+    const sweep = din[0] * dout[1] - din[1] * dout[0] > 0 ? 1 : 0;
+    d += ` L${P1[0]} ${P1[1]} A${rEff} ${rEff} 0 0 ${sweep} ${P2[0]} ${P2[1]}`;
+  }
+  const last = pts[pts.length - 1];
+  d += ` L${last[0]} ${last[1]}`;
+  return d;
+}
+
 export function bboxOfPts(pts) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const [x, y] of pts) {

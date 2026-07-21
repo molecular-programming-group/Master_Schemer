@@ -1,6 +1,7 @@
 // Tool state machines. app.js routes pointer events here with world coords.
 import {
   state, byId, beginChange, changed, addElement, isSelected, cloneElements, resolveColor,
+  byGroup, groupElementMembers,
 } from './model.js';
 import {
   GRID, snap, snapPt, snapHalf, snapHalfPt, eq, dirOf, snap8, simplify, polylineLength,
@@ -185,6 +186,14 @@ export function cardContents(card) {
   });
 }
 
+// Group ids from the top-level group down to the element's immediate group.
+function groupChain(el) {
+  const chain = [];
+  let gid = el.group;
+  while (gid) { chain.unshift(gid); gid = byGroup(gid)?.parent; }
+  return chain;
+}
+
 // Move-drag items for the current selection: cards carry their contents, and a
 // selected segment moves its whole parent line (grabbing a segment behaves like
 // grabbing the object).
@@ -265,6 +274,11 @@ export const tools = {
         beginExtend(byId(pend.getAttribute('data-id')), +pend.getAttribute('data-pend'));
         return;
       }
+      const aend = t.closest?.('[data-aend]');
+      if (aend) {
+        drag = { mode: 'aend', el: byId(aend.getAttribute('data-id')), i: +aend.getAttribute('data-aend') };
+        return;
+      }
       const segh = t.closest?.('[data-seghandle]');
       if (segh) {
         drag = {
@@ -299,12 +313,38 @@ export const tools = {
           changed();
           return;
         }
-        if (!isSelected(entry.id, entry.seg)) {
-          // clicking a group member picks up the whole group
-          state.selection = (entry.seg === undefined && el?.group)
-            ? state.doc.elements.filter(x => x.group === el.group).map(x => ({ id: x.id }))
-            : [entry];
+        // Grouped object: the first click selects the whole (top-level) group;
+        // clicking again — without dragging — drills one level down the group
+        // hierarchy, and finally to the object itself. Dragging always moves the
+        // current selection, so a group stays draggable as a single unit.
+        const grouped = entry.seg === undefined && el?.group;
+        if (grouped) {
+          const chain = groupChain(el); // [top … innermost]
+          const selIds = new Set(state.selection.filter(s => s.seg === undefined).map(s => s.id));
+          const isLevel = i => {
+            const m = groupElementMembers(chain[i]);
+            return m.length && m.length === selIds.size && m.every(x => selIds.has(x.id));
+          };
+          let level = -1;
+          for (let i = 0; i < chain.length; i++) if (isLevel(i)) level = i;
+          const objSelected = selIds.size === 1 && selIds.has(entry.id);
+          if (level === -1 && !objSelected) {
+            state.selection = groupElementMembers(chain[0]).map(x => ({ id: x.id }));
+          }
+          changed();
+          if (e.ctrlKey || e.metaKey) {
+            beginChange();
+            const clones = cloneElements(state.selection.filter(s => s.seg === undefined).map(s => s.id));
+            state.selection = clones.map(c => ({ id: c.id }));
+            drag = { mode: 'move', start: wp, began: true, items: clones.map(c => ({ el: c, orig: origOf(c) })) };
+            changed();
+            return;
+          }
+          // drill (on pointer-up if no drag happens) only while a group level is selected
+          drag = { mode: 'move', start: wp, items: moveItems(), drill: objSelected ? null : { chain, level, entry } };
+          return;
         }
+        if (!isSelected(entry.id, entry.seg)) state.selection = [entry];
         changed();
         // Ctrl+drag clones the selection and moves the copies
         if (e.ctrlKey || e.metaKey) {
@@ -343,6 +383,12 @@ export const tools = {
     move(e, wp) {
       if (!drag) return;
       if (drag.mode === 'extend') { moveExtend(wp); return; }
+      if (drag.mode === 'aend') {
+        began();
+        drag.el.pts[drag.i] = annSnap(wp);
+        changed();
+        return;
+      }
       if (drag.mode === 'segadj') {
         const el = drag.el, seg = el.segments[drag.i];
         if (!seg) return;
@@ -366,6 +412,7 @@ export const tools = {
         const dx = snapHalf(wp[0] - drag.start[0]), dy = snapHalf(wp[1] - drag.start[1]);
         if (dx === 0 && dy === 0 && !drag.began) return;
         began();
+        drag.moved = true;
         for (const it of drag.items) applyDelta(it.el, it.orig, dx, dy);
         changed();
       } else if (drag.mode === 'resize') {
@@ -401,13 +448,24 @@ export const tools = {
     up(e, wp) {
       if (!drag) return;
       if (drag.mode === 'extend') { endExtend(); return; }
+      // a click (no drag) on an already-group-selected object drills one level in
+      if (drag.mode === 'move' && drag.drill && !drag.moved) {
+        const { chain, level, entry } = drag.drill;
+        const next = level + 1;
+        state.selection = next < chain.length
+          ? groupElementMembers(chain[next]).map(x => ({ id: x.id }))
+          : [entry];
+      }
       if (drag.mode === 'marquee' && drag.end) {
         const box = [
           Math.min(drag.start[0], drag.end[0]), Math.min(drag.start[1], drag.end[1]),
           Math.max(drag.start[0], drag.end[0]), Math.max(drag.start[1], drag.end[1]),
         ];
+        // cards are excluded: a marquee drawn to grab objects sitting on a card
+        // would otherwise scoop up the card too. Select/move a card by clicking
+        // its body/border or title instead.
         const hits = state.doc.elements
-          .filter(el => el.type !== 'arrow' && rectsIntersect(elementBBox(el), box))
+          .filter(el => el.type !== 'arrow' && el.type !== 'card' && rectsIntersect(elementBBox(el), box))
           .map(el => ({ id: el.id }));
         state.selection = drag.add
           ? [...state.selection, ...hits.filter(h => !isSelected(h.id, undefined))]
@@ -471,6 +529,7 @@ export const tools = {
       beginChange();
       const el = addElement({
         type: 'path', pts, color: state.color, width: state.width, label: '', segments: [],
+        linecap: 'butt', // line objects default to flat ends
       });
       state.selection = [{ id: el.id }];
       changed();

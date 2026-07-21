@@ -4,7 +4,7 @@
 import { state, byId, resolveColor, resolveLabel, groupElementMembers } from './model.js';
 import {
   GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint,
-  convexHull, ellipsePoints,
+  convexHull, ellipsePoints, roundedPathD,
 } from './geom.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -126,8 +126,63 @@ export function dashArray(dash, w) {
 
 export const LINECAPS = ['round', 'butt', 'square'];
 
-// Fill for closed shapes (rect/ellipse): a color ref or 'none'.
-const fillOf = el => (el.fill ? resolveColor(el.fill) : 'none');
+// A segment's drawn thickness: its own width if tuned, else a touch above the
+// parent line (the historical +2.5). Shared by the segment stroke, the cap
+// alignment, and the selection highlight.
+export const segWidth = (seg, lineW) => seg.width ?? (lineW + 2.5);
+
+// ---- pattern fills ----
+// Patterns paint `fg` marks on a `bg` tile — bg defaults to transparent so the
+// canvas shows through, but any second colour can be chosen. The lattice size
+// scales from a base 8-unit tile (scale slider). One <pattern> per
+// (kind,fg,bg,tile) is built on demand and cached in the live <defs> (which
+// export clones, so exports keep them). ponytail: never evicted — bounded by
+// the combinations actually used.
+export const PATTERNS = {
+  none: 'Solid', horizontal: 'Horizontal stripes', vertical: 'Vertical stripes',
+  diagonal: 'Diagonal stripes ╱', 'diagonal-alt': 'Diagonal stripes ╲',
+  dots: 'Dots', checker: 'Checkerboard',
+};
+const patternCache = new Set();
+
+function buildPattern(id, kind, fg, bg, tile) {
+  const p = svgEl('pattern', { id, patternUnits: 'userSpaceOnUse', width: tile, height: tile });
+  const add = (tag, attrs) => svgEl(tag, attrs, p);
+  const u = tile / 8; // marks are defined on an 8-unit grid, scaled to the tile
+  if (bg) add('rect', { x: 0, y: 0, width: tile, height: tile, fill: bg });
+  if (kind === 'horizontal') add('rect', { x: 0, y: 0, width: tile, height: 3 * u, fill: fg });
+  else if (kind === 'vertical') add('rect', { x: 0, y: 0, width: 3 * u, height: tile, fill: fg });
+  else if (kind === 'diagonal' || kind === 'diagonal-alt') {
+    p.setAttribute('patternTransform', kind === 'diagonal' ? 'rotate(45)' : 'rotate(-45)');
+    add('rect', { x: 0, y: 0, width: tile, height: 3 * u, fill: fg });
+  } else if (kind === 'dots') add('circle', { cx: tile / 2, cy: tile / 2, r: 1.8 * u, fill: fg });
+  else if (kind === 'checker') {
+    add('rect', { x: 0, y: 0, width: tile / 2, height: tile / 2, fill: fg });
+    add('rect', { x: tile / 2, y: tile / 2, width: tile / 2, height: tile / 2, fill: fg });
+  }
+  return p;
+}
+
+function patternRef(kind, fg, bg, scale) {
+  if (!kind || kind === 'none') return null;
+  const tile = Math.max(2, Math.round(8 * (scale || 1)));
+  const id = `pat-${kind}-${fg.replace('#', '')}-${(bg || 'none').replace('#', '')}-${tile}`;
+  if (!patternCache.has(id)) {
+    const defs = document.querySelector('#canvas defs');
+    if (defs && !document.getElementById(id)) defs.appendChild(buildPattern(id, kind, fg, bg, tile));
+    patternCache.add(id);
+  }
+  return `url(#${id})`;
+}
+
+// Paint (color or pattern) for any object carrying .pattern/.patternBg/.patternScale.
+// `fg` is the object's own colour (fill for shapes, stroke colour for lines).
+export const paintOf = (obj, fg) =>
+  (obj.pattern && obj.pattern !== 'none' &&
+    patternRef(obj.pattern, fg, obj.patternBg && resolveColor(obj.patternBg), obj.patternScale)) || fg;
+
+// Fill for closed shapes (rect/ellipse): a pattern, a color ref, or 'none'.
+const fillOf = el => (el.fill ? paintOf(el, resolveColor(el.fill)) : 'none');
 
 function strokeAttrs(el) {
   // dotted strokes need round caps or the dots vanish
@@ -168,11 +223,13 @@ function capGlyph(parent, p, d, cap, color, w, flip) {
   else if (cap === 'barb') { // swept-back barbed head
     poly([P(s * 0.8, 0), P(-s * 0.75, s * 0.7), P(-s * 0.3, 0), P(-s * 0.75, -s * 0.7)]);
   } else if (cap === 'harpoon') {
-    // one-sided barb whose flat edge lies on the line axis (tip → base runs
-    // straight down the centerline) so it reads as a seamless continuation of
-    // the stroke rather than a glued-on triangle.
+    // one-sided barb whose flat edge lies flush with the stroke's outer edge
+    // (offset half the line width, opposite the barb) so tip → base runs down
+    // one side of the line, not its center — no discontinuity at the tip. The
+    // offset tracks the line weight.
     const side = flip ? -1 : 1;
-    poly([P(s * 0.9, 0), P(-s * 0.5, s * 0.92 * side), P(-s * 0.12, 0)]);
+    const o = -side * w / 2;
+    poly([P(s * 0.9, o), P(-s * 0.5, s * 0.92 * side + o), P(-s * 0.12, o)]);
   } else if (cap === 'square') {
     const h = s * 0.42;
     poly([P(h, h), P(h, -h), P(-h, -h), P(-h, h)]);
@@ -211,10 +268,10 @@ function labelPos(pts, t, off, side) {
   return [m[0] + nx * off * -side, m[1] + ny * off * -side];
 }
 
-// Object/segment label at anchor + user offset. Draggable via data-labelfor;
-// math labels render as overlay divs instead (ponytail: those aren't
-// draggable on canvas — move them from the panel offset if needed).
-function drawLabel(g, divs, owner, anchor, opts) {
+// Object/segment label at anchor + user offset. Draggable via data-labelfor.
+// Math labels render as overlay divs (pointer-events:none), so they get an
+// invisible SVG twin carrying data-labelfor so the same drag machinery moves them.
+function drawLabel(g, divs, measures, owner, anchor, opts) {
   if (owner.labelHide) return;
   const text = resolveLabel(owner.label);
   if (!text) return;
@@ -229,6 +286,15 @@ function drawLabel(g, divs, owner, anchor, opts) {
     div.style.color = opts.color;
     div.innerHTML = richHTML(text);
     divs.push(div);
+    const hit = svgEl('rect', {
+      fill: 'transparent', 'data-labelfor': opts.id, style: 'cursor:move',
+      ...(opts.segi !== undefined ? { 'data-segi': opts.segi } : {}),
+    }, g);
+    measures.push(() => { // div is centered on p (translate -50% -50%)
+      const w = div.offsetWidth, h = div.offsetHeight;
+      hit.setAttribute('x', p[0] - w / 2); hit.setAttribute('y', p[1] - h / 2);
+      hit.setAttribute('width', w); hit.setAttribute('height', h);
+    });
     return;
   }
   haloText(g, p[0], p[1], text, opts.size, opts.color, 600, {
@@ -242,7 +308,7 @@ function renderCard(el) {
   const g = svgEl('g', { 'data-id': el.id });
   svgEl('rect', {
     x: el.x, y: el.y, width: el.w, height: el.h, rx: 10,
-    fill: '#ffffff', stroke: CARD_STROKE, 'stroke-width': 1.25,
+    fill: resolveColor(el.fill) || '#ffffff', stroke: CARD_STROKE, 'stroke-width': 1.25,
     filter: 'url(#cardShadow)',
   }, g);
   const title = el.title || 'Untitled';
@@ -286,7 +352,7 @@ function renderArrow(el) {
 
 function renderPath(el) {
   const g = svgEl('g', { 'data-id': el.id });
-  const divs = [];
+  const divs = [], measures = [];
   const pts = ptsAttr(el.pts);
   const w = el.width || 2;
   const color = resolveColor(el.color);
@@ -294,28 +360,40 @@ function renderPath(el) {
     points: pts, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, w + 8), 'data-hit': '1',
   }, g);
-  svgEl('polyline', { points: pts, ...strokeAttrs(el) }, g);
+  svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color) }, g);
   const len = polylineLength(el.pts);
   (el.segments || []).forEach((seg, i) => {
     const sp = subPath(el.pts, seg.t0, seg.t1);
     const sa = ptsAttr(sp);
     const segColor = resolveColor(seg.color);
+    const scap = seg.linecap || 'round';
     svgEl('polyline', {
       points: sa, fill: 'none', stroke: 'transparent',
       'stroke-width': Math.max(12, w + 8), 'data-hit': '1', 'data-seg': i,
     }, g);
-    svgEl('polyline', {
-      points: sa, fill: 'none', stroke: segColor, 'stroke-width': w + 2.5,
-      'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'data-seg': i,
+    svgEl('path', {
+      d: roundedPathD(sp, el.corner || 0), fill: 'none', stroke: paintOf(seg, segColor),
+      'stroke-width': segWidth(seg, w),
+      'stroke-linejoin': scap === 'round' ? 'round' : 'miter', 'stroke-linecap': scap, 'data-seg': i,
     }, g);
-    drawLabel(g, divs, seg, labelPos(el.pts, (seg.t0 + seg.t1) / 2, 16, 1),
+    drawLabel(g, divs, measures, seg, labelPos(el.pts, (seg.t0 + seg.t1) / 2, 16, 1),
       { size: 12, color: segColor, id: el.id, segi: i });
   });
-  capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, color, w, el.cap0flip);
-  capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, color, w, el.cap1flip);
-  drawLabel(g, divs, el, labelPos(el.pts, len / 2, 14, -1),
+  // a cap at an endpoint covered by a segment takes that segment's width (so it
+  // aligns with the thicker segment edge, no tip discontinuity) AND its paint —
+  // an end-reaching coloured or patterned segment carries into its arrowhead/harpoon
+  const capStyle = end => {
+    const seg = (el.segments || []).find(s => (end ? s.t1 >= len - 0.5 : s.t0 <= 0.5));
+    return seg
+      ? { w: segWidth(seg, w), paint: paintOf(seg, resolveColor(seg.color)) }
+      : { w, paint: color };
+  };
+  const c0 = capStyle(0), c1 = capStyle(1);
+  capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, c0.paint, c0.w, el.cap0flip);
+  capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, c1.paint, c1.w, el.cap1flip);
+  drawLabel(g, divs, measures, el, labelPos(el.pts, len / 2, 14, -1),
     { size: 12.5, color, id: el.id });
-  return { node: g, divs };
+  return { node: g, divs, measures };
 }
 
 // Freehand ink: quadratic smoothing through midpoints.
@@ -339,46 +417,76 @@ const bboxLabelAnchor = el => {
 
 function renderInk(el) {
   const g = svgEl('g', { 'data-id': el.id });
-  const divs = [];
+  const divs = [], measures = [];
   const d = inkD(el.pts);
   svgEl('path', {
     d, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
   svgEl('path', { d, ...strokeAttrs(el) }, g);
-  drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
-  return { node: g, divs };
+  drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
+  return { node: g, divs, measures };
+}
+
+// Radial gradient (bright core → object colour) for glowing dots, cached in the
+// live <defs> like patterns. ponytail: never evicted — bounded by colours used.
+const glowCache = new Set();
+function glowRef(color) {
+  const id = `glow-${color.replace('#', '')}`;
+  if (!glowCache.has(id)) {
+    const defs = document.querySelector('#canvas defs');
+    if (defs && !document.getElementById(id)) {
+      const grad = svgEl('radialGradient', { id });
+      svgEl('stop', { offset: '0%', 'stop-color': '#ffffff', 'stop-opacity': 0.95 }, grad);
+      svgEl('stop', { offset: '35%', 'stop-color': color }, grad);
+      svgEl('stop', { offset: '100%', 'stop-color': color }, grad);
+      defs.appendChild(grad);
+    }
+    glowCache.add(id);
+  }
+  return `url(#${id})`;
 }
 
 function renderEllipse(el) {
   const g = svgEl('g', { 'data-id': el.id });
-  const divs = [];
+  const divs = [], measures = [];
   const base = { cx: el.cx, cy: el.cy, rx: el.rx, ry: el.ry };
   svgEl('ellipse', {
     ...base, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
+  if (el.glow) {
+    // a blurred oversized halo, then a bright-cored gradient body on top
+    const c = resolveColor(el.fill) || resolveColor(el.color) || '#3ad13a';
+    svgEl('ellipse', {
+      cx: el.cx, cy: el.cy, rx: el.rx * 1.7, ry: el.ry * 1.7,
+      fill: c, 'fill-opacity': 0.55, filter: 'url(#glowBlur)', stroke: 'none',
+    }, g);
+    svgEl('ellipse', { ...base, fill: glowRef(c), stroke: 'none' }, g);
+    drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
+    return { node: g, divs, measures };
+  }
   svgEl('ellipse', { ...base, ...strokeAttrs(el), fill: fillOf(el) }, g);
-  drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
-  return { node: g, divs };
+  drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
+  return { node: g, divs, measures };
 }
 
 function renderRect(el) {
   const g = svgEl('g', { 'data-id': el.id });
-  const divs = [];
+  const divs = [], measures = [];
   const base = { x: el.x, y: el.y, width: el.w, height: el.h, rx: el.r || 0 };
   svgEl('rect', {
     ...base, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
   svgEl('rect', { ...base, ...strokeAttrs(el), fill: fillOf(el) }, g);
-  drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
-  return { node: g, divs };
+  drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
+  return { node: g, divs, measures };
 }
 
 function renderALine(el) {
   const g = svgEl('g', { 'data-id': el.id });
-  const divs = [];
+  const divs = [], measures = [];
   const [a, b] = el.pts;
   const color = resolveColor(el.color);
   svgEl('line', {
@@ -388,8 +496,8 @@ function renderALine(el) {
   svgEl('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], ...strokeAttrs(el) }, g);
   capGlyph(g, a, endDir(el.pts, 0), el.cap0, color, el.width || 2, el.cap0flip);
   capGlyph(g, b, endDir(el.pts, 1), el.cap1, color, el.width || 2, el.cap1flip);
-  drawLabel(g, divs, el, bboxLabelAnchor(el), { size: 12.5, color, id: el.id });
-  return { node: g, divs };
+  drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color, id: el.id });
+  return { node: g, divs, measures };
 }
 
 function renderText(el) {
@@ -460,14 +568,24 @@ export function linkTargetPoints(ref) {
   return elOutline(el);
 }
 
-const linkHull = el => convexHull([...linkTargetPoints(el.a), ...linkTargetPoints(el.b)]);
+const subPathD = h => (h.length >= 3 ? ` M${h.map(p => p.join(' ')).join(' L')} Z` : '');
 
+// Line-of-sight fill: the merged convex hull of both endpoints minus each
+// endpoint's own convex hull, punched out with the even-odd rule. What's left
+// is the "webbing" visible between the two objects — never the area behind
+// them. ponytail: overlapping endpoints double-punch (parity 3 → fills the
+// overlap); acceptable for a visual link, revisit if it looks wrong in use.
 function renderLink(el) {
   const g = svgEl('g', { 'data-id': el.id });
-  const hull = linkHull(el);
-  if (hull.length >= 3) {
-    svgEl('polygon', {
-      points: ptsAttr(hull), fill: resolveColor(el.fill) || '#8a857c',
+  const ptsA = linkTargetPoints(el.a), ptsB = linkTargetPoints(el.b);
+  const merged = convexHull([...ptsA, ...ptsB]);
+  if (merged.length >= 3) {
+    const color = resolveColor(el.fill) || '#8a857c';
+    const fill = paintOf(el, color);
+    const d = `M${merged.map(p => p.join(' ')).join(' L')} Z`
+      + subPathD(convexHull(ptsA)) + subPathD(convexHull(ptsB));
+    svgEl('path', {
+      d, 'fill-rule': 'evenodd', fill,
       'fill-opacity': el.opacity ?? 0.45, stroke: 'none',
     }, g);
   }
@@ -520,7 +638,7 @@ function renderSelection(overlay) {
       if (!seg) continue;
       svgEl('polyline', {
         points: ptsAttr(subPath(el.pts, seg.t0, seg.t1)), fill: 'none',
-        stroke: SEL, 'stroke-width': (el.width || 2) + 12 / s, opacity: 0.35,
+        stroke: SEL, 'stroke-width': segWidth(seg, el.width || 2) + 9 / s, opacity: 0.35,
         'stroke-linecap': 'round', 'stroke-linejoin': 'round',
       }, overlay);
       // draggable segment boundaries
@@ -569,6 +687,11 @@ function renderSelection(overlay) {
       const a = el.pts[0], z = el.pts[el.pts.length - 1];
       handleDot(overlay, a[0], a[1], s, { 'data-pend': '0', 'data-id': el.id });
       handleDot(overlay, z[0], z[1], s, { 'data-pend': '1', 'data-id': el.id });
+    }
+    // annotation line/arrow endpoints: drag to reshape (like resizing a shape)
+    if (el.type === 'aline' && single) {
+      el.pts.forEach((p, i) =>
+        handleDot(overlay, p[0], p[1], s, { 'data-aend': i, 'data-id': el.id }));
     }
     // vertex handles for the line-edit tool
     if (el.type === 'path' && single && state.tool === 'edit') {
@@ -622,6 +745,7 @@ export function render() {
       entry.key = key;
       nodeCache.set(el.id, entry);
       if (entry.measure) measures.push(entry.measure);
+      if (entry.measures) measures.push(...entry.measures);
     }
     const bucket = el.type === 'card' ? cardNodes : el.type === 'link' ? linkNodes : drawNodes;
     bucket.push(entry.node);

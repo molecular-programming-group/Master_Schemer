@@ -4,8 +4,23 @@ import assert from 'node:assert/strict';
 import {
   GRID, snap, snapHalf, snap8, simplify, polylineLength, pointAt, nearestOnPath,
   subPath, rectEdgePoint, mergePaths, rot90, flipPt, insertIndex,
-  convexHull, ellipsePoints,
+  convexHull, ellipsePoints, roundedPathD,
 } from '../app/js/geom.js';
+
+test('roundedPathD fillets interior corners, keeps ends sharp', () => {
+  const pts = [[0, 0], [100, 0], [100, 100]]; // right then down (90° corner)
+  // radius 0: plain straight polyline
+  assert.equal(roundedPathD(pts, 0), 'M0 0 L100 0 L100 100');
+  // radius 20 on a 90° corner: tangent points 20 back from the vertex on each edge,
+  // joined by a clockwise arc (sweep 1). Ends (0,0) and (100,100) untouched.
+  assert.equal(roundedPathD(pts, 20), 'M0 0 L80 0 A20 20 0 0 1 100 20 L100 100');
+  // a left turn (right then up) uses the opposite sweep flag
+  assert.equal(roundedPathD([[0, 0], [100, 0], [100, -100]], 20),
+    'M0 0 L80 0 A20 20 0 0 0 100 -20 L100 -100');
+  // radius larger than half the shortest edge is clamped so fillets never overlap
+  const tight = roundedPathD([[0, 0], [10, 0], [10, 10]], 999);
+  assert.ok(tight.includes('L5 0 A5 5 0 0 1 10 5'), tight);
+});
 
 test('snap rounds to grid', () => {
   assert.equal(snap(29), 20);
