@@ -1,11 +1,11 @@
 // Tool state machines. app.js routes pointer events here with world coords.
 import {
   state, byId, beginChange, changed, addElement, isSelected, cloneElements, resolveColor,
-  byGroup, groupElementMembers,
+  byGroup, groupElementMembers, cutPath,
 } from './model.js';
 import {
   GRID, snap, snapPt, snapHalf, snapHalfPt, eq, dirOf, snap8, simplify, polylineLength,
-  nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex,
+  nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex, bladeCross,
 } from './geom.js';
 import { svgEl, SEL, inkD, worldToScreen, elementBBox } from './render.js';
 
@@ -777,6 +777,49 @@ export const tools = {
       });
       state.selection = [{ id: el.id }];
       changed();
+    },
+  },
+
+  cut: {
+    hint: 'Drag a blade across a line — the sliding dot marks where it slices; release to cut',
+    down(e, wp) {
+      drag = { mode: 'cut', a: wp, b: wp, locked: null, t: null };
+    },
+    move(e, wp) {
+      if (!drag) return;
+      drag.b = wp;
+      // lock onto the first line the growing blade crosses; then the dot slides
+      // along that one line only (never cuts across every object it touches)
+      if (!drag.locked) {
+        for (let i = state.doc.elements.length - 1; i >= 0; i--) {
+          const el = state.doc.elements[i];
+          if (el.type !== 'path') continue;
+          const tc = bladeCross(el.pts, drag.a, drag.b);
+          if (tc !== null) { drag.locked = el; drag.t = tc; break; }
+        }
+      } else {
+        const tc = bladeCross(drag.locked.pts, drag.a, drag.b);
+        if (tc !== null) drag.t = tc; // blade off the line: keep the last dot
+      }
+      clearPreview();
+      svgEl('line', {
+        x1: drag.a[0], y1: drag.a[1], x2: drag.b[0], y2: drag.b[1],
+        stroke: SEL, 'stroke-width': 1.5 / state.view.s, 'stroke-dasharray': `${5 / state.view.s}`,
+      }, preview());
+      if (drag.locked && drag.t !== null) {
+        const p = pointAt(drag.locked.pts, drag.t);
+        svgEl('circle', {
+          cx: p[0], cy: p[1], r: 6 / state.view.s,
+          fill: '#fff', 'fill-opacity': 0.85, stroke: SEL, 'stroke-width': 2 / state.view.s,
+        }, preview());
+      }
+    },
+    up() {
+      if (!drag) return;
+      const { locked, t } = drag;
+      drag = null;
+      clearPreview();
+      if (locked && t !== null) cutPath(locked, t); else changed();
     },
   },
 

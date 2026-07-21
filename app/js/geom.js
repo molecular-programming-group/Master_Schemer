@@ -175,6 +175,45 @@ export function mergePaths(aPts, aSegs, bPts, bSegs) {
   return { pts: simplify([...A, ...B.slice(1)]), segments: [...sA.map(s => ({ ...s })), ...shiftSegs(sB, lenA)] };
 }
 
+// Intersection of segments p1→p2 and p3→p4 → { t, u } params in [0,1], or null
+// (parallel or non-crossing). t is the fraction along p1→p2.
+export function segSegIntersect(p1, p2, p3, p4) {
+  const d1x = p2[0] - p1[0], d1y = p2[1] - p1[1];
+  const d2x = p4[0] - p3[0], d2y = p4[1] - p3[1];
+  const den = d1x * d2y - d1y * d2x;
+  if (den === 0) return null;
+  const t = ((p3[0] - p1[0]) * d2y - (p3[1] - p1[1]) * d2x) / den;
+  const u = ((p3[0] - p1[0]) * d1y - (p3[1] - p1[1]) * d1x) / den;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+  return { t, u };
+}
+
+// Arc length along `pts` where blade A→B first crosses it (smallest arc length,
+// so the sliding cut dot is stable), or null if the blade misses.
+export function bladeCross(pts, A, B) {
+  let acc = 0, best = null;
+  for (let i = 1; i < pts.length; i++) {
+    const len = dist(pts[i - 1], pts[i]);
+    const hit = segSegIntersect(pts[i - 1], pts[i], A, B);
+    if (hit) { const at = acc + hit.t * len; if (best === null || at < best) best = at; }
+    acc += len;
+  }
+  return best;
+}
+
+// Split a segment list at arc length tc → [before, after]; `after` is rebased so
+// its arc lengths start at 0. Segments straddling tc are clipped to each side.
+export function splitSegments(segs, tc, total) {
+  const before = [], after = [];
+  for (const s of segs || []) {
+    const a0 = Math.max(s.t0, 0), a1 = Math.min(s.t1, tc);
+    if (a1 - a0 > 0.01) before.push({ ...s, t0: a0, t1: a1 });
+    const b0 = Math.max(s.t0, tc), b1 = Math.min(s.t1, total);
+    if (b1 - b0 > 0.01) after.push({ ...s, t0: b0 - tc, t1: b1 - tc });
+  }
+  return [before, after];
+}
+
 export const rectsIntersect = (a, b) =>
   a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
 

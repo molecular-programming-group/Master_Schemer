@@ -5,7 +5,72 @@ cards, and arrows are tracked objects with labels and colors, not just ink.
 Built for illustrating processes and relationships between objects: reaction
 schemes, protocols, conceptual flows.
 
-![Master Schemer](docs/screenshot.png)
+![Master Schemer](docs/screenshots/overview.png)
+
+## Feature tour
+
+### Segments: one line, many colored spans
+
+![Segment tool](docs/screenshots/segment-tool.png)
+
+A single line object carries any number of sub-segments, each with its own
+color, pattern, width, and label. Press the Segment tool on a line and drag
+along it to mark a span. It snaps to the half-grid, and a selected segment
+shows draggable end dots. The Founder β strand above runs plain black through
+most of its length, with checkered ends and a dotted tan core marking distinct
+regions of the same strand.
+
+### LaTeX in every label and note
+
+![LaTeX labels](docs/screenshots/latex.png)
+
+Any label or note renders math through KaTeX, offline, with no network call.
+Type `$\alpha_f$` in the label field and the canvas shows it typeset. The same
+source exports into SVG with the KaTeX fonts written in as data URIs, so the
+math still renders wherever the file ends up.
+
+### Memory slots that propagate
+
+![Memory slots](docs/screenshots/memory-slots.png)
+
+A memory slot stores a color and an optional pattern (stripes, dots,
+checkerboard). Select a slot and hit **Apply** to paint the current object from
+it. Every object painted from a slot stays bound to it. Open **Edit** and the
+popup changes color or pattern live, pushing each change out to all users of
+that slot at once. Drag slots to reorder them. Remove one and its current look
+freezes onto whatever was using it.
+
+### Cut a line in two
+
+![Cut tool](docs/screenshots/cutting-tool.png)
+
+The Cut tool (`X`) slices one line into two child objects. Drag a blade across
+the canvas. The moment it crosses a line, a dot appears at the crossing and
+slides as you move, marking where the cut will land. Release and the line
+splits there. Both halves inherit the parent's color, width, label, segments,
+and group. Each keeps its outer end cap while the two fresh cut ends stay
+clean. A cut only ever touches the first line the blade meets, so one stroke
+never shreds a whole diagram. Segments split at the cut as well: slice a span a
+third of the way along and one child keeps that third, the other keeps the
+rest.
+
+### Links: the area between two objects
+
+![Links](docs/screenshots/linking.png)
+
+Select exactly two objects (or segments, or whole groups) and press **Link** to
+fill the line-of-sight area between them. The fill tracks both ends and
+reshapes as either moves, so a linked pair reads as one bound complex. Its
+color and opacity are yours to set, and **Unlink** in the panel dissolves it.
+
+### Data and string fields
+
+Every object carries a hidden **Data** field for notes and metadata that never
+draws on the canvas. Toggle **Data** or **Data on hover** in the status bar to
+reveal it. Segments add a **string** field that concatenates along the line, so
+a strand of segments spells out a sequence read end to end. **Export CSV** dumps
+every object (or just the selection) with its type, name, group, card, color,
+string, and data, ready to drop into a spreadsheet.
 
 ## Model tools (tracked objects)
 
@@ -15,6 +80,7 @@ schemes, protocols, conceptual flows.
 | Line | `L` | Drag to draw a snaking path — horizontal, vertical, and 45° runs at **half-grid** resolution; turns commit corners automatically. Start on an existing line's end to extend it. |
 | Segment | `S` | Press on a line and drag along it to mark a colored, labelled sub-segment. Snaps at half-grid resolution; a selected segment's end dots are draggable. |
 | Edit line | `E` | Click a line, then drag its square vertex handles to reshape the path. Click anywhere on the selected line to **insert a new vertex** there. |
+| Cut | `X` | Drag a blade across a line to slice it into two. A sliding dot marks where the cut lands. Both halves inherit the parent's metadata, segments split at the cut, and any link on the line drops away. |
 | Card | `C` | Drag to frame a section — a white sub-canvas card. Cards move by their border/corners only (so their contents stay clickable) and carry their contents with them. |
 | Connect | `A` | Drag from one card to another to draw a labelled arrow between them. |
 
@@ -120,7 +186,7 @@ Actions — see `.github/workflows/release.yml`.
 ## Development
 
 ```bash
-node --test test/geom.test.mjs   # geometry unit tests
+node --test test/geom.test.mjs test/cut.test.mjs   # geometry + cut unit tests
 ```
 
 Source layout (vanilla ES modules, no framework):

@@ -34,6 +34,7 @@ function refresh() {
   if (!isDragging()) {
     renderPanel();
     renderSidebar();
+    if (slotModal) renderSlotModal(); // popup lives outside the panel; keep it live too
   }
   $('undoBtn').disabled = !state.history.length;
   $('redoBtn').disabled = !state.future.length;
@@ -44,7 +45,7 @@ setOnChanged(refresh);
 // ---- tool switching ----
 
 const TOOL_KEYS = {
-  v: 'select', l: 'path', s: 'segment', e: 'edit', c: 'card', a: 'arrow',
+  v: 'select', l: 'path', s: 'segment', e: 'edit', c: 'card', a: 'arrow', x: 'cut',
   d: 'draw', t: 'text', o: 'ellipse', b: 'rect', n: 'aline', r: 'aarrow', h: 'hand',
 };
 
@@ -995,7 +996,7 @@ function hexToHsv(hex) {
 
 let openPicker = null; // { key, h, s, v, began } — survives panel rebuilds
 
-function colorPicker(key, getHex, applyLive, commit) {
+function colorPicker(key, getHex, applyLive, commit, rerender = renderPanel) {
   const wrap = document.createElement('div');
   wrap.className = 'picker';
   const well = document.createElement('button');
@@ -1011,9 +1012,27 @@ function colorPicker(key, getHex, applyLive, commit) {
     openPicker = openPicker?.key === key
       ? null
       : { key, ...(hexToHsv(getHex()) || { h: 40, s: 0.6, v: 0.7 }), began: false };
-    renderPanel();
+    rerender();
   });
-  wrap.appendChild(well);
+  // well + eyedropper share a row; the eye is offered only where the platform
+  // supports the native EyeDropper API (Chromium/Edge, incl. the web build).
+  const head = document.createElement('div');
+  head.className = 'picker-head';
+  head.appendChild(well);
+  if (window.EyeDropper) {
+    const eye = document.createElement('button');
+    eye.type = 'button';
+    eye.className = 'picker-eye';
+    eye.textContent = '🎯';
+    eye.title = 'Pick a colour from anywhere on screen';
+    eye.addEventListener('click', () => {
+      new window.EyeDropper().open()
+        .then(res => { applyLive.begin?.(); applyLive(res.sRGBHex); commit(); rerender(); })
+        .catch(() => {}); // user pressed Escape
+    });
+    head.appendChild(eye);
+  }
+  wrap.appendChild(head);
   if (openPicker?.key !== key) return wrap;
 
   const st = openPicker;
@@ -1085,7 +1104,50 @@ function colorPicker(key, getHex, applyLive, commit) {
   return wrap;
 }
 
-let activeSlot = null; // palette slot id whose editor is open
+let activeSlot = null;  // palette slot id currently selected (target of Apply / Edit)
+let slotModal = null;   // { id } while the slot-editor popup is open
+
+// Push a slot's pattern (kind/bg/scale) onto every object that references the
+// slot for its colour or fill. Colour already propagates live via the slot:<id>
+// reference; pattern is stored per-object, so slot edits must be pushed. Setting
+// the slot's pattern to Solid clears it on all its objects.
+function propagateSlot(slot) {
+  const ref = `slot:${slot.id}`;
+  const push = o => {
+    if (o.color !== ref && o.fill !== ref) return;
+    if (slot.pattern && slot.pattern !== 'none') {
+      o.pattern = slot.pattern;
+      if (slot.patternBg) o.patternBg = slot.patternBg; else delete o.patternBg;
+      if (slot.patternScale != null) o.patternScale = slot.patternScale; else delete o.patternScale;
+    } else { delete o.pattern; delete o.patternBg; delete o.patternScale; }
+  };
+  for (const el of state.doc.elements) {
+    push(el);
+    for (const seg of el.segments || []) push(seg);
+  }
+}
+
+// Paint a slot's colour — and, when it carries a pattern, a CSS approximation
+// of that pattern — onto a swatch button. ponytail: CSS preview, not the exact
+// SVG pattern; the canvas is the source of truth. Add an SVG mini-render if the
+// preview ever needs to match pixel-for-pixel.
+function paintSwatch(b, slot) {
+  const fg = resolveColor(slot.color);
+  b.style.background = '';
+  b.style.backgroundImage = '';
+  if (!slot.pattern || slot.pattern === 'none') { b.style.background = fg; return; }
+  const bg = slot.patternBg ? resolveColor(slot.patternBg) : '#ffffff';
+  const stripe = deg => `repeating-linear-gradient(${deg}deg, ${fg} 0 2px, transparent 2px 6px)`;
+  const img = {
+    horizontal: stripe(0), vertical: stripe(90), diagonal: stripe(45), 'diagonal-alt': stripe(-45),
+    dots: `radial-gradient(${fg} 1.3px, transparent 1.6px)`,
+    checker: `repeating-conic-gradient(${fg} 0 25%, transparent 0 50%)`,
+  }[slot.pattern] || 'none';
+  b.style.backgroundColor = bg;
+  b.style.backgroundImage = img;
+  b.style.backgroundSize = slot.pattern === 'dots' ? '6px 6px'
+    : slot.pattern === 'checker' ? '8px 8px' : 'auto';
+}
 
 function paletteSection() {
   const sec = document.createElement('div');
@@ -1118,20 +1180,36 @@ function paletteSection() {
     changed);
   sec.appendChild(fieldRow('Custom color', mainPick));
 
-  // memory slots: elements store slot:<id>, so editing a slot recolors them all
+  // memory slots: elements store slot:<id>, so editing a slot recolors them all.
+  // Click selects; Apply pushes the slot onto the selection; Edit opens the popup.
+  // Slots are draggable to reorder.
   const slotsWrap = document.createElement('div');
   slotsWrap.className = 'swatches';
+  const reorder = (fromId, toId) => {
+    const arr = state.doc.palette;
+    const from = arr.findIndex(s => s.id === fromId), to = arr.findIndex(s => s.id === toId);
+    if (from < 0 || to < 0 || from === to) return;
+    beginChange();
+    arr.splice(to, 0, arr.splice(from, 1)[0]);
+    changed();
+  };
   for (const slot of state.doc.palette) {
     const b = document.createElement('button');
     b.className = 'swatch slot';
-    b.style.background = slot.color;
-    b.title = `${slot.name || 'slot'} — click to apply, double-click to edit`;
-    if (currentColor() === `slot:${slot.id}`) b.setAttribute('aria-pressed', 'true');
-    b.addEventListener('click', () => {
-      if (state.color === `slot:${slot.id}` || activeSlot === slot.id) activeSlot = slot.id;
-      applyColor(`slot:${slot.id}`, slot);
+    paintSwatch(b, slot);
+    b.title = `${slot.name || 'slot'} — click to select, drag to reorder`;
+    if (activeSlot === slot.id) b.setAttribute('aria-pressed', 'true');
+    b.addEventListener('click', () => { activeSlot = slot.id; renderPanel(); });
+    b.draggable = true;
+    b.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/slot-id', slot.id); e.dataTransfer.effectAllowed = 'move';
     });
-    b.addEventListener('dblclick', () => { activeSlot = slot.id; renderPanel(); });
+    b.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('text/slot-id')) e.preventDefault(); });
+    b.addEventListener('drop', e => {
+      e.preventDefault();
+      const from = e.dataTransfer.getData('text/slot-id');
+      if (from) reorder(from, slot.id);
+    });
     slotsWrap.appendChild(b);
   }
   const add = document.createElement('button');
@@ -1145,43 +1223,89 @@ function paletteSection() {
     activeSlot = slot.id;
     state.color = `slot:${slot.id}`;
     changed();
+    openSlotEditor(slot.id); // a fresh slot opens straight into its editor
   });
   slotsWrap.appendChild(add);
   sec.appendChild(fieldRow('Memory slots', slotsWrap));
 
   const slot = state.doc.palette.find(s => s.id === activeSlot);
   if (slot) {
-    const ed = document.createElement('div');
-    ed.className = 'slot-editor';
-    const slotPick = colorPicker(`slot:${slot.id}`,
-      () => slot.color,
-      Object.assign(hexv => {
-        slot.color = hexv;
-        render(); // every element referencing this slot recolors live
-      }, { begin: beginChange }),
-      changed);
-    const nInput = boundInput(() => slot.name || '', v => { slot.name = v; }, { placeholder: 'slot name' });
-    const del = document.createElement('button');
-    del.className = 'btn danger';
-    del.textContent = 'Remove slot';
-    del.addEventListener('click', () => {
-      beginChange();
-      // freeze current color into every user of the slot before removing it
-      const frozen = slot.color;
-      for (const el of state.doc.elements) {
-        if (el.color === `slot:${slot.id}`) el.color = frozen;
-        for (const seg of el.segments || []) if (seg.color === `slot:${slot.id}`) seg.color = frozen;
-      }
-      state.doc.palette = state.doc.palette.filter(s => s !== slot);
-      if (state.color === `slot:${slot.id}`) state.color = frozen;
-      activeSlot = null;
-      changed();
-    });
-    ed.append(fieldRow('Slot color', slotPick), fieldRow('Slot name', nInput),
-      patternControls(slot, `slot:${slot.id}`), del);
-    sec.appendChild(ed);
+    const row = document.createElement('div');
+    row.className = 'btn-row';
+    row.append(
+      smallButton('Apply', () => applyColor(`slot:${slot.id}`, slot),
+        'Apply this slot to the selected object(s)'),
+      smallButton('Edit', () => openSlotEditor(slot.id),
+        'Open the slot editor to change its colour + pattern'));
+    sec.appendChild(fieldRow(`Slot: ${slot.name || 'slot'}`, row));
   }
   return sec;
+}
+
+// ---- slot editor popup ----
+// A modal (outside the panel) that edits the selected slot's colour + pattern.
+// Colour propagates live via the slot:<id> reference; pattern is pushed by
+// propagateSlot. refresh() re-renders this while it is open, so every edit
+// updates every object using the slot in real time.
+function openSlotEditor(id) { slotModal = { id }; renderSlotModal(); }
+function closeSlotEditor() { slotModal = null; document.getElementById('slot-modal')?.remove(); }
+
+function renderSlotModal() {
+  if (!slotModal) return;
+  const slot = state.doc.palette.find(s => s.id === slotModal.id);
+  if (!slot) { closeSlotEditor(); return; }
+  let overlay = document.getElementById('slot-modal');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'slot-modal';
+    overlay.className = 'modal-overlay';
+    overlay.addEventListener('pointerdown', e => { if (e.target === overlay) closeSlotEditor(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && slotModal) closeSlotEditor(); });
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = '';
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+
+  const head = document.createElement('div');
+  head.className = 'modal-head';
+  const h = document.createElement('h2');
+  h.textContent = 'Edit memory slot';
+  const x = document.createElement('button');
+  x.className = 'modal-close';
+  x.textContent = '✕';
+  x.title = 'Close';
+  x.addEventListener('click', closeSlotEditor);
+  head.append(h, x);
+
+  const nInput = boundInput(() => slot.name || '', v => { slot.name = v; }, { placeholder: 'slot name' });
+  const slotPick = colorPicker(`slot:${slot.id}`,
+    () => slot.color,
+    Object.assign(hexv => { slot.color = hexv; render(); }, { begin: beginChange }),
+    changed, renderSlotModal);
+  const del = document.createElement('button');
+  del.className = 'btn danger';
+  del.textContent = 'Remove slot';
+  del.addEventListener('click', () => {
+    beginChange();
+    // freeze current colour into every user of the slot before removing it
+    const frozen = slot.color;
+    for (const el of state.doc.elements) {
+      if (el.color === `slot:${slot.id}`) el.color = frozen;
+      for (const seg of el.segments || []) if (seg.color === `slot:${slot.id}`) seg.color = frozen;
+    }
+    state.doc.palette = state.doc.palette.filter(s => s !== slot);
+    if (state.color === `slot:${slot.id}`) state.color = frozen;
+    activeSlot = null;
+    closeSlotEditor();
+    changed();
+  });
+  card.append(head,
+    fieldRow('Slot name', nInput),
+    fieldRow('Foreground', slotPick),
+    patternControls(slot, `slot:${slot.id}`, () => propagateSlot(slot), renderSlotModal),
+    del);
+  overlay.appendChild(card);
 }
 
 function widthControl(get, set, touchesDoc) {
@@ -1262,17 +1386,17 @@ function rangeControl(get, set, { min = 0, max = 1, step = 0.1 } = {}) {
 // Works on any object with .pattern/.patternBg/.patternScale (element or segment).
 // `fg` is the object's own colour, shown only via render — the bg defaults to
 // transparent (canvas shows through) until a colour is picked.
-function patternControls(obj, key) {
+function patternControls(obj, key, after, rerender = renderPanel) {
   const frag = document.createDocumentFragment();
   frag.appendChild(fieldRow('Pattern', mappedSelect(
     PATTERNS,
     () => obj.pattern || 'none',
-    v => { if (v === 'none') delete obj.pattern; else obj.pattern = v; })));
+    v => { if (v === 'none') delete obj.pattern; else obj.pattern = v; after?.(); })));
   if (obj.pattern && obj.pattern !== 'none') {
-    frag.appendChild(fieldRow('Pattern bg', patternBgControl(obj, key)));
+    frag.appendChild(fieldRow('Pattern bg', patternBgControl(obj, key, after, rerender)));
     frag.appendChild(fieldRow('Pattern scale', rangeControl(
       () => obj.patternScale ?? 1,
-      v => { obj.patternScale = v; },
+      v => { obj.patternScale = v; after?.(); },
       { min: 0.5, max: 4, step: 0.25 })));
   }
   return frag;
@@ -1281,7 +1405,7 @@ function patternControls(obj, key) {
 // Pattern-background chooser: transparent (the default) + memory-slot swatches +
 // a custom picker. Stored as a colour ref (hex or slot:<id>) resolved at paint,
 // so a slot-backed bg recolours live when the slot changes.
-function patternBgControl(obj, key) {
+function patternBgControl(obj, key, after, rerender = renderPanel) {
   const wrap = document.createElement('div');
   const row = document.createElement('div');
   row.className = 'swatches';
@@ -1291,7 +1415,7 @@ function patternBgControl(obj, key) {
     if (bg) b.style.background = bg;
     b.title = title;
     if (active) b.setAttribute('aria-pressed', 'true');
-    b.addEventListener('click', () => { beginChange(); onPick(); changed(); });
+    b.addEventListener('click', () => { beginChange(); onPick(); after?.(); changed(); });
     return b;
   };
   row.appendChild(swatch(null, 'Transparent', !obj.patternBg, () => { delete obj.patternBg; }));
@@ -1302,8 +1426,8 @@ function patternBgControl(obj, key) {
   wrap.appendChild(row);
   wrap.appendChild(colorPicker(`patbg:${key}`,
     () => (/^#[0-9a-f]{6}$/i.test(obj.patternBg || '') ? obj.patternBg : '#ffffff'),
-    Object.assign(hex => { obj.patternBg = hex; render(); }, { begin: beginChange }),
-    changed));
+    Object.assign(hex => { obj.patternBg = hex; after?.(); render(); }, { begin: beginChange }),
+    changed, rerender));
   return wrap;
 }
 

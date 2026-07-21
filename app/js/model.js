@@ -1,5 +1,7 @@
 // Document model, selection, history, persistence.
 
+import { polylineLength, subPath, splitSegments } from './geom.js';
+
 export const COLORS = [
   { name: 'Ink',     hex: '#2b2622' },
   { name: 'Red',     hex: '#c8352e' },
@@ -215,6 +217,34 @@ export function cloneElements(ids) {
   for (const c of out) if (c.group) c.group = cloneGroupChain(c.group);
   state.doc.elements.push(...out);
   return out;
+}
+
+// Cut a path at arc length tc into two child paths, as if sliced. Children inherit
+// all parent metadata (colour, width, label, pattern, caps, group, …); each keeps
+// the parent's outer cap and gets a clean cut on the new inner end. Segments are
+// sliced at tc, and any link that referenced the parent is removed. Returns the
+// two children, or null if the cut lands too close to an end.
+export function cutPath(el, tc) {
+  if (el?.type !== 'path') return null;
+  const total = polylineLength(el.pts);
+  if (tc <= 0.5 || tc >= total - 0.5) return null;
+  beginChange();
+  const [segsA, segsB] = splitSegments(el.segments, tc, total);
+  const mk = (pts, segments) => {
+    const c = JSON.parse(JSON.stringify(el)); // deep-copy so children never share refs
+    return Object.assign(c, { id: newId(), pts, segments });
+  };
+  const a = mk(subPath(el.pts, 0, tc), segsA);
+  const b = mk(subPath(el.pts, tc, total), segsB);
+  delete a.cap1; delete a.cap1flip; // a's tail is the fresh cut
+  delete b.cap0; delete b.cap0flip; // b's head is the fresh cut
+  const i = state.doc.elements.indexOf(el);
+  state.doc.elements.splice(i, 1, a, b); // children take the parent's paint slot
+  state.doc.elements = state.doc.elements.filter(x =>
+    !(x.type === 'link' && (x.a?.id === el.id || x.b?.id === el.id)));
+  state.selection = [{ id: a.id }, { id: b.id }];
+  changed();
+  return [a, b];
 }
 
 // Z-order: element order in doc.elements is paint order within its layer group.
