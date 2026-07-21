@@ -65,7 +65,7 @@ export function groupIsEmpty(gid) {
 }
 
 export const state = {
-  doc: { version: 3, elements: [], palette: [], groups: [], labelSlots: [] },
+  doc: { version: 3, elements: [], palette: [], groups: [], labelSlots: [], notes: '' },
   // selection entries: { id } for an element, { id, seg: i } for a path segment
   selection: [],
   tool: 'select',
@@ -75,6 +75,7 @@ export const state = {
   view: { tx: 0, ty: 0, s: 1 },
   history: [],
   future: [],
+  dirty: false, // unsaved changes since the last file save (drives the close prompt)
 };
 
 const AUTOSAVE_KEY = 'master-schemer-doc';
@@ -96,12 +97,20 @@ export function beginChange() {
   state.future = [];
 }
 
-// Call after mutating the doc.
-export function changed() {
+// Mark the doc dirty and schedule an autosave, WITHOUT triggering a re-render.
+// Used for changes that repaint themselves (notes typing), so a keystroke
+// doesn't rebuild the whole canvas/panel. load/new/save clear dirty again.
+export function touch() {
+  state.dirty = true;
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => {
     try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(state.doc)); } catch { /* full/blocked */ }
   }, 300);
+}
+
+// Call after mutating the doc.
+export function changed() {
+  touch();
   onChanged();
 }
 
@@ -271,13 +280,14 @@ function migrate(doc) {
   doc.palette ||= [];
   doc.groups ||= [];
   doc.labelSlots ||= [];
+  doc.notes ||= '';
   doc.version = 3;
   return doc;
 }
 
 export function newDoc() {
   beginChange();
-  state.doc = { version: 3, elements: [], palette: [], groups: [], labelSlots: [] };
+  state.doc = { version: 3, elements: [], palette: [], groups: [], labelSlots: [], notes: '' };
   state.selection = [];
   changed();
 }

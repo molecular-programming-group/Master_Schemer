@@ -1,6 +1,6 @@
 // App shell: event routing, sidebar, panel, keyboard, view controls, file ops.
 import {
-  state, COLORS, setOnChanged, beginChange, changed, undo, redo, newId, addElement,
+  state, COLORS, setOnChanged, beginChange, changed, touch, undo, redo, newId, addElement,
   deleteSelection, selectionSingle, byId, newDoc, loadDocJSON,
   isSemantic, resolveColor, resolveLabel, reorder, pruneGroups,
   byGroup, childGroups, topLevelGroups, groupElementMembers,
@@ -39,6 +39,7 @@ function refresh() {
   $('undoBtn').disabled = !state.history.length;
   $('redoBtn').disabled = !state.future.length;
   $('zoomLabel').textContent = `${Math.round(state.view.s * 100)}%`;
+  syncNoteRefs(); // a renamed object updates its live chips in the notes
 }
 setOnChanged(refresh);
 
@@ -97,13 +98,28 @@ svg.addEventListener('pointermove', e => {
     const id = e.target.closest?.('[data-id]')?.getAttribute('data-id') || null;
     if (id !== dataView.hoverId) { dataView.hoverId = id; render(); }
   }
+  // dragging a selection out over the notes panel to drop a reference: freeze
+  // the object-move so it doesn't chase the cursor off-canvas (rolled back on up)
+  if (state.tool === 'select' && isDragging() && overNotesPanel(e)) return;
   tools[state.tool]?.move?.(e, wp, sp);
 });
+
+// True when the pointer is over the notes panel (used to route a canvas drag
+// into a notes reference instead of an object move).
+const overNotesPanel = e =>
+  !!document.elementFromPoint(e.clientX, e.clientY)?.closest?.('#notesPanel');
 
 svg.addEventListener('pointerup', e => {
   if (panning) {
     panning = null;
     document.body.classList.remove('panning');
+    return;
+  }
+  // released over the notes panel mid-drag: convert the selection to note refs
+  // instead of moving it (undo the tracking move first)
+  if (state.tool === 'select' && isDragging() && state.selection.length && overNotesPanel(e)) {
+    cancelActive();
+    addSelectionToNotes(e.clientX, e.clientY);
     return;
   }
   tools[state.tool]?.up?.(e, screenToWorld(eventScreen(e)));
@@ -354,6 +370,7 @@ function createLink(targets) {
 window.addEventListener('keydown', e => {
   const t = e.target;
   if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
+  if (t instanceof HTMLElement && t.isContentEditable) return; // notes editor owns its keys
   if (e.key === ' ') { spaceHeld = true; document.body.classList.add('panning'); e.preventDefault(); return; }
   if ((e.ctrlKey || e.metaKey)) {
     const k = e.key.toLowerCase();
@@ -414,6 +431,20 @@ function setLabel(target, v) {
   target.label = v;
 }
 
+// A shared label can be bound to a memory colour slot: every element or segment
+// carrying the label then paints from that slot, colour and pattern alike. This
+// repaints all current users; new ones pick it up as they attach to the label.
+function applyLabelColorSlot(labelSlot) {
+  if (!labelSlot?.colorSlot) return;
+  const labelRef = `slot:${labelSlot.id}`, colorRef = `slot:${labelSlot.colorSlot}`;
+  for (const el of state.doc.elements) {
+    if (el.label === labelRef && el.color !== undefined) el.color = colorRef;
+    for (const seg of el.segments || []) if (seg.label === labelRef) seg.color = colorRef;
+  }
+  const paletteSlot = state.doc.palette.find(s => s.id === labelSlot.colorSlot);
+  if (paletteSlot) propagateSlot(paletteSlot); // push its pattern onto the new users
+}
+
 // ---- object sidebar (semantic registry) ----
 
 function displayName(el, i) {
@@ -433,11 +464,20 @@ const domainString = el => (el.segments || [])
   .slice().sort((a, b) => a.t0 - b.t0).map(s => s.string || '').join('');
 
 // Inline rename on double-click; single click selects.
-function sideItem({ depth, name, color, selected, onSelect, onRename, collapsible, collapsed, onToggle }) {
+function sideItem({ depth, name, color, selected, onSelect, onRename, collapsible, collapsed, onToggle, dragRef }) {
   const row = document.createElement('div');
   row.className = 'side-item';
   row.style.paddingLeft = `${8 + depth * 14}px`;
   if (selected) row.setAttribute('aria-current', 'true');
+  // draggable into the notes panel: drops a live reference to this object/group
+  if (dragRef) {
+    row.draggable = true;
+    row.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/scheme-ref', JSON.stringify(dragRef));
+      e.dataTransfer.setData('text/plain', name);
+      e.dataTransfer.effectAllowed = 'copy';
+    });
+  }
   // caret column: a toggle for parents, an empty spacer for leaves (keeps labels aligned)
   const caret = document.createElement('span');
   caret.className = 'side-caret';
@@ -543,6 +583,7 @@ function objectItems(els, depth, into) {
       selected: state.selection.some(s => s.id === el.id && s.seg === undefined),
       onSelect: () => { state.selection = [{ id: el.id }]; refresh(); },
       onRename: v => { setLabel(el, v); },
+      dragRef: { kind: 'el', id: el.id },
     };
     const segs = el.type === 'path' && (el.segments || []).length;
     const { box } = parentNode(into, `p:${el.id}`, opts, segs);
@@ -563,6 +604,7 @@ function renderGroupTree(gid, depth, into, placed) {
       members.every(m => state.selection.some(s => s.id === m.id && s.seg === undefined)),
     onSelect: () => { state.selection = members.map(m => ({ id: m.id })); refresh(); },
     onRename: v => { g.name = v; },
+    dragRef: { kind: 'grp', id: gid },
   }, childGroups(gid).length || direct.length);
   row.classList.add('side-card');
   if (!box) return;
@@ -608,6 +650,7 @@ function renderSidebar() {
       selected: state.selection.some(s => s.id === card.id),
       onSelect: () => { state.selection = [{ id: card.id }]; refresh(); },
       onRename: v => { card.title = v; },
+      dragRef: { kind: 'el', id: card.id },
     }, groupsHere.length + inside.length);
     row.classList.add('side-card');
     if (box) {
@@ -972,11 +1015,11 @@ function currentColor() {
 
 function hsvToHex(h, s, v) {
   const f = n => {
-    const k = (n + h / 30) % 12;
-    const c = v - v * s * Math.max(0, Math.min(k - 3, 9 - k, 1));
+    const k = (n + h / 60) % 6;
+    const c = v - v * s * Math.max(0, Math.min(k, 4 - k, 1));
     return Math.round(c * 255).toString(16).padStart(2, '0');
   };
-  return `#${f(0)}${f(8)}${f(4)}`;
+  return `#${f(5)}${f(3)}${f(1)}`;
 }
 
 function hexToHsv(hex) {
@@ -1534,10 +1577,31 @@ function labelFields(target, placeholder) {
       target.label = resolveLabel(target.label || ''); // detach: freeze current text
     } else {
       target.label = `slot:${sel.value}`;
+      applyLabelColorSlot(state.doc.labelSlots.find(s => s.id === sel.value));
     }
     changed();
   });
   frag.appendChild(fieldRow('Shared label', sel));
+
+  // when the target is on a shared label, offer to bind that label to a memory
+  // colour slot — every element carrying the label then inherits its colour+pattern
+  const labelSlot = ref && state.doc.labelSlots.find(s => s.id === ref);
+  if (labelSlot) {
+    const csel = document.createElement('select');
+    for (const [v, t] of [['', '— none —'], ...state.doc.palette.map(s => [s.id, s.name || 'slot'])]) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = t;
+      csel.appendChild(o);
+    }
+    csel.value = labelSlot.colorSlot || '';
+    csel.addEventListener('change', () => {
+      beginChange();
+      if (csel.value) labelSlot.colorSlot = csel.value; else delete labelSlot.colorSlot;
+      applyLabelColorSlot(labelSlot);
+      changed();
+    });
+    frag.appendChild(fieldRow('Label color slot', csel));
+  }
   return frag;
 }
 
@@ -1936,6 +2000,7 @@ async function saveJSON(saveAs = false) {
     } else {
       download('scheme.schemer.json', text, 'application/json');
     }
+    state.dirty = false;
     $('hint').textContent = 'Saved.';
     toast('Saved ✓');
   } catch (err) {
@@ -1950,6 +2015,8 @@ async function openFile() {
       if (!path) return;
       loadDocJSON(await TAURI.fs.readTextFile(path));
       currentFile = path;
+      state.dirty = false;
+      renderNotes();
       fitView();
     } else {
       $('fileInput').click();
@@ -2046,6 +2113,8 @@ $('newBtn').addEventListener('click', () => {
   if (!state.doc.elements.length || confirm('Replace the current scheme with a blank canvas? (Undo can bring it back.)')) {
     newDoc();
     currentFile = null;
+    state.dirty = false;
+    renderNotes();
   }
 });
 $('openBtn').addEventListener('click', openFile);
@@ -2053,7 +2122,7 @@ $('fileInput').addEventListener('change', async e => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
-  try { loadDocJSON(await file.text()); currentFile = null; fitView(); }
+  try { loadDocJSON(await file.text()); currentFile = null; state.dirty = false; renderNotes(); fitView(); }
   catch { $('hint').textContent = `Could not read ${file.name} — not a Master Schemer file.`; }
 });
 $('libInput').addEventListener('change', async e => {
@@ -2091,10 +2160,183 @@ $('hoverToggle').addEventListener('click', () => {
 
 window.addEventListener('resize', render);
 
+// ---- unsaved-changes guard on close ----
+// Tauri: intercept the window close and ask natively. Browser: the standard
+// beforeunload prompt (skipped under Tauri so we don't double-prompt).
+if (TAURI?.window?.getCurrentWindow) {
+  const win = TAURI.window.getCurrentWindow();
+  win.onCloseRequested(async event => {
+    if (!state.dirty) return; // clean → let it close
+    event.preventDefault();   // must be synchronous, before any await
+    const leave = await TAURI.dialog.ask(
+      'You have unsaved changes. Close without saving?',
+      { title: 'Master Schemer', kind: 'warning' });
+    if (leave) win.destroy();
+  }).catch(() => { /* window API/permission absent: fall through, no guard */ });
+} else {
+  window.addEventListener('beforeunload', e => {
+    if (state.dirty) { e.preventDefault(); e.returnValue = ''; }
+  });
+}
+
+// ---- notes panel (Markdown scratch page with live object references) ----
+// The editor is a contenteditable pad. Object references are non-editable chips
+// carrying a {kind,id}; the free text between them is Markdown source. On every
+// edit the DOM is serialized back to a token string in state.doc.notes (so it
+// saves with the file). When an object is renamed, only the chips' text is
+// refreshed (syncNoteRefs), so the caret never jumps. ponytail: token format is
+// {{el:ID}} / {{grp:ID}} with no escaping of a literal "{{" typed in prose — add
+// a fence only if that collision ever actually bites.
+
+const notesEditor = $('notesEditor');
+const REF_RE = /\{\{(el|grp):([^}]+)\}\}/g;
+
+// The live text of a reference: an element's display name, or — for a group —
+// the name of its parent-most (outermost) group.
+function refLabel(kind, id) {
+  if (kind === 'grp') {
+    let g = byGroup(id);
+    if (!g) return '(deleted group)';
+    while (g.parent && byGroup(g.parent)) g = byGroup(g.parent);
+    return g.name || 'group';
+  }
+  const el = byId(id);
+  return el ? displayName(el, state.doc.elements.indexOf(el)) : '(deleted)';
+}
+
+function makeChip(kind, id) {
+  const chip = document.createElement('span');
+  chip.className = 'note-ref';
+  chip.contentEditable = 'false';
+  chip.dataset.kind = kind;
+  chip.dataset.ref = id;
+  chip.textContent = refLabel(kind, id);
+  return chip;
+}
+
+// token string → editor DOM (full rebuild; used on load/new only)
+function renderNotes() {
+  const str = state.doc.notes || '';
+  const frag = document.createDocumentFragment();
+  const pushText = text => text.split('\n').forEach((line, i) => {
+    if (i) frag.appendChild(document.createElement('br'));
+    if (line) frag.appendChild(document.createTextNode(line));
+  });
+  let last = 0, m;
+  REF_RE.lastIndex = 0;
+  while ((m = REF_RE.exec(str))) {
+    if (m.index > last) pushText(str.slice(last, m.index));
+    frag.appendChild(makeChip(m[1], m[2]));
+    last = m.index + m[0].length;
+  }
+  if (last < str.length) pushText(str.slice(last));
+  notesEditor.replaceChildren(frag);
+  updateNotesPlaceholder();
+}
+
+// editor DOM → token string
+function serializeNotes() {
+  let text = '';
+  const walk = node => {
+    for (const c of node.childNodes) {
+      if (c.nodeType === Node.TEXT_NODE) text += c.data;
+      else if (c.nodeName === 'BR') text += '\n';
+      else if (c.classList?.contains('note-ref')) text += `{{${c.dataset.kind}:${c.dataset.ref}}}`;
+      else { // a block wrapper (contenteditable puts each new line in its own <div>)
+        if (text && !text.endsWith('\n')) text += '\n';
+        walk(c);
+      }
+    }
+  };
+  walk(notesEditor);
+  return text;
+}
+
+// A rename elsewhere: refresh chip text in place, leaving prose and caret alone.
+function syncNoteRefs() {
+  for (const chip of notesEditor.querySelectorAll('.note-ref')) {
+    const t = refLabel(chip.dataset.kind, chip.dataset.ref);
+    if (chip.textContent !== t) chip.textContent = t;
+  }
+}
+
+function updateNotesPlaceholder() {
+  notesEditor.classList.toggle('is-empty',
+    !notesEditor.textContent.trim() && !notesEditor.querySelector('.note-ref'));
+}
+
+notesEditor.addEventListener('input', () => {
+  state.doc.notes = serializeNotes();
+  updateNotesPlaceholder();
+  touch(); // dirty + autosave, but no full re-render on every keystroke
+});
+
+// paste as plain text so foreign HTML can't inject stray nodes into the notes
+notesEditor.addEventListener('paste', e => {
+  e.preventDefault();
+  document.execCommand('insertText', false, e.clipboardData.getData('text/plain'));
+});
+
+function refFromDrag(dt) {
+  try { return JSON.parse(dt.getData('text/scheme-ref')); } catch { return null; }
+}
+notesEditor.addEventListener('dragover', e => {
+  if (e.dataTransfer.types.includes('text/scheme-ref')) e.preventDefault();
+});
+notesEditor.addEventListener('drop', e => {
+  const ref = refFromDrag(e.dataTransfer);
+  if (!ref) return;
+  e.preventDefault();
+  insertChipAtPoint(e.clientX, e.clientY, ref.kind, ref.id);
+});
+
+function insertChipAtPoint(x, y, kind, id) {
+  notesEditor.focus();
+  const chip = makeChip(kind, id);
+  const space = document.createTextNode(' ');
+  const range = document.caretRangeFromPoint?.(x, y);
+  if (range && notesEditor.contains(range.startContainer)) {
+    range.insertNode(space);
+    range.insertNode(chip); // chip lands before the space → "chip␠" order
+  } else {
+    notesEditor.append(chip, space);
+  }
+  state.doc.notes = serializeNotes();
+  updateNotesPlaceholder();
+  touch();
+}
+
+// A selection dragged from the canvas onto the notes panel. A whole group (all
+// its members selected) becomes one group chip; otherwise one chip per object.
+function addSelectionToNotes(x, y) {
+  const els = state.selection.filter(s => s.seg === undefined).map(s => byId(s.id)).filter(Boolean);
+  if (!els.length) return;
+  const gid = els[0].group;
+  const asGroup = gid && els.every(el => el.group === gid) &&
+    groupElementMembers(gid).length === els.length;
+  if (asGroup) insertChipAtPoint(x, y, 'grp', gid);
+  else for (const el of els) insertChipAtPoint(x, y, 'el', el.id);
+}
+
+// ---- notes panel visibility (a UI pref, kept in localStorage not the file) ----
+
+const NOTES_HIDDEN_KEY = 'master-schemer-notes-hidden';
+function setNotesHidden(hidden) {
+  document.body.classList.toggle('notes-hidden', hidden);
+  $('notesToggle').setAttribute('aria-pressed', String(!hidden));
+  try { localStorage.setItem(NOTES_HIDDEN_KEY, hidden ? '1' : ''); } catch { /* full */ }
+  render(); // canvas width changed → refit the grid rect on the next frame
+}
+$('notesHide').addEventListener('click', () => setNotesHidden(true));
+$('notesToggle').addEventListener('click', () =>
+  setNotesHidden(!document.body.classList.contains('notes-hidden')));
+
 // ---- boot ----
 
 // Start every session on a fresh blank canvas (autosave still writes, so a
 // future "recover last" could read it, but we no longer reopen it on launch).
+try { setNotesHidden(localStorage.getItem(NOTES_HIDDEN_KEY) === '1'); } catch { /* default: shown */ }
+renderNotes();
 setTool('select');
 refresh();
 state.view.tx = 80; state.view.ty = 80;

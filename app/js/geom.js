@@ -214,6 +214,32 @@ export function splitSegments(segs, tc, total) {
   return [before, after];
 }
 
+// Re-map a path's segments when one endpoint is dragged (the line resized).
+// Segment arc lengths are measured from the start, so:
+//  - dragging the END vertex: segments keep their position; one already sitting
+//    at the old end grows or shrinks with the new total.
+//  - dragging the START vertex: every segment shifts by the length change (the
+//    origin moved), except one already anchored at the start, which stays at 0.
+// Either way a segment squeezed outside the new bounds is dropped. `end` is
+// truthy for the last vertex, falsy for the first.
+export function resizeEndSegments(segs, oldTotal, newTotal, end) {
+  const d = newTotal - oldTotal;
+  const out = [];
+  for (const s of segs || []) {
+    let t0 = s.t0, t1 = s.t1;
+    if (end) {
+      if (Math.abs(t1 - oldTotal) < 0.5) t1 = newTotal; // end-anchored: track the end
+    } else {
+      t1 += d;
+      t0 = Math.abs(t0) < 0.5 ? 0 : t0 + d; // start-anchored: stay pinned at 0
+    }
+    t0 = Math.max(0, Math.min(t0, newTotal));
+    t1 = Math.max(0, Math.min(t1, newTotal));
+    if (t1 - t0 > 0.01) out.push({ ...s, t0, t1 });
+  }
+  return out;
+}
+
 export const rectsIntersect = (a, b) =>
   a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
 

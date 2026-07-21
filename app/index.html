@@ -132,12 +132,22 @@
   <div id="panelBody"></div>
 </aside>
 
+<aside id="notesPanel" aria-label="Notes">
+  <div class="notes-head">
+    <span>Notes</span>
+    <button class="icon-btn notes-hide" id="notesHide" data-tip="Hide notes" aria-label="Hide notes">×</button>
+  </div>
+  <div id="notesEditor" contenteditable="true" spellcheck="true"
+       data-ph="Write notes in Markdown. Drag an object here — from the list or the canvas — to drop in a live reference to its name."></div>
+</aside>
+
 <footer id="statusbar">
   <span id="hint"></span>
   <span class="status-right">
     <button class="status-toggle" id="snapToggle" aria-pressed="true" data-tip="Snap annotation shapes to the half-grid">Snap</button>
     <button class="status-toggle" id="dataToggle" aria-pressed="false" data-tip="Show every object's data box">Data</button>
     <button class="status-toggle" id="hoverToggle" aria-pressed="false" data-tip="Show an object's data when you hover it">Data on hover</button>
+    <button class="status-toggle" id="notesToggle" aria-pressed="true" data-tip="Show or hide the notes panel">Notes</button>
     <span id="coords">0, 0</span>
   </span>
 </footer>

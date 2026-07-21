@@ -682,6 +682,18 @@ function renderSelection(overlay) {
         }, overlay);
       }
     }
+    // text notes resize horizontally: the wrap width follows the handle and the
+    // height flows from the wrapped content (no vertical handle — nothing to set)
+    if (single && el.type === 'text') {
+      const my = (b[1] + b[3]) / 2, hs = 9 / s;
+      for (const [hx, name] of [[b[0], 'w'], [b[2], 'e']]) {
+        svgEl('rect', {
+          x: hx - hs / 2, y: my - hs / 2, width: hs, height: hs,
+          fill: '#ffffff', stroke: SEL, 'stroke-width': 1.5 / s,
+          'data-handle': name, 'data-id': el.id, style: 'cursor:ew-resize',
+        }, overlay);
+      }
+    }
     // path endpoints: drag to keep laying down line (select tool)
     if (el.type === 'path' && single && state.tool === 'select') {
       const a = el.pts[0], z = el.pts[el.pts.length - 1];
@@ -709,7 +721,18 @@ function renderSelection(overlay) {
 
 // ---- main render ----
 
+// render() coalesces to one paint per animation frame: a drag or pan fires many
+// pointermove → changed() → render() calls, but only the last one before the
+// frame paints does real work. renderNow() forces an immediate synchronous
+// render (used by SVG export, which reads the live DOM right after).
+let rafPending = false;
 export function render() {
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => { rafPending = false; renderNow(); });
+}
+
+export function renderNow(cull = true) {
   const { tx, ty, s } = state.view;
   $('world').setAttribute('transform', `translate(${tx} ${ty}) scale(${s})`);
   $('canvasWrap').style.background = state.doc.bg || '';
@@ -730,6 +753,22 @@ export function render() {
   grid.setAttribute('height', vh / s + 3 * GRID);
   grid.setAttribute('opacity', s < 0.4 ? 0 : Math.min(1, (s - 0.4) / 0.2 + 0.35));
 
+  // Viewport culling: only elements whose bbox meets the visible world rect
+  // (plus a margin, so labels/caps just off-screen don't pop) are keyed, built,
+  // and inserted. This bounds per-frame stringify + DOM node count to what's on
+  // screen instead of the whole document. cull=false forces everything (export).
+  let vx0 = -Infinity, vy0 = -Infinity, vx1 = Infinity, vy1 = Infinity;
+  if (cull) {
+    const m = 150 / s;
+    vx0 = -tx / s - m; vy0 = -ty / s - m;
+    vx1 = (vw - tx) / s + m; vy1 = (vh - ty) / s + m;
+  }
+  const onScreen = el => {
+    const b = elementBBox(el);
+    return b[2] >= vx0 && b[0] <= vx1 && b[3] >= vy0 && b[1] <= vy1;
+  };
+  const selected = id => state.selection.some(sel => sel.id === id);
+
   // cards sit below everything; all other elements paint in doc order (z-order)
   const salt = JSON.stringify(state.doc.palette) + JSON.stringify(state.doc.labelSlots || []);
   const cardNodes = [], linkNodes = [], drawNodes = [], divs = [], measures = [];
@@ -737,7 +776,8 @@ export function render() {
   for (const el of state.doc.elements) {
     const renderer = RENDERERS[el.type];
     if (!renderer) continue;
-    seen.add(el.id);
+    seen.add(el.id); // keep every live element's cache entry; only cull from the DOM
+    if (cull && !onScreen(el) && !selected(el.id)) continue;
     const key = elKey(el, salt);
     let entry = nodeCache.get(el.id);
     if (!entry || entry.key !== key) {
@@ -857,6 +897,7 @@ async function katexCSS() {
 }
 
 export async function exportSVGString() {
+  renderNow(false); // export clones the live layers — force every element in, unculled
   const box = contentBBox();
   if (!box) return null;
   const m = 40;

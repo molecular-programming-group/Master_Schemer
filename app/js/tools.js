@@ -6,6 +6,7 @@ import {
 import {
   GRID, snap, snapPt, snapHalf, snapHalfPt, eq, dirOf, snap8, simplify, polylineLength,
   nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex, bladeCross,
+  resizeEndSegments,
 } from './geom.js';
 import { svgEl, SEL, inkD, worldToScreen, elementBBox } from './render.js';
 
@@ -263,15 +264,25 @@ export const tools = {
       const handle = t.closest?.('[data-handle]');
       if (handle) {
         const el = byId(handle.getAttribute('data-id'));
-        const orig = el.type === 'ellipse'
-          ? { x: el.cx - el.rx, y: el.cy - el.ry, w: 2 * el.rx, h: 2 * el.ry }
-          : { x: el.x, y: el.y, w: el.w, h: el.h };
+        let orig;
+        if (el.type === 'ellipse') orig = { x: el.cx - el.rx, y: el.cy - el.ry, w: 2 * el.rx, h: 2 * el.ry };
+        else if (el.type === 'text') { const b = elementBBox(el); orig = { x: el.x, w: b[2] - b[0] }; }
+        else orig = { x: el.x, y: el.y, w: el.w, h: el.h };
         drag = { mode: 'resize', el, handle: handle.getAttribute('data-handle'), orig };
         return;
       }
+      // grabbing a line's end handle resizes it (moves that endpoint), consuming
+      // or extruding line without shifting the segments. To keep laying down new
+      // line instead, pick the Line tool (L) and drag from the end.
       const pend = t.closest?.('[data-pend]');
       if (pend) {
-        beginExtend(byId(pend.getAttribute('data-id')), +pend.getAttribute('data-pend'));
+        const el = byId(pend.getAttribute('data-id'));
+        const end = +pend.getAttribute('data-pend'); // 0 = first vertex, 1 = last
+        drag = {
+          mode: 'endresize', el, end, i: end ? el.pts.length - 1 : 0,
+          origSegs: JSON.parse(JSON.stringify(el.segments || [])),
+          origTotal: polylineLength(el.pts),
+        };
         return;
       }
       const aend = t.closest?.('[data-aend]');
@@ -307,6 +318,22 @@ export const tools = {
         const el = byId(id);
         const segAttr = t.getAttribute('data-seg');
         const entry = segAttr !== null ? { id, seg: +segAttr } : { id };
+        // A card's interior is transparent to the pointer: a press that isn't on
+        // the title or the border starts a marquee, so objects sitting on the card
+        // can be boxed without grabbing the card itself. Select/move the card by
+        // its title, border, or corner handles.
+        if (el?.type === 'card' && segAttr === null &&
+            t.getAttribute?.('data-role') !== 'card-title') {
+          const m = Math.max(10 / state.view.s, 6);
+          const nearBorder =
+            Math.abs(wp[0] - el.x) < m || Math.abs(wp[0] - (el.x + el.w)) < m ||
+            Math.abs(wp[1] - el.y) < m || Math.abs(wp[1] - (el.y + el.h)) < m;
+          if (!nearBorder) {
+            if (!e.shiftKey) { state.selection = []; changed(); }
+            drag = { mode: 'marquee', start: wp, add: e.shiftKey };
+            return;
+          }
+        }
         if (e.shiftKey) {
           const i = state.selection.findIndex(s => s.id === entry.id && s.seg === entry.seg);
           if (i >= 0) state.selection.splice(i, 1); else state.selection.push(entry);
@@ -383,6 +410,14 @@ export const tools = {
     move(e, wp) {
       if (!drag) return;
       if (drag.mode === 'extend') { moveExtend(wp); return; }
+      if (drag.mode === 'endresize') {
+        began();
+        const el = drag.el;
+        el.pts[drag.i] = snapHalfPt(wp);
+        el.segments = resizeEndSegments(drag.origSegs, drag.origTotal, polylineLength(el.pts), drag.end);
+        changed();
+        return;
+      }
       if (drag.mode === 'aend') {
         began();
         drag.el.pts[drag.i] = annSnap(wp);
@@ -416,6 +451,19 @@ export const tools = {
         for (const it of drag.items) applyDelta(it.el, it.orig, dx, dy);
         changed();
       } else if (drag.mode === 'resize') {
+        // text: only the wrap width is adjustable — set el.w (and shift x on the
+        // west handle); the box becomes a wrapping note once it has a width
+        if (drag.el.type === 'text') {
+          const o = drag.orig, h = drag.handle, p = annSnap(wp);
+          let x0 = o.x, x1 = o.x + o.w;
+          if (h.includes('w')) x0 = Math.min(p[0], x1 - GRID);
+          if (h.includes('e')) x1 = Math.max(p[0], x0 + GRID);
+          began();
+          drag.el.x = r1(x0);
+          drag.el.w = r1(x1 - x0);
+          changed();
+          return;
+        }
         const o = drag.orig, h = drag.handle, el = drag.el;
         let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
         // cards keep the whole-grid lattice; rect/ellipse follow the snap toggle
@@ -448,6 +496,13 @@ export const tools = {
     up(e, wp) {
       if (!drag) return;
       if (drag.mode === 'extend') { endExtend(); return; }
+      if (drag.mode === 'endresize') {
+        const el = drag.el;
+        drag = null;
+        el.pts = el.pts.filter((p, i) => i === 0 || !eq(p, el.pts[i - 1])); // drop dup neighbours
+        changed();
+        return;
+      }
       // a click (no drag) on an already-group-selected object drills one level in
       if (drag.mode === 'move' && drag.drill && !drag.moved) {
         const { chain, level, entry } = drag.drill;

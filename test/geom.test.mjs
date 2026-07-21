@@ -4,8 +4,25 @@ import assert from 'node:assert/strict';
 import {
   GRID, snap, snapHalf, snap8, simplify, polylineLength, pointAt, nearestOnPath,
   subPath, rectEdgePoint, mergePaths, rot90, flipPt, insertIndex,
-  convexHull, ellipsePoints, roundedPathD,
+  convexHull, ellipsePoints, roundedPathD, resizeEndSegments,
 } from '../app/js/geom.js';
+
+test('resizeEndSegments keeps segments put, growing/consuming only the touched end', () => {
+  const segs = [{ t0: 0, t1: 20 }, { t0: 40, t1: 60 }, { t0: 80, t1: 100 }];
+  // extrude the END (100 → 140): interior segment unmoved, end-anchored one grows
+  assert.deepEqual(resizeEndSegments(segs, 100, 140, 1),
+    [{ t0: 0, t1: 20 }, { t0: 40, t1: 60 }, { t0: 80, t1: 140 }]);
+  // retrace the END (100 → 50): end-anchored consumed, one clipped, one gone
+  assert.deepEqual(resizeEndSegments(segs, 100, 50, 1),
+    [{ t0: 0, t1: 20 }, { t0: 40, t1: 50 }]);
+  // extrude the START (100 → 130, d=+30): start-anchored stays at 0, rest shift up
+  assert.deepEqual(resizeEndSegments(segs, 100, 130, 0),
+    [{ t0: 0, t1: 50 }, { t0: 70, t1: 90 }, { t0: 110, t1: 130 }]);
+  // retrace the START (100 → 70, d=-30): start-anchored [0,20] is consumed away,
+  // the rest shift down by 30
+  assert.deepEqual(resizeEndSegments(segs, 100, 70, 0),
+    [{ t0: 10, t1: 30 }, { t0: 50, t1: 70 }]);
+});
 
 test('roundedPathD fillets interior corners, keeps ends sharp', () => {
   const pts = [[0, 0], [100, 0], [100, 100]]; // right then down (90° corner)
