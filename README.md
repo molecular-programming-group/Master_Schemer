@@ -48,8 +48,8 @@ The Cut tool (`X`) slices one line into two child objects. Drag a blade across
 the canvas. The moment it crosses a line, a dot appears at the crossing and
 slides as you move, marking where the cut will land. Release and the line
 splits there. Both halves inherit the parent's color, width, label, segments,
-and group. Each keeps its outer end cap while the two fresh cut ends stay
-clean. A cut only ever touches the first line the blade meets, so one stroke
+group, and full pair of end caps. A cut only ever touches the first line the
+blade meets, so one stroke
 never shreds a whole diagram. Segments split at the cut as well: slice a span a
 third of the way along and one child keeps that third, the other keeps the
 rest.

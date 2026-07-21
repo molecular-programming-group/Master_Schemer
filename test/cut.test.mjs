@@ -43,10 +43,10 @@ test('cutPath slices a line into two inheriting children, drops links', () => {
   assert.deepEqual(a.pts, [[0, 0], [40, 0]]);
   assert.deepEqual(b.pts, [[40, 0], [100, 0]]);
 
-  // metadata inherited; caps: outer kept, cut ends cleaned
+  // metadata inherited; both children carry the parent's full cap pair
   assert.equal(a.color, 'slot:s1'); assert.equal(a.label, 'chain'); assert.equal(a.group, 'g1');
-  assert.equal(a.cap0, 'harpoon'); assert.equal(a.cap1, undefined);
-  assert.equal(b.cap0, undefined); assert.equal(b.cap1, 'arrow');
+  assert.equal(a.cap0, 'harpoon'); assert.equal(a.cap1, 'arrow');
+  assert.equal(b.cap0, 'harpoon'); assert.equal(b.cap1, 'arrow');
 
   // segment [20,90] split across the cut and rebased
   assert.deepEqual(a.segments, [{ t0: 20, t1: 40, color: 'blue' }]);

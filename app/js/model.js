@@ -219,11 +219,11 @@ export function cloneElements(ids) {
   return out;
 }
 
-// Cut a path at arc length tc into two child paths, as if sliced. Children inherit
-// all parent metadata (colour, width, label, pattern, caps, group, …); each keeps
-// the parent's outer cap and gets a clean cut on the new inner end. Segments are
-// sliced at tc, and any link that referenced the parent is removed. Returns the
-// two children, or null if the cut lands too close to an end.
+// Cut a path at arc length tc into two child paths, as if sliced. Both children
+// inherit the full parent metadata — colour, width, label, pattern, group, and
+// the complete cap pair on both ends. Segments are sliced at tc, and any link
+// that referenced the parent is removed. Returns the two children, or null if
+// the cut lands too close to an end.
 export function cutPath(el, tc) {
   if (el?.type !== 'path') return null;
   const total = polylineLength(el.pts);
@@ -236,8 +236,6 @@ export function cutPath(el, tc) {
   };
   const a = mk(subPath(el.pts, 0, tc), segsA);
   const b = mk(subPath(el.pts, tc, total), segsB);
-  delete a.cap1; delete a.cap1flip; // a's tail is the fresh cut
-  delete b.cap0; delete b.cap0flip; // b's head is the fresh cut
   const i = state.doc.elements.indexOf(el);
   state.doc.elements.splice(i, 1, a, b); // children take the parent's paint slot
   state.doc.elements = state.doc.elements.filter(x =>

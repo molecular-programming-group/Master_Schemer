@@ -1681,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "master-schemer"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "tauri",
  "tauri-build",
