@@ -119,6 +119,37 @@ export function subPath(pts, t0, t1) {
   return out;
 }
 
+// The polyline resampled every ~step units, each sample averaged over ±h of arc
+// length: wiggles shorter than 2h flatten out, corners round off. Past the ends
+// the path is mirrored through its end point, so the ends stay put, straight
+// runs are unchanged, and a wiggle flattens right up to the end too.
+// Used for text that rides a strand's contour.
+export function smoothPolyline(pts, h, step = 2) {
+  const L = polylineLength(pts);
+  if (!(L > 0) || !(h > 0)) return pts.map(p => [p[0], p[1]]);
+  const n = Math.max(1, Math.ceil(L / step));
+  const s = Array.from({ length: n + 1 }, (_, i) => pointAt(pts, L * i / n));
+  const at = j => { // odd reflection beyond either end
+    if (j < 0) { j = Math.min(-j, n); return [2 * s[0][0] - s[j][0], 2 * s[0][1] - s[j][1]]; }
+    if (j > n) { j = Math.max(2 * n - j, 0); return [2 * s[n][0] - s[j][0], 2 * s[n][1] - s[j][1]]; }
+    return s[j];
+  };
+  const k = Math.max(1, Math.round(h * n / L));
+  return s.map((_, i) => {
+    let x = 0, y = 0;
+    for (let j = i - k; j <= i + k; j++) { const q = at(j); x += q[0]; y += q[1]; }
+    return [x / (2 * k + 1), y / (2 * k + 1)];
+  });
+}
+
+// The polyline lengthened by d at both ends, straight on along its end tangents.
+export function extendPolyline(pts, d) {
+  const n = pts.length;
+  if (n < 2) return pts.map(p => [p[0], p[1]]);
+  const out = (p, q) => { const l = dist(p, q) || 1; return [p[0] + (p[0] - q[0]) / l * d, p[1] + (p[1] - q[1]) / l * d]; };
+  return [out(pts[0], pts[1]), ...pts.map(p => [p[0], p[1]]), out(pts[n - 1], pts[n - 2])];
+}
+
 // SVG path data for a polyline with every interior vertex filleted by a
 // circular arc of `radius` (world units) — the "elbow bend" of the curve tool.
 // Endpoints stay sharp, and corners whose adjacent edges are too short for the

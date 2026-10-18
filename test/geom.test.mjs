@@ -5,7 +5,25 @@ import {
   GRID, snap, snapHalf, snap8, simplify, polylineLength, pointAt, nearestOnPath,
   subPath, rectEdgePoint, mergePaths, rot90, flipPt, insertIndex,
   convexHull, ellipsePoints, roundedPathD, resizeEndSegments, basePairRungs, defaultBases,
+  smoothPolyline, extendPolyline,
 } from '../app/js/geom.js';
+
+test('smoothPolyline keeps straight runs and ends, flattens a zigzag', () => {
+  const line = smoothPolyline([[0, 0], [100, 0]], 12);
+  assert.deepEqual(line[0], [0, 0]);
+  assert.deepEqual(line[line.length - 1], [100, 0]);
+  assert.ok(line.every(p => Math.abs(p[1]) < 1e-9));
+  // zigzag of amplitude 6 and period 12 along x: interior samples lie near the axis
+  const zig = [[0, 0]];
+  for (let i = 1; i < 20; i++) zig.push([i * 6, i % 2 ? 6 : -6]);
+  zig.push([120, 0]);
+  const sm = smoothPolyline(zig, 12);
+  assert.ok(sm.every(p => Math.abs(p[1]) < 1.5), 'zigzag flattened, ends included');
+});
+
+test('extendPolyline continues both end tangents', () => {
+  assert.deepEqual(extendPolyline([[0, 0], [10, 0], [10, 10]], 5), [[-5, 0], [0, 0], [10, 0], [10, 10], [10, 15]]);
+});
 
 test('resizeEndSegments keeps segments put, growing/consuming only the touched end', () => {
   const segs = [{ t0: 0, t1: 20 }, { t0: 40, t1: 60 }, { t0: 80, t1: 100 }];
