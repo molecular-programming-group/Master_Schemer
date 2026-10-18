@@ -54,6 +54,7 @@ body {
   display: grid;
   grid-template:
     "topbar topbar  topbar topbar topbar" 48px
+    "ctrl   ctrl    ctrl   ctrl   ctrl"   var(--ctrl-h, 38px)
     "rail   sidebar canvas panel  notes"  1fr
     "status status  status status status" 28px
     / var(--rail-w, 48px) var(--side-w, 200px) 1fr var(--panel-w, 264px) var(--notes-w, 300px);
@@ -63,6 +64,8 @@ body {
    the space. The sidebar and properties columns hold two panels each and
    only collapse once both are hidden. */
 body.hide-tools { --rail-w: 0px; }
+body.hide-toolbar { --ctrl-h: 0px; }
+body.hide-toolbar #ctrlbar,
 body.hide-tools #toolrail,
 body.hide-objects .side-head-obj, body.hide-objects #sidebarBody,
 body.hide-library .side-head-lib, body.hide-library #libraryBody,
@@ -106,6 +109,20 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 .topbar-group { display: flex; align-items: center; gap: 2px; }
 .topbar-group + .topbar-group { border-left: 1px solid var(--line); padding-left: 14px; }
 #zoomGroup { margin-left: auto; }
+
+/* arrange toolbar: transforms, align, distribute for the current selection */
+#ctrlbar {
+  grid-area: ctrl;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 10px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+#ctrlbar .icon-btn { width: 30px; height: 30px; }
+#ctrlbar .icon-btn svg { width: 18px; height: 18px; }
 
 .btn {
   border: none;
@@ -817,7 +834,7 @@ body.panning #canvas { cursor: grabbing !important; }
   top: 50%;
   translate: 0 -50%;
 }
-#topbar [data-tip]::after {
+#topbar [data-tip]::after, #ctrlbar [data-tip]::after {
   top: calc(100% + 6px);
   left: 50%;
   translate: -50% 0;

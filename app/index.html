@@ -31,6 +31,18 @@
     <symbol id="i-redo" viewBox="0 0 24 24"><path d="m16 5 4 4-4 4"/><path d="M20 9h-9.5a5.5 5.5 0 1 0 0 11H14"/></symbol>
     <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21M10.5 8v5M8 10.5h5"/></symbol>
     <symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21M8 10.5h5"/></symbol>
+    <symbol id="i-rot-ccw" viewBox="0 0 24 24"><path d="M5.5 8.5A7.5 7.5 0 1 1 4.6 14"/><path d="M5 4v4.5h4.5"/></symbol>
+    <symbol id="i-rot-cw" viewBox="0 0 24 24"><path d="M18.5 8.5A7.5 7.5 0 1 0 19.4 14"/><path d="M19 4v4.5h-4.5"/></symbol>
+    <symbol id="i-flip-h" viewBox="0 0 24 24"><path d="M12 3v18" stroke-dasharray="2 2.4"/><path d="M9 6 3 18h6Z"/><path d="M15 6l6 12h-6Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-flip-v" viewBox="0 0 24 24"><path d="M3 12h18" stroke-dasharray="2 2.4"/><path d="M6 9 18 3v6Z"/><path d="M6 15l12 6v-6Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-al-left" viewBox="0 0 24 24"><path d="M4 3v18"/><rect x="7" y="6" width="13" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="7" y="14" width="8" height="4" rx="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-al-hcenter" viewBox="0 0 24 24"><rect x="5" y="6" width="14" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="8" y="14" width="8" height="4" rx="1" fill="currentColor" stroke="none"/><path d="M12 3v3M12 10v4M12 18v3"/></symbol>
+    <symbol id="i-al-right" viewBox="0 0 24 24"><path d="M20 3v18"/><rect x="4" y="6" width="13" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="9" y="14" width="8" height="4" rx="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-al-top" viewBox="0 0 24 24"><path d="M3 4h18"/><rect x="6" y="7" width="4" height="13" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="7" width="4" height="8" rx="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-al-vcenter" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="8" width="4" height="8" rx="1" fill="currentColor" stroke="none"/><path d="M3 12h3M10 12h4M18 12h3"/></symbol>
+    <symbol id="i-al-bottom" viewBox="0 0 24 24"><path d="M3 20h18"/><rect x="6" y="4" width="4" height="13" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="9" width="4" height="8" rx="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-dist-h" viewBox="0 0 24 24"><rect x="3" y="7" width="4" height="10" rx="1" fill="currentColor" stroke="none"/><rect x="10" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none"/><rect x="17" y="8.5" width="4" height="7" rx="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-dist-v" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="4" y="10" width="16" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="8.5" y="17" width="7" height="4" rx="1" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
   </defs>
 </svg>
@@ -89,6 +101,7 @@
     <div class="menu">
       <button class="menu-title" aria-haspopup="true" aria-expanded="false">Window</button>
       <div class="menu-list" role="menu">
+        <button role="menuitemcheckbox" data-panel="toolbar">Toolbar</button>
         <button role="menuitemcheckbox" data-panel="tools">Tools</button>
         <button role="menuitemcheckbox" data-panel="objects">Objects</button>
         <button role="menuitemcheckbox" data-panel="library">Library</button>
@@ -112,6 +125,27 @@
     <button class="icon-btn" id="zoomFit" data-tip="Fit scheme (1)" aria-label="Fit scheme in view"><svg><use href="#i-fit"/></svg></button>
   </div>
 </header>
+
+<nav id="ctrlbar" aria-label="Arrange toolbar">
+  <div class="topbar-group">
+    <button class="icon-btn" data-xf="ccw" data-tip="Rotate 90° counter-clockwise" aria-label="Rotate 90° counter-clockwise"><svg><use href="#i-rot-ccw"/></svg></button>
+    <button class="icon-btn" data-xf="cw" data-tip="Rotate 90° clockwise" aria-label="Rotate 90° clockwise"><svg><use href="#i-rot-cw"/></svg></button>
+    <button class="icon-btn" data-xf="h" data-tip="Flip horizontal" aria-label="Flip horizontal"><svg><use href="#i-flip-h"/></svg></button>
+    <button class="icon-btn" data-xf="v" data-tip="Flip vertical" aria-label="Flip vertical"><svg><use href="#i-flip-v"/></svg></button>
+  </div>
+  <div class="topbar-group">
+    <button class="icon-btn" data-align="left" data-tip="Align left edges" aria-label="Align left edges"><svg><use href="#i-al-left"/></svg></button>
+    <button class="icon-btn" data-align="hcenter" data-tip="Align horizontal centers" aria-label="Align horizontal centers"><svg><use href="#i-al-hcenter"/></svg></button>
+    <button class="icon-btn" data-align="right" data-tip="Align right edges" aria-label="Align right edges"><svg><use href="#i-al-right"/></svg></button>
+    <button class="icon-btn" data-align="top" data-tip="Align top edges" aria-label="Align top edges"><svg><use href="#i-al-top"/></svg></button>
+    <button class="icon-btn" data-align="vcenter" data-tip="Align vertical centers" aria-label="Align vertical centers"><svg><use href="#i-al-vcenter"/></svg></button>
+    <button class="icon-btn" data-align="bottom" data-tip="Align bottom edges" aria-label="Align bottom edges"><svg><use href="#i-al-bottom"/></svg></button>
+  </div>
+  <div class="topbar-group">
+    <button class="icon-btn" data-dist="h" data-tip="Distribute horizontally (3+ objects)" aria-label="Distribute horizontally (3+ objects)"><svg><use href="#i-dist-h"/></svg></button>
+    <button class="icon-btn" data-dist="v" data-tip="Distribute vertically (3+ objects)" aria-label="Distribute vertically (3+ objects)"><svg><use href="#i-dist-v"/></svg></button>
+  </div>
+</nav>
 
 <aside id="toolrail" role="toolbar" aria-label="Drawing tools" aria-orientation="vertical">
   <button class="tool-btn" data-tool="select" data-tip="Select — V" aria-label="Select tool"><svg><use href="#i-select"/></svg></button>

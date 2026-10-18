@@ -37,6 +37,7 @@ function refresh() {
     if (slotModal) renderSlotModal(); // popup lives outside the panel; keep it live too
   }
   $('undoBtn').disabled = !state.history.length;
+  updateCtrlbar();
   $('redoBtn').disabled = !state.future.length;
   $('zoomLabel').textContent = `${Math.round(state.view.s * 100)}%`;
   syncNoteRefs(); // a renamed object updates its live chips in the notes
@@ -260,6 +261,40 @@ function alignSelection(mode) {
     shiftEl(el, dx, dy);
   }
   changed();
+}
+
+// Space the selection evenly along an axis: the outermost two stay put and the
+// gaps between neighbouring bounding boxes become equal.
+function distributeSelection(axis) { // 'h' | 'v'
+  const els = selectedElements();
+  if (els.length < 3) return;
+  const [lo, hi] = axis === 'h' ? [0, 2] : [1, 3];
+  const items = els.map(el => ({ el, b: elementBBox(el) }))
+    .sort((p, q) => (p.b[lo] + p.b[hi]) - (q.b[lo] + q.b[hi]));
+  const span = items.at(-1).b[hi] - items[0].b[lo];
+  const gap = (span - items.reduce((s, { b }) => s + b[hi] - b[lo], 0)) / (items.length - 1);
+  beginChange();
+  let at = items[0].b[hi] + gap;
+  for (const { el, b } of items.slice(1, -1)) {
+    let d = at - b[lo];
+    if (el.type === 'path') d = snapHalf(d); // same lattice rule as alignSelection
+    if (axis === 'h') shiftEl(el, d, 0); else shiftEl(el, 0, d);
+    at += b[hi] - b[lo] + gap;
+  }
+  changed();
+}
+
+$('ctrlbar').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.xf) transformSelection(b.dataset.xf);
+  else if (b.dataset.align) alignSelection(b.dataset.align);
+  else if (b.dataset.dist) distributeSelection(b.dataset.dist);
+});
+function updateCtrlbar() {
+  const n = selectedElements().length;
+  for (const b of $('ctrlbar').querySelectorAll('button'))
+    b.disabled = n < (b.dataset.dist ? 3 : b.dataset.align ? 2 : 1);
 }
 
 // ---- groups (hierarchical: a group can contain groups) ----
@@ -1920,7 +1955,7 @@ function renderPanel() {
   }
   panel.appendChild(sec);
 
-  // arrange: z-order, transforms, alignment
+  // arrange: z-order (transforms and alignment live in the toolbar)
   if (n && state.selection.some(s => s.seg === undefined)) {
     const arr = document.createElement('div');
     arr.className = 'panel-section';
@@ -1934,28 +1969,6 @@ function renderPanel() {
       smallButton('Back', () => reorder('back')),
     );
     arr.appendChild(zRow);
-    const tRow = document.createElement('div');
-    tRow.className = 'btn-row';
-    tRow.append(
-      smallButton('⟲ 90°', () => transformSelection('ccw'), 'Rotate counter-clockwise'),
-      smallButton('⟳ 90°', () => transformSelection('cw'), 'Rotate clockwise'),
-      smallButton('Flip H', () => transformSelection('h'), 'Mirror left-right'),
-      smallButton('Flip V', () => transformSelection('v'), 'Mirror top-bottom'),
-    );
-    arr.appendChild(tRow);
-    if (selectedElements().length >= 2) {
-      const aRow = document.createElement('div');
-      aRow.className = 'btn-row';
-      aRow.append(
-        smallButton('⇤ Left', () => alignSelection('left')),
-        smallButton('⇹ Center', () => alignSelection('hcenter')),
-        smallButton('⇥ Right', () => alignSelection('right')),
-        smallButton('⤒ Top', () => alignSelection('top')),
-        smallButton('⇳ Middle', () => alignSelection('vcenter')),
-        smallButton('⤓ Bottom', () => alignSelection('bottom')),
-      );
-      arr.appendChild(aRow);
-    }
     panel.appendChild(arr);
   }
 }
@@ -2494,7 +2507,7 @@ function addSelectionToNotes(x, y) {
 
 // ---- panel visibility (Window menu; a UI pref, kept in localStorage not the file) ----
 
-const PANELS = ['tools', 'objects', 'library', 'color', 'props', 'notes'];
+const PANELS = ['toolbar', 'tools', 'objects', 'library', 'color', 'props', 'notes'];
 const PANELS_HIDDEN_KEY = 'master-schemer-hidden-panels';
 let hiddenPanels = [];
 function setHiddenPanels(list) {
