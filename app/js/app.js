@@ -442,7 +442,7 @@ window.addEventListener('keydown', e => {
     else if (k === 's') { e.preventDefault(); saveJSON(e.shiftKey); }
     else if (k === 'c') { e.preventDefault(); copySelection(); }
     else if (k === 'v') { e.preventDefault(); pasteClipboard(); }
-    else if (k === 'e') { e.preventDefault(); e.shiftKey ? exportPNG() : exportSVG(); }
+    else if (k === 'e') { e.preventDefault(); showExport(e.shiftKey ? 'png' : 'svg'); }
     else if (k === 'x') { e.preventDefault(); cutSelection(); }
     else if (k === 'd') { e.preventDefault(); duplicateSelection(); }
     else if (k === 'i' && e.shiftKey) { e.preventDefault(); invertSelection(); }
@@ -2381,33 +2381,70 @@ async function openFile() {
   }
 }
 
-async function exportSVG() {
-  state.selection = [];
-  refresh();
-  $('hint').textContent = 'Building SVG…';
-  const text = await exportSVGString();
-  if (!text) { $('hint').textContent = 'Nothing to export yet — the canvas is empty.'; return; }
-  try {
-    if (TAURI) {
-      const path = await TAURI.dialog.save({
-        defaultPath: 'scheme.svg', filters: [{ name: 'SVG image', extensions: ['svg'] }],
-      });
-      if (!path) return;
-      await TAURI.fs.writeTextFile(path, text);
-      $('hint').textContent = 'SVG exported.';
-    } else {
-      download('scheme.svg', text, 'image/svg+xml');
-    }
-  } catch (err) {
-    $('hint').textContent = `Export failed: ${err.message || err}`;
+// ---- export: a dialog for format, name, size and look; then the system save
+// dialog (or the browser's) picks where the file goes ----
+
+const EXPORT_KEY = 'master-schemer-export';
+const FORMATS = {
+  png: { label: 'PNG image', ext: 'png', mime: 'image/png' },
+  svg: { label: 'SVG image', ext: 'svg', mime: 'image/svg+xml' },
+  csv: { label: 'CSV table', ext: 'csv', mime: 'text/csv' },
+};
+const PNG_SCALES = [1, 2, 3, 4, 6, 8];
+const PNG_MAX = 8000; // px per side; bigger canvases fail in some webviews
+let exportOpts = { format: 'png', scale: 2, grid: false, transparent: false, only: false };
+try { Object.assign(exportOpts, JSON.parse(localStorage.getItem(EXPORT_KEY) || '{}')); } catch { /* defaults */ }
+let exportName = null; // { base, name }: the name typed last time for this scheme, offered again
+let exportDir = null; // where the last export went: folder path (desktop) or file handle (browser)
+
+// The selected elements, plus everything on a selected card and the links and
+// arrows running between them. Empty when nothing is selected.
+function selectedIds() {
+  const ids = new Set();
+  for (const s of state.selection) {
+    const el = s.seg === undefined && byId(s.id);
+    if (!el) continue;
+    ids.add(el.id);
+    if (el.type === 'card') for (const c of cardContents(el)) ids.add(c.id);
   }
+  return ids;
+}
+function withConnectors(ids) {
+  for (const el of state.doc.elements) {
+    const [a, b] = el.type === 'arrow' ? [el.from, el.to] : el.type === 'link' ? [el.a?.id, el.b?.id] : [];
+    if (a && ids.has(a) && ids.has(b)) ids.add(el.id);
+  }
+  return ids;
 }
 
-// Rasterize the export SVG at 2× (capped so huge schemes stay under canvas
-// limits). Returns a PNG blob, null for an empty canvas, or undefined if the
-// webview tainted the canvas (WebKit does for math foreignObjects).
-async function rasterizePNG(plain) {
-  const svgText = await exportSVGString({ plain });
+// Write a blob where the user chooses: the native dialog on the desktop, the
+// browser's save picker where it has one, else a plain download.
+async function saveBlob(name, blob, f) {
+  if (TAURI) {
+    const path = await TAURI.dialog.save({
+      defaultPath: exportDir ? `${exportDir}/${name}` : name, filters: [{ name: f.label, extensions: [f.ext] }],
+    });
+    if (!path) return false;
+    await TAURI.fs.writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+    exportDir = path.replace(/[\\/][^\\/]*$/, '');
+  } else if (window.showSaveFilePicker) {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: name, ...(exportDir && { startIn: exportDir }),
+      types: [{ description: f.label, accept: { [f.mime]: ['.' + f.ext] } }],
+    });
+    const w = await handle.createWritable();
+    await w.write(blob);
+    await w.close();
+    exportDir = handle;
+  } else download(name, blob, f.mime);
+  return true;
+}
+
+// Rasterize the export SVG at `scale` px per unit, capped at PNG_MAX a side.
+// Returns a PNG blob, null for nothing to export, or undefined if the webview
+// tainted the canvas (WebKit does for math foreignObjects).
+async function rasterizePNG(o, plain) {
+  const svgText = await exportSVGString({ ...o, plain });
   render(); // export rendered unculled; restore the culled view
   if (!svgText) return null;
   const url = URL.createObjectURL(new Blob([svgText], { type: 'image/svg+xml' }));
@@ -2415,7 +2452,7 @@ async function rasterizePNG(plain) {
     const img = new Image();
     img.src = url;
     await img.decode();
-    const k = Math.min(2, 8000 / Math.max(img.naturalWidth, img.naturalHeight));
+    const k = Math.min(o.scale, PNG_MAX / Math.max(img.naturalWidth, img.naturalHeight));
     const c = document.createElement('canvas');
     c.width = Math.round(img.naturalWidth * k);
     c.height = Math.round(img.naturalHeight * k);
@@ -2424,32 +2461,144 @@ async function rasterizePNG(plain) {
   } catch { return undefined; } finally { URL.revokeObjectURL(url); }
 }
 
-async function exportPNG() {
-  state.selection = [];
-  refresh();
-  $('hint').textContent = 'Building PNG…';
-  let blob = await rasterizePNG(false), note = '';
-  if (blob === undefined) {
-    blob = await rasterizePNG(true);
-    note = ' Math labels were left out — export SVG to keep them.';
+async function runExport(o, name) {
+  exportOpts = o;
+  try { localStorage.setItem(EXPORT_KEY, JSON.stringify(o)); } catch { /* full */ }
+  const f = FORMATS[o.format];
+  const sel = selectedIds();
+  if (!state.doc.elements.length) {
+    $('hint').textContent = 'Nothing to export yet — the canvas is empty.';
+    return;
   }
-  if (blob === null) { $('hint').textContent = 'Nothing to export yet — the canvas is empty.'; return; }
-  if (!blob) { $('hint').textContent = 'PNG export failed.'; return; }
-  try {
-    if (TAURI) {
-      const path = await TAURI.dialog.save({
-        defaultPath: 'scheme.png', filters: [{ name: 'PNG image', extensions: ['png'] }],
-      });
-      if (!path) return;
-      await TAURI.fs.writeFile(path, new Uint8Array(await blob.arrayBuffer()));
-    } else {
-      download('scheme.png', blob, 'image/png');
+  let blob, note = '';
+  if (o.format === 'csv') blob = new Blob([csvText()], { type: f.mime }); // a selection scopes the table
+  else {
+    const opts = { ...o, only: o.only && sel.size ? withConnectors(sel) : null };
+    const keep = state.selection;
+    state.selection = []; // no selection styling in the picture
+    refresh();
+    $('hint').textContent = `Building ${o.format.toUpperCase()}…`;
+    if (o.format === 'svg') blob = new Blob([await exportSVGString(opts)], { type: f.mime });
+    else {
+      blob = await rasterizePNG(opts, false);
+      if (blob === undefined) {
+        blob = await rasterizePNG(opts, true);
+        note = ' Math labels were left out — export SVG to keep them.';
+      }
     }
-    $('hint').textContent = 'PNG exported.' + note;
+    state.selection = keep;
+    refresh();
+    if (!blob) { $('hint').textContent = 'PNG export failed.'; return; }
+  }
+  try {
+    if (await saveBlob(`${name}.${f.ext}`, blob, f)) $('hint').textContent = `${f.label} exported.${note}`;
   } catch (err) {
-    $('hint').textContent = `Export failed: ${err.message || err}`;
+    if (err?.name !== 'AbortError') $('hint').textContent = `Export failed: ${err.message || err}`;
   }
 }
+
+function closeExport() { $('export-modal')?.remove(); }
+
+function showExport(format = exportOpts.format) {
+  closeExport();
+  const o = { ...exportOpts, format };
+  const sel = selectedIds();
+  const base = (typeof currentFile === 'string' ? currentFile.split(/[\\/]/).pop() : currentFile?.name || 'scheme')
+    .replace(/(\.schemer)?\.json$/i, '');
+  const overlay = document.createElement('div');
+  overlay.id = 'export-modal';
+  overlay.className = 'modal-overlay';
+  overlay.addEventListener('pointerdown', e => { if (e.target === overlay) closeExport(); });
+  const card = document.createElement('form');
+  card.className = 'modal-card export-card';
+  const head = document.createElement('div');
+  head.className = 'modal-head';
+  const h = document.createElement('h2');
+  h.textContent = 'Export';
+  const x = document.createElement('button');
+  x.type = 'button';
+  x.className = 'modal-close';
+  x.textContent = '✕';
+  x.title = 'Close';
+  x.addEventListener('click', closeExport);
+  head.append(h, x);
+  const body = document.createElement('div');
+  body.className = 'export-body';
+  const nameIn = document.createElement('input');
+  nameIn.value = exportName?.base === base ? exportName.name : base;
+  nameIn.spellcheck = false;
+  const select = (map, val, set) => {
+    const n = document.createElement('select');
+    for (const [v, l] of Object.entries(map)) n.add(new Option(l, v));
+    n.value = String(val);
+    n.addEventListener('change', () => { set(n.value); build(); });
+    return n;
+  };
+  const check = (text, key, disabled = false) => {
+    const lab = document.createElement('label');
+    lab.className = 'check-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = o[key] && !disabled;
+    cb.disabled = disabled;
+    cb.addEventListener('change', () => { o[key] = cb.checked; build(); });
+    lab.append(cb, document.createTextNode(text));
+    return lab;
+  };
+  const note = text => { const p = document.createElement('p'); p.className = 'muted'; p.textContent = text; return p; };
+  function build() {
+    const nameRow = document.createElement('div');
+    nameRow.className = 'export-name';
+    const ext = document.createElement('span');
+    ext.textContent = `.${FORMATS[o.format].ext}`;
+    nameRow.append(nameIn, ext);
+    body.replaceChildren(
+      fieldRow('Format', select(Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.label])), o.format, v => { o.format = v; })),
+      fieldRow('File name', nameRow));
+    if (o.format === 'csv') {
+      body.append(note(sel.size ? 'One row per selected object (and segment), with its hidden data.'
+        : 'One row per object (and segment), with its hidden data. Select objects first to export just those.'));
+      return;
+    }
+    body.append(
+      check(sel.size ? `Only the selection (${sel.size} object${sel.size > 1 ? 's' : ''})` : 'Only the selection (nothing selected)', 'only', !sel.size),
+      check('Show the grid', 'grid'),
+      check('Transparent background', 'transparent'));
+    if (o.format === 'png') {
+      const box = contentBBox(o.only && sel.size ? state.doc.elements.filter(el => withConnectors(new Set(sel)).has(el.id)) : undefined);
+      body.append(fieldRow('Resolution', select(Object.fromEntries(PNG_SCALES.map(k => [k, `${k}× (${k * 96} dpi)`])), o.scale, v => { o.scale = +v; })));
+      if (box) {
+        const w = box[2] - box[0] + 80, hh = box[3] - box[1] + 80; // the export's 40-unit margin
+        const k = Math.min(o.scale, PNG_MAX / Math.max(w, hh));
+        body.append(note(`${Math.round(w * k)} × ${Math.round(hh * k)} px${k < o.scale ? ` — capped at ${PNG_MAX} px a side` : ''}`));
+      }
+    }
+  }
+  build();
+  const row = document.createElement('div');
+  row.className = 'btn-row export-actions';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'btn outline';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', closeExport);
+  const go = document.createElement('button');
+  go.className = 'btn';
+  go.textContent = TAURI || window.showSaveFilePicker ? 'Export…' : 'Download';
+  row.append(cancel, go);
+  card.addEventListener('submit', e => {
+    e.preventDefault();
+    const name = nameIn.value.trim().replace(/[\\/:*?"<>|]/g, '-') || 'scheme';
+    exportName = { base, name };
+    closeExport();
+    runExport(o, name);
+  });
+  card.append(head, body, row);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  go.focus();
+}
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && $('export-modal')) closeExport(); });
 
 // ---- open recent (last 50 files ever opened/saved, with thumbnails) ----
 // Kept in localStorage (the Tauri webview persists it per app). Under Tauri an
@@ -2586,15 +2735,7 @@ const csvEscape = v => {
 };
 
 function csvText() {
-  const selIds = new Set();
-  for (const s of state.selection) {
-    if (s.seg !== undefined) continue;
-    const el = byId(s.id);
-    if (!el) continue;
-    selIds.add(el.id);
-    // a selected card exports everything on it
-    if (el.type === 'card') for (const c of cardContents(el)) selIds.add(c.id);
-  }
+  const selIds = selectedIds();
   const els = selIds.size
     ? state.doc.elements.filter(el => selIds.has(el.id))
     : state.doc.elements;
@@ -2615,28 +2756,6 @@ function csvText() {
     });
   }
   return rows.map(r => r.map(csvEscape).join(',')).join('\n');
-}
-
-async function exportCSV() {
-  if (!state.doc.elements.length) {
-    $('hint').textContent = 'Nothing to export yet — the canvas is empty.';
-    return;
-  }
-  const text = csvText();
-  try {
-    if (TAURI) {
-      const path = await TAURI.dialog.save({
-        defaultPath: 'scheme.csv', filters: [{ name: 'CSV', extensions: ['csv'] }],
-      });
-      if (!path) return;
-      await TAURI.fs.writeTextFile(path, text);
-      $('hint').textContent = 'CSV exported.';
-    } else {
-      download('scheme.csv', text, 'text/csv');
-    }
-  } catch (err) {
-    $('hint').textContent = `Export failed: ${err.message || err}`;
-  }
 }
 
 $('newBtn').addEventListener('click', () => {
@@ -2666,8 +2785,8 @@ $('saveBtn').addEventListener('click', () => saveJSON(false));
 $('saveAsBtn').addEventListener('click', () => saveJSON(true));
 $('copyBtn').addEventListener('click', copySelection);
 $('pasteBtn').addEventListener('click', pasteClipboard);
-$('exportBtn').addEventListener('click', exportSVG);
-$('csvBtn').addEventListener('click', exportCSV);
+$('exportBtn').addEventListener('click', () => showExport('svg'));
+$('csvBtn').addEventListener('click', () => showExport('csv'));
 $('undoBtn').addEventListener('click', undo);
 $('redoBtn').addEventListener('click', redo);
 
@@ -2679,7 +2798,7 @@ const MENU_ACTS = {
   showPanels: () => setHiddenPanels([]), hidePanels: () => setHiddenPanels(PANELS),
   cut: cutSelection, duplicate: duplicateSelection, invertSel: invertSelection,
   selectNone: () => { state.selection = []; refresh(); },
-  zoomSel: zoomToSelection, grid: toggleGrid, exportPng: exportPNG,
+  zoomSel: zoomToSelection, grid: toggleGrid, exportPng: () => showExport('png'),
 };
 // checkbox items whose state isn't mirrored by a toolbar button
 const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid') };

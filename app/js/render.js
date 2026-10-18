@@ -108,8 +108,7 @@ export function elementBBox(el) {
   return [0, 0, 0, 0];
 }
 
-export function contentBBox() {
-  const els = state.doc.elements;
+export function contentBBox(els = state.doc.elements) {
   if (!els.length) return null;
   let box = null;
   for (const el of els) {
@@ -1044,6 +1043,7 @@ export function renderNow(cull = true) {
     if (!entry || entry.key !== key) {
       entry = renderer(el);
       entry.key = key;
+      entry.under?.setAttribute('data-id', el.id); // so a selection-only export can drop it
       nodeCache.set(el.id, entry);
       if (entry.measure) measures.push(entry.measure);
       if (entry.measures) measures.push(...entry.measures);
@@ -1161,9 +1161,11 @@ async function katexCSS() {
 
 // plain: skip KaTeX CSS + math foreignObjects — a lighter SVG for thumbnails
 // that a canvas can rasterize without being tainted (WebKit taints on foreignObject).
-export async function exportSVGString({ plain = false } = {}) {
+// Options: `only` (a Set of ids) exports just those elements, framed to them;
+// `grid` draws the dot grid; `transparent` leaves out the background.
+export async function exportSVGString({ plain = false, only = null, grid = false, transparent = false } = {}) {
   renderNow(false); // export clones the live layers — force every element in, unculled
-  const box = contentBBox();
+  const box = contentBBox(only ? state.doc.elements.filter(el => only.has(el.id)) : undefined);
   if (!box) return null;
   const m = 40;
   const [x0, y0, x1, y1] = [box[0] - m, box[1] - m, box[2] + m, box[3] + m];
@@ -1184,8 +1186,9 @@ export async function exportSVGString({ plain = false } = {}) {
     }
   }
 
-  svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: state.doc.bg || '#ffffff' }, out);
+  if (!transparent) svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: state.doc.bg || '#ffffff' }, out);
   out.appendChild(document.querySelector('#canvas defs').cloneNode(true));
+  if (grid) svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: 'url(#gridDots)' }, out);
   for (const id of ['layer-cards', 'layer-under', 'layer-links', 'layer-draw']) {
     out.appendChild($(id).cloneNode(true));
   }
@@ -1199,5 +1202,6 @@ export async function exportSVGString({ plain = false } = {}) {
     }
   }
   out.querySelectorAll('[data-hit], [data-ph]').forEach(n => n.remove());
+  if (only) out.querySelectorAll('[data-id]').forEach(n => { if (!only.has(n.dataset.id)) n.remove(); });
   return new XMLSerializer().serializeToString(out);
 }
