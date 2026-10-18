@@ -197,26 +197,29 @@ function tintRef(hex, toon) {
   return `url(#${id})`;
 }
 
-// A black outline around everything in a group, independent of its colours:
-// the group's silhouette, dilated, underneath it. r in world units.
+// A black outline, independent of colour: the silhouette of what was drawn,
+// dilated and filled black. r in world units.
 function outlineRef(r) {
   const id = `dna-outline-${String(r).replace('.', '_')}`;
   ensureDefs(id, () => {
     const f = el('filter', { id, x: '-10%', y: '-10%', width: '120%', height: '120%' });
     el('feMorphology', { in: 'SourceAlpha', operator: 'dilate', radius: r, result: 'fat' }, f);
     el('feFlood', { 'flood-color': '#14110f', result: 'ink' }, f);
-    el('feComposite', { in: 'ink', in2: 'fat', operator: 'in', result: 'line' }, f);
-    const m = el('feMerge', {}, f);
-    el('feMergeNode', { in: 'line' }, m);
-    el('feMergeNode', { in: 'SourceGraphic' }, m);
+    el('feComposite', { in: 'ink', in2: 'fat', operator: 'in' }, f);
     return f;
   });
   return `url(#${id})`;
 }
 
-// The group a strand draws into: wrapped in its outline, if it has one.
-export function styleGroup(g, D, outline) {
-  return outline ? el('g', { filter: outlineRef(Math.max(0.3, Math.round(D * 0.045 * 10) / 10)) }, g) : g;
+// The outline of a drawn molecule, as a separate node meant to sit UNDER every
+// molecule's fill: strands and the duplexes they run into then share one
+// outline around their union, with no line where a strand enters its duplex.
+export function outlineOf(body, D) {
+  const ghost = body.cloneNode(true);
+  ghost.querySelectorAll('[filter]').forEach(n => n.removeAttribute('filter')); // only alpha matters
+  const g = el('g', { filter: outlineRef(Math.max(0.3, Math.round(D * 0.045 * 10) / 10)), 'pointer-events': 'none' });
+  g.appendChild(ghost);
+  return g;
 }
 
 // Draw a brush stroke into g.

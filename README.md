@@ -88,6 +88,12 @@ cap, bent along the line. Segment colours carry over as domain colours.
 - **Finding the strands.** A duplex hides its strands, so clicking it selects
   the duplex and shows both strands dashed. Click it again to select the strands
   themselves, or use the buttons in its panel.
+- **Global switch.** **DNA** in the status bar (or View → DNA Molecules) draws
+  every DNA strand as its plain line, and every duplex as base-pair rungs,
+  without changing the document. Each line keeps its own Draw-as setting, so a
+  scheme can mix molecules and plain lines. To convert many lines at once,
+  select them (Ctrl+A works, other objects are ignored) and tick **Draw the
+  lines as DNA molecules**.
 - **Look.** **Shading** can be *Soft* (rendered) or *Toon* (flat bands), and
   **Black outline** is independent of colour. **Colour by** can be:
   - *Strand*.

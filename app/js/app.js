@@ -8,7 +8,7 @@ import {
 import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView,
-  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg,
+  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, dnaView, invalidateRenderCache,
 } from './render.js';
 import { DEFAULT_BPG, spacing, uAt } from './dna.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
@@ -1847,6 +1847,12 @@ function spacingNote(len, n, D, auto, reset, what = 'bases') {
 
 function dnaControls(el) {
   const frag = document.createDocumentFragment();
+  if (!dnaView.show) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'DNA display is off — drawn as a plain line (DNA in the status bar, or View → DNA Molecules).';
+    frag.appendChild(p);
+  }
   frag.appendChild(fieldRow('Diameter', sliderNum(() => +diam(el).toFixed(1),
     v => { el.dna = v; }, { min: 4, max: 80, step: 0.5 })));
   const lay = dnaLayout(el);
@@ -2046,9 +2052,10 @@ function renderPanel() {
           'Fill the area spanning the two selected items'));
       }
     }
-    const paths = state.selection.filter(s => s.seg === undefined).map(s => byId(s.id));
-    if (paths.length && paths.every(p => p?.type === 'path')) {
-      sec.appendChild(checkboxRow('Draw as DNA molecules', () => paths.every(p => p.dna),
+    const paths = state.selection.filter(s => s.seg === undefined).map(s => byId(s.id)).filter(p => p?.type === 'path');
+    if (paths.length) {
+      sec.appendChild(checkboxRow(paths.length === n ? 'Draw as DNA molecules' : `Draw the ${paths.length} lines as DNA molecules`,
+        () => paths.every(p => p.dna),
         v => setDNA(paths, v)));
       if (paths.every(p => p.dna)) {
         sec.appendChild(fieldRow('Diameter', sliderNum(() => +diam(paths[0]).toFixed(1),
@@ -2920,6 +2927,23 @@ window.addEventListener('keydown', e => {
 
 // ---- appearance (a UI pref, like the notes panel) ----
 // Unset follows the OS; once toggled, the choice sticks.
+
+// View → DNA Molecules: draw DNA strands as molecules or as plain lines. A
+// display preference (remembered per browser), not a document edit.
+const DNA_VIEW_KEY = 'master-schemer-dna-view';
+function setDNAView(show, remember) {
+  dnaView.show = show;
+  $('dnaToggle').setAttribute('aria-pressed', String(show));
+  if (remember) try { localStorage.setItem(DNA_VIEW_KEY, show ? 'on' : 'off'); } catch { /* full */ }
+  invalidateRenderCache();
+  refresh();
+}
+$('dnaToggle').addEventListener('click', () => setDNAView(!dnaView.show, true));
+{
+  let saved = null;
+  try { saved = localStorage.getItem(DNA_VIEW_KEY); } catch { /* blocked */ }
+  if (saved === 'off') setDNAView(false, false);
+}
 
 const THEME_KEY = 'master-schemer-theme';
 function setTheme(dark, remember) {

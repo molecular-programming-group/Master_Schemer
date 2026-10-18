@@ -7,7 +7,7 @@ import {
   convexHull, ellipsePoints, roundedPathD,
 } from './geom.js';
 import {
-  drawBrush, brushPath, strandLayout, midline, naturalBases, uAt, styleGroup, DEFAULT_BPG, naturalD,
+  drawBrush, brushPath, strandLayout, midline, naturalBases, uAt, outlineOf, DEFAULT_BPG, naturalD,
   gridPitch, randomBase, BASE_COLORS, COMPLEMENT,
 } from './dna.js';
 
@@ -78,7 +78,7 @@ export function elementBBox(el) {
       return [el.x - m, el.y - m, el.x + el.w + m, el.y + el.h + m];
     }
     case 'path': case 'ink': case 'aline': {
-      const b = bboxOfPts(el.pts), m = el.dna ? diam(el) * 0.75 + 4 : (el.width || 2) + 4;
+      const b = bboxOfPts(el.pts), m = shownDNA(el) ? diam(el) * 0.75 + 4 : (el.width || 2) + 4;
       return [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
     }
     case 'ellipse': {
@@ -360,21 +360,22 @@ function renderPath(el) {
   const pts = ptsAttr(el.pts);
   const w = el.width || 2;
   const color = resolveColor(el.color);
-  const hitW = el.dna ? Math.max(12, diam(el)) : Math.max(12, w + 8);
+  const dna = shownDNA(el);
+  const hitW = dna ? Math.max(12, diam(el)) : Math.max(12, w + 8);
   // inside a duplex a strand doesn't catch clicks: the duplex does (click it
   // again for its strands), so what you click is what you see
-  const runs = el.dna ? dnaRuns(el, dnaLayout(el)) : [{ t0: 0, t1: Infinity }];
+  const runs = dna ? dnaRuns(el, dnaLayout(el)) : [{ t0: 0, t1: Infinity }];
   const unpaired = (t0, t1) => runs.some(r => (t0 + t1) / 2 >= r.t0 && (t0 + t1) / 2 <= r.t1);
   for (const r of runs) {
     svgEl('polyline', {
-      points: el.dna ? ptsAttr(subPath(el.pts, r.t0, r.t1)) : pts,
+      points: dna ? ptsAttr(subPath(el.pts, r.t0, r.t1)) : pts,
       fill: 'none', stroke: 'transparent', 'stroke-width': hitW, 'data-hit': '1',
     }, g);
   }
-  if (el.dna) drawDNAStrand(g, el);
-  else svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color) }, g);
+  const under = dna ? drawDNAStrand(g, el) : null;
+  if (!dna) svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color) }, g);
   const len = polylineLength(el.pts);
-  const labelOff = el.dna ? diam(el) / 2 + 9 : 16;
+  const labelOff = dna ? diam(el) / 2 + 9 : 16;
   (el.segments || []).forEach((seg, i) => {
     const sp = subPath(el.pts, seg.t0, seg.t1);
     const sa = ptsAttr(sp);
@@ -385,7 +386,7 @@ function renderPath(el) {
         points: sa, fill: 'none', stroke: 'transparent', 'stroke-width': hitW, 'data-hit': '1', 'data-seg': i,
       }, g);
     }
-    if (!el.dna) svgEl('path', {
+    if (!dna) svgEl('path', {
       d: roundedPathD(sp, el.corner || 0), fill: 'none', stroke: paintOf(seg, segColor),
       'stroke-width': segWidth(seg, w),
       'stroke-linejoin': scap === 'round' ? 'round' : 'miter', 'stroke-linecap': scap, 'data-seg': i,
@@ -403,13 +404,13 @@ function renderPath(el) {
       : { w, paint: color };
   };
   const c0 = capStyle(0), c1 = capStyle(1);
-  if (!el.dna) { // a DNA strand ends in its own molecular caps
+  if (!dna) { // a DNA strand ends in its own molecular caps
     capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, c0.paint, c0.w, el.cap0flip);
     capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, c1.paint, c1.w, el.cap1flip);
   }
-  drawLabel(g, divs, measures, el, labelPos(el.pts, len / 2, el.dna ? labelOff - 2 : 14, -1),
+  drawLabel(g, divs, measures, el, labelPos(el.pts, len / 2, dna ? labelOff - 2 : 14, -1),
     { size: 12.5, color, id: el.id });
-  return { node: g, divs, measures };
+  return { node: g, divs, measures, under };
 }
 
 // Freehand ink: quadratic smoothing through midpoints.
@@ -610,11 +611,16 @@ export function linkStrand(ref) {
 // base count, and the diameter that looks natural at that spacing.
 
 export const dnaBpg = () => state.doc.dnaBpg || DEFAULT_BPG;
+// Global display switch: off draws every DNA strand as its plain line (and
+// duplexes as base-pair rungs) without touching the document — each line keeps
+// its own Draw-as setting for when it's back on.
+export const dnaView = { show: true };
+const shownDNA = el => !!el.dna && dnaView.show;
 export const diam = el => (typeof el.dna === 'number' ? el.dna : naturalD(dnaBpg()));
 
 const dnaEnd = ref => {
   const e = ref && !ref.group && byId(ref.id);
-  return e?.type === 'path' && e.dna ? e : null;
+  return e?.type === 'path' && shownDNA(e) ? e : null;
 };
 // A base-pair link between two DNA strands draws as one double helix.
 export const duplexLink = l => l.type === 'link' && l.style === 'bases' && !!dnaEnd(l.a) && !!dnaEnd(l.b);
@@ -712,9 +718,11 @@ function junction(sp, atStart) {
   };
 }
 
+// Draws the strand into g; returns its outline node (or null), which the
+// caller layers under all molecules.
 function drawDNAStrand(g, el) {
   const D = diam(el), lay = dnaLayout(el);
-  const target = styleGroup(g, D, el.dnaOutline);
+  const target = svgEl('g', {}, g);
   for (const run of dnaRuns(el, lay)) {
     const { t0, t1 } = run;
     const uS = t => uAt(lay.knots, t);
@@ -754,6 +762,7 @@ function drawDNAStrand(g, el) {
       breaks: (el.segments || []).flatMap(s => [s.t0 * sgn, s.t1 * sgn]),
     });
   }
+  return el.dnaOutline ? outlineOf(target, D) : null;
 }
 
 // The double helix of a duplex link, laid along the midline between its two
@@ -785,10 +794,12 @@ function drawDuplex(g, l) {
     ...strandLayers(A, null, 'dsbA', tA, letterA),
     ...strandLayers(B, null, 'dsbB', tB, i => COMPLEMENT[letterA(i)]),
   ];
-  drawBrush(styleGroup(g, D, A.dnaOutline || B.dnaOutline), {
+  const body = svgEl('g', {}, g);
+  drawBrush(body, {
     path: brushPath(mid.pts, fillet(D)), knots: [[0, 0], [Lm, n]], D, layers, breaks,
     caps: { head: true, tail: true }, toon: A.dnaToon || B.dnaToon,
   });
+  return A.dnaOutline || B.dnaOutline ? outlineOf(body, D) : null;
 }
 
 // Everything a DNA strand's or duplex's pixels depend on beyond its own JSON.
@@ -807,7 +818,7 @@ function renderLink(el) {
     if (merged.length >= 3) {
       svgEl('path', { d: `M${merged.map(p => p.join(' ')).join(' L')} Z`, fill: 'transparent', 'data-hit': '1' }, g);
     }
-    if (duplexLink(el)) { drawDuplex(g, el); return { node: g }; }
+    if (duplexLink(el)) return { node: g, under: drawDuplex(g, el) };
     const color = resolveColor(el.fill) || '#2b2622';
     for (const [p, q] of basePairRungs(A, B, el.bases || defaultBases(A, B))) {
       svgEl('line', {
@@ -1021,7 +1032,7 @@ export function renderNow(cull = true) {
 
   // cards sit below everything; all other elements paint in doc order (z-order)
   const salt = JSON.stringify(state.doc.palette) + JSON.stringify(state.doc.labelSlots || []);
-  const cardNodes = [], linkNodes = [], drawNodes = [], divs = [], measures = [];
+  const cardNodes = [], underNodes = [], linkNodes = [], drawNodes = [], divs = [], measures = [];
   const seen = new Set();
   for (const el of state.doc.elements) {
     const renderer = RENDERERS[el.type];
@@ -1039,12 +1050,14 @@ export function renderNow(cull = true) {
     }
     const bucket = el.type === 'card' ? cardNodes : el.type === 'link' ? linkNodes : drawNodes;
     bucket.push(entry.node);
+    if (entry.under) underNodes.push(entry.under); // molecule outlines, beneath every molecule
     if (entry.divs) divs.push(...entry.divs);
   }
   for (const id of [...nodeCache.keys()]) {
     if (!seen.has(id)) { nodeCache.delete(id); richBoxes.delete(id); }
   }
   $('layer-cards').replaceChildren(...cardNodes);
+  $('layer-under').replaceChildren(...underNodes);
   $('layer-links').replaceChildren(...linkNodes);
   $('layer-draw').replaceChildren(...drawNodes);
   mathLayer.replaceChildren(...divs);
@@ -1173,7 +1186,7 @@ export async function exportSVGString({ plain = false } = {}) {
 
   svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: state.doc.bg || '#ffffff' }, out);
   out.appendChild(document.querySelector('#canvas defs').cloneNode(true));
-  for (const id of ['layer-cards', 'layer-links', 'layer-draw']) {
+  for (const id of ['layer-cards', 'layer-under', 'layer-links', 'layer-draw']) {
     out.appendChild($(id).cloneNode(true));
   }
   for (const el of plain ? [] : state.doc.elements) {
