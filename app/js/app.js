@@ -1766,6 +1766,7 @@ function setDNA(els, on) {
       (x.a?.id === el.id || x.b?.id === el.id));
     const other = l && byId(l.a.id === el.id ? l.b.id : l.a.id);
     el.dna = typeof other?.dna === 'number' ? other.dna : true;
+    el.dnaToon = el.dnaOutline = true; // new strands start toon + outline
   }
 }
 
@@ -2127,7 +2128,6 @@ function renderPanel() {
       () => el.style || 'fill',
       v => {
         el.style = v;
-        if (v === 'bases' && B && !el.bases) el.bases = defaultBases(A, B);
       })));
     if (el.style === 'bases' && !B) {
       const warn = document.createElement('p');

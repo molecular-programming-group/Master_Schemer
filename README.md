@@ -69,7 +69,8 @@ Set a line's **Draw as** to **DNA molecule** (or tick **Draw as DNA molecules**
 for a whole selection) and it renders as a space-filling B-DNA strand, baked
 from the Blender library's B-DNA model. The brush works like an Affinity
 Designer image brush: an end cap, a repeating one-turn body, and another end
-cap, bent along the line. Segment colours carry over as domain colours.
+cap, bent along the line. Segment colours carry over as domain colours. New
+molecules start in toon shading with a black outline.
 
 - **DNA grid.** The document has a DNA scale: *N bp per grid square*, by
   default 10 (one helical turn). Base counts follow the drawn length on that
@@ -85,6 +86,10 @@ cap, bent along the line. Segment colours carry over as domain colours.
   carries on single-stranded, it leaves the duplex in phase along its own
   backbone and then bends out to its line, so a partly hybridized pair reads as
   one molecule. Strands drawn half a grid apart give the smallest bend.
+- **Nicks and domains.** Hold **Shift** while releasing the Cut tool to split
+  just the domain under the blade: the strand stays whole and gains a domain
+  boundary there. To nick one strand of a duplex, cut that strand normally,
+  Shift-cut its partner at the same place, and pair each piece with its half.
 - **Finding the strands.** A duplex hides its strands, so clicking it selects
   the duplex and shows both strands dashed. Click it again to select the strands
   themselves, or use the buttons in its panel.
@@ -127,7 +132,7 @@ string, and data, ready to drop into a spreadsheet.
 | Line | `L` | Drag to draw a snaking path — horizontal, vertical, and 45° runs at **half-grid** resolution; turns commit corners automatically. Start on an existing line's end to extend it. |
 | Segment | `S` | Press on a line and drag along it to mark a colored, labelled sub-segment. Snaps at half-grid resolution; a selected segment's end dots are draggable. |
 | Edit line | `E` | Click a line, then drag its square vertex handles to reshape the path. Click anywhere on the selected line to **insert a new vertex** there. |
-| Cut | `X` | Drag a blade across a line to slice it into two. A sliding dot marks where the cut lands. Both halves inherit the parent's metadata, segments split at the cut, and any link on the line drops away. |
+| Cut | `X` | Drag a blade across a line to slice it into two. A sliding dot marks where the cut lands. Both halves inherit the parent's metadata, segments split at the cut, and any link on the line drops away. Hold Shift on release to split only the domain under the blade and keep the line whole. |
 | Card | `C` | Drag to frame a section — a white sub-canvas card. Cards move by their border/corners only (so their contents stay clickable) and carry their contents with them. |
 | Connect | `A` | Drag from one card to another to draw a labelled arrow between them. |
 

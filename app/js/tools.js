@@ -1,7 +1,7 @@
 // Tool state machines. app.js routes pointer events here with world coords.
 import {
   state, byId, beginChange, changed, addElement, isSelected, cloneElements, resolveColor,
-  byGroup, groupElementMembers, cutPath,
+  byGroup, groupElementMembers, cutPath, splitDomain,
 } from './model.js';
 import {
   GRID, snap, snapPt, snapHalf, snapHalfPt, eq, dirOf, snap8, simplify, polylineLength,
@@ -842,7 +842,7 @@ export const tools = {
   },
 
   cut: {
-    hint: 'Drag a blade across a line — the sliding dot marks where it slices; release to cut',
+    hint: 'Drag a blade across a line — the sliding dot marks where it slices; release to cut · hold Shift to split just the domain (the strand stays whole)',
     down(e, wp) {
       drag = { mode: 'cut', a: wp, b: wp, locked: null, t: null };
     },
@@ -875,12 +875,12 @@ export const tools = {
         }, preview());
       }
     },
-    up() {
+    up(e) {
       if (!drag) return;
       const { locked, t } = drag;
       drag = null;
       clearPreview();
-      if (locked && t !== null) cutPath(locked, t); else changed();
+      if (locked && t !== null) (e.shiftKey ? splitDomain : cutPath)(locked, t); else changed();
     },
   },
 

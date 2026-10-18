@@ -55,3 +55,24 @@ test('cutPath slices a line into two inheriting children, drops links', () => {
   // cutting too close to an end is a no-op
   assert.equal(cutPath(a, 0.2), null);
 });
+
+test('splitDomain splits one domain, keeps the strand and other links', async () => {
+  const { splitDomain } = await import('../app/js/model.js');
+  state.doc = { version: 3, elements: [], palette: [], groups: [], labelSlots: [] };
+  state.history = []; state.future = []; state.selection = [];
+  const line = { type: 'path', id: 'L', pts: [[0, 0], [100, 0]], color: 'red',
+    segments: [{ t0: 10, t1: 50, label: 'C', string: 'ACGTACGT', bases: 9 }, { t0: 60, t1: 90 }] };
+  const other = { type: 'path', id: 'M', pts: [[0, 10], [100, 10]] };
+  state.doc.elements.push(line, other,
+    { type: 'link', id: 'k1', a: { id: 'L', seg: 0 }, b: { id: 'M' } },
+    { type: 'link', id: 'k2', a: { id: 'L', seg: 1 }, b: { id: 'M' } });
+  const [a, b] = splitDomain(line, 30);
+  assert.deepEqual([a.t0, a.t1, a.label, a.string, a.bases], [10, 30, 'C1', 'ACGT', undefined]);
+  assert.deepEqual([b.t0, b.t1, b.label, b.string], [30, 50, 'C2', 'ACGT']);
+  assert.deepEqual(line.segments.map(s => [s.t0, s.t1]), [[10, 30], [60, 90], [30, 50]]);
+  assert.deepEqual(state.doc.elements.filter(x => x.type === 'link').map(x => x.id), ['k2']);
+  // a bare stretch: the gap between neighbours becomes the two domains
+  splitDomain(line, 55);
+  assert.deepEqual(line.segments.slice(3).map(s => [s.t0, s.t1]), [[50, 55], [55, 60]]);
+  assert.equal(splitDomain(line, 50.5), null); // too close to a boundary
+});

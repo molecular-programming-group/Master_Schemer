@@ -255,6 +255,46 @@ export function cutPath(el, tc) {
   return [a, b];
 }
 
+// Split only the domain under arc length tc and leave the strand whole: a nick's
+// partner site, so each half can pair with its own strand. On a bare stretch of
+// line, the stretch between neighbouring segments becomes the two domains.
+// Links to a split segment drop away; the second half is appended so every
+// other segment index (and the links using it) holds. Returns the two halves.
+export function splitDomain(el, tc) {
+  if (el?.type !== 'path') return null;
+  const total = polylineLength(el.pts);
+  tc = Math.round(tc * 10) / 10;
+  const segs = el.segments ||= [];
+  let i = segs.findIndex(s => s.t0 < tc && tc < s.t1);
+  const s = i >= 0 ? segs[i] : {
+    t0: Math.max(0, ...segs.map(g => g.t1).filter(t => t <= tc)),
+    t1: Math.min(total, ...segs.map(g => g.t0).filter(t => t >= tc)),
+    color: el.color, label: '',
+  };
+  if (tc - s.t0 < 1 || s.t1 - tc < 1) return null;
+  beginChange();
+  const half = (t0, t1, n) => {
+    const h = { ...s, t0, t1 };
+    delete h.bases; // back to auto, like a cut strand
+    if (s.label) h.label = s.label + n;
+    if (/^[ACGTU]+$/i.test(s.string || '')) {
+      const k = Math.round(s.string.length * (tc - s.t0) / (s.t1 - s.t0));
+      h.string = n === 1 ? s.string.slice(0, k) : s.string.slice(k);
+    }
+    return h;
+  };
+  const a = half(s.t0, tc, 1), b = half(tc, s.t1, 2);
+  if (i >= 0) {
+    segs[i] = a;
+    const hit = r => r?.id === el.id && r.seg === i;
+    state.doc.elements = state.doc.elements.filter(x => !(x.type === 'link' && (hit(x.a) || hit(x.b))));
+  } else { segs.push(a); i = segs.length - 1; }
+  segs.push(b);
+  state.selection = [{ id: el.id, seg: i }, { id: el.id, seg: segs.length - 1 }];
+  changed();
+  return [a, b];
+}
+
 // Z-order: element order in doc.elements is paint order within its layer group.
 export function reorder(dir) {
   const ids = new Set(state.selection.filter(s => s.seg === undefined).map(s => s.id));
