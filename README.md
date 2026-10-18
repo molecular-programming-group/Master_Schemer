@@ -95,7 +95,8 @@ molecules start in toon shading with a black outline.
   themselves, or use the buttons in its panel.
 - **Colouring a duplex.** A duplex has no colour of its own. Each backbone is
   its strand's paired segment (or whole line). With a duplex selected, a palette
-  swatch recolours both backbones, and the panel has a picker for each backbone
+  swatch recolours both backbones (or just one, while its picker is open), and
+  the panel has a picker for each backbone
   plus the shading and colour-by controls for both strands.
 - **Global switch.** **DNA** in the status bar (or View → DNA Molecules) draws
   every DNA strand as its plain line, and every duplex as base-pair rungs,

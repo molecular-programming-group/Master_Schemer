@@ -1068,7 +1068,11 @@ function colorTargets() {
     const el = byId(s.id);
     if (!el) continue;
     if (s.seg !== undefined) { const seg = el.segments?.[s.seg]; if (seg) out.push(seg); }
-    else if (duplexLink(el)) out.push(...new Set([backbone(el.a), backbone(el.b)])); // a duplex wears its strands' colours
+    else if (duplexLink(el)) {
+      // a duplex wears its strands' colours; with one backbone's picker open, just that one
+      const one = openPicker?.key.match(`^bb:${el.id}:([ab])$`)?.[1];
+      out.push(...new Set(one ? [backbone(el[one])] : [backbone(el.a), backbone(el.b)]));
+    }
     else if (el.color !== undefined) out.push(el);
   }
   return out;
@@ -1091,6 +1095,8 @@ function applyColor(c, slot) {
       }
     }
     changed();
+    // an open backbone picker follows the swatch it just took
+    if (openPicker?.key.startsWith('bb:')) Object.assign(openPicker, hexToHsv(resolveColor(c)) || {});
   } else refresh();
   renderPanel();
 }
