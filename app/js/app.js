@@ -10,6 +10,7 @@ import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView,
 } from './render.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
+import { THEMES } from './themes.js';
 
 const $ = id => document.getElementById(id);
 const svg = $('canvas');
@@ -606,11 +607,26 @@ function sideItem({ depth, name, color, selected, onSelect, onRename, collapsibl
 let sideCollapsed = new Set();
 try { sideCollapsed = new Set(JSON.parse(localStorage.getItem('master-schemer-collapsed') || '[]')); }
 catch { sideCollapsed = new Set(); }
-function toggleCollapse(key) {
-  if (sideCollapsed.has(key)) sideCollapsed.delete(key); else sideCollapsed.add(key);
+const saveCollapsed = () => {
   try { localStorage.setItem('master-schemer-collapsed', JSON.stringify([...sideCollapsed])); } catch { /* full */ }
   renderSidebar();
+};
+function toggleCollapse(key) {
+  if (sideCollapsed.has(key)) sideCollapsed.delete(key); else sideCollapsed.add(key);
+  saveCollapsed();
 }
+// Every parent row the sidebar can draw: groups, cards, and paths with segments.
+function collapseAll() {
+  for (const g of state.doc.groups) sideCollapsed.add(`g:${g.id}`);
+  for (const el of state.doc.elements) {
+    if (el.type === 'card') sideCollapsed.add(`c:${el.id}`);
+    else if (el.segments?.length) sideCollapsed.add(`p:${el.id}`);
+  }
+  saveCollapsed();
+}
+function expandAll() { sideCollapsed.clear(); saveCollapsed(); }
+$('collapseAll').addEventListener('click', collapseAll);
+$('expandAll').addEventListener('click', expandAll);
 
 // Append a parent row; return a child container to fill (null when it has no
 // children or is collapsed, so callers just skip rendering the subtree).
@@ -1354,6 +1370,9 @@ function paletteSection() {
   });
   slotsWrap.appendChild(add);
   sec.appendChild(fieldRow('Memory slots', slotsWrap));
+  const themes = smallButton('Themes…', showThemes, 'Recolor the memory slots from a color theme');
+  themes.classList.add('themes-btn');
+  sec.appendChild(themes);
 
   const slot = state.doc.palette.find(s => s.id === activeSlot);
   if (slot) {
@@ -1368,6 +1387,68 @@ function paletteSection() {
   }
   return sec;
 }
+
+// ---- color themes popup ----
+// Applying a theme recolors the slots in order (so everything drawn with slot
+// colors re-themes at once) and adds slots when the theme has more colors.
+// Slots beyond the theme's length keep their color.
+function applyTheme(t) {
+  beginChange();
+  t.colors.forEach((color, i) => {
+    const slot = state.doc.palette[i];
+    if (slot) slot.color = color;
+    else state.doc.palette.push({ id: newId(), name: `slot ${i + 1}`, color });
+  });
+  changed();
+}
+function closeThemes() { $('themes-modal')?.remove(); }
+function showThemes() {
+  closeThemes();
+  const overlay = document.createElement('div');
+  overlay.id = 'themes-modal';
+  overlay.className = 'modal-overlay';
+  overlay.addEventListener('pointerdown', e => { if (e.target === overlay) closeThemes(); });
+  const card = document.createElement('div');
+  card.className = 'modal-card themes-card';
+  const head = document.createElement('div');
+  head.className = 'modal-head';
+  const h = document.createElement('h2');
+  h.textContent = 'Color themes';
+  const x = document.createElement('button');
+  x.className = 'modal-close';
+  x.textContent = '✕';
+  x.title = 'Close';
+  x.addEventListener('click', closeThemes);
+  head.append(h, x);
+  const note = document.createElement('p');
+  note.className = 'muted';
+  note.textContent = 'Recolors the memory slots in order. Anything drawn with a slot color updates; extra slots keep theirs.';
+  const list = document.createElement('div');
+  list.className = 'themes-list';
+  for (const t of THEMES) {
+    const b = document.createElement('button');
+    b.className = 'theme-tile';
+    const name = document.createElement('span');
+    name.className = 'theme-name';
+    name.textContent = `${t.name} · ${t.colors.length}`;
+    const strip = document.createElement('span');
+    strip.className = 'theme-strip';
+    for (const c of t.colors) {
+      const sw = document.createElement('span');
+      sw.style.background = c;
+      sw.title = c;
+      strip.appendChild(sw);
+    }
+    b.append(name, strip);
+    b.addEventListener('click', () => { applyTheme(t); closeThemes(); });
+    list.appendChild(b);
+  }
+  card.append(head, note, list);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  list.querySelector('.theme-tile')?.focus();
+}
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && $('themes-modal')) closeThemes(); });
 
 // ---- slot editor popup ----
 // A modal (outside the panel) that edits the selected slot's colour + pattern.
@@ -2393,6 +2474,7 @@ const MENU_ACTS = {
   cut: cutSelection, duplicate: duplicateSelection, invertSel: invertSelection,
   selectNone: () => { state.selection = []; refresh(); },
   zoomSel: zoomToSelection, grid: toggleGrid, exportPng: exportPNG,
+  collapseAll, expandAll, themes: () => showThemes(),
 };
 // checkbox items whose state isn't mirrored by a toolbar button
 const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid') };

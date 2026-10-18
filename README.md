@@ -40,6 +40,11 @@ popup changes color or pattern live, pushing each change out to all users of
 that slot at once. Drag slots to reorder them. Remove one and its current look
 freezes onto whatever was using it.
 
+New documents start with the colour-blind-safe Okabe–Ito colors in their slots.
+**Themes…** (also View → Color Themes…) offers 12 published palettes of 3–10
+colors (Paul Tol, Okabe–Ito, ColorBrewer, Tableau 10, Nord). Picking one
+recolors the slots in order, so the whole scheme re-themes in one undoable step.
+
 ### Cut a line in two
 
 ![Cut tool](docs/screenshots/cutting-tool.png)

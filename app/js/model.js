@@ -1,6 +1,7 @@
 // Document model, selection, history, persistence.
 
 import { polylineLength, subPath, splitSegments } from './geom.js';
+import { defaultPalette } from './themes.js';
 
 export const COLORS = [
   { name: 'Ink',     hex: '#2b2622' },
@@ -65,7 +66,7 @@ export function groupIsEmpty(gid) {
 }
 
 export const state = {
-  doc: { version: 3, elements: [], palette: [], groups: [], labelSlots: [], notes: '' },
+  doc: { version: 3, elements: [], palette: defaultPalette(), groups: [], labelSlots: [], notes: '' },
   // selection entries: { id } for an element, { id, seg: i } for a path segment
   selection: [],
   tool: 'select',
@@ -287,7 +288,7 @@ function migrate(doc) {
 
 export function newDoc() {
   beginChange();
-  state.doc = { version: 3, elements: [], palette: [], groups: [], labelSlots: [], notes: '' };
+  state.doc = { version: 3, elements: [], palette: defaultPalette(), groups: [], labelSlots: [], notes: '' };
   state.selection = [];
   changed();
 }
