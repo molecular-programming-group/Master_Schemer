@@ -56,7 +56,7 @@ async function run(name, story, { hide = ['library', 'notes'] } = {}) {
   let shot = 0, cur = [W / 2, H / 2];
   const t = {
     pg, W, H, DRY, errs,
-    wait: ms => pg.waitForTimeout(DRY ? Math.min(ms, 300) : ms), // (dry: still long enough for deferred clicks)
+    wait: ms => pg.waitForTimeout(DRY ? Math.min(ms, 450) : ms), // (dry: still long enough for deferred clicks)
     snap: async label => { if (DRY) await pg.screenshot({ path: `${dir}/${String(++shot).padStart(2, '0')}_${label}.png` }); },
     // run fn(model, app-ish globals) in the page; args are JSON
     m: (fn, arg) => pg.evaluate(async ([src, arg]) => {
@@ -82,10 +82,10 @@ async function run(name, story, { hide = ['library', 'notes'] } = {}) {
   };
   t.move = async (x, y, steps = 18) => { await pg.mouse.move(x, y, { steps: DRY ? Math.min(steps, 4) : steps }); cur = [x, y]; };
   t.center = async sel => { const bx = await pg.locator(sel).first().boundingBox(); if (!bx) throw new Error('no box: ' + sel); return [bx.x + bx.width / 2, bx.y + bx.height / 2]; };
-  t.click = async (sel, pause = 350) => { const [x, y] = await t.center(sel); await t.move(x, y); await t.wait(200); await pg.mouse.click(x, y); await t.wait(pause); };
-  t.dbl = async (sel, pause = 400) => { const [x, y] = await t.center(sel); await t.move(x, y); await t.wait(200); await pg.mouse.dblclick(x, y); await t.wait(pause); };
+  t.click = async (sel, pause = 350) => { await t.reveal(sel); const [x, y] = await t.center(sel); await t.move(x, y); await t.wait(200); await pg.mouse.click(x, y); await t.wait(pause); };
+  t.dbl = async (sel, pause = 400) => { await t.reveal(sel); const [x, y] = await t.center(sel); await t.move(x, y); await t.wait(200); await pg.mouse.dblclick(x, y); await t.wait(pause); };
   t.clickAt = async (x, y, pause = 350, opts = {}) => { await t.move(x, y); await t.wait(150); await pg.mouse.click(x, y, opts); await t.wait(pause); };
-  t.hover = async (sel, ms = 500) => { const [x, y] = await t.center(sel); await t.move(x, y, 12); await t.wait(ms); };
+  t.hover = async (sel, ms = 500) => { await t.reveal(sel); const [x, y] = await t.center(sel); await t.move(x, y, 12); await t.wait(ms); };
   t.menu = async (title, item, hover = 650) => {
     await t.click(`.menu-title:text-is("${title}")`, hover);
     await t.snap('menu-' + title);
@@ -112,6 +112,11 @@ async function run(name, story, { hide = ['library', 'notes'] } = {}) {
       m.changed(); await new Promise(res => setTimeout(res, 60));
     }
   }, [s, wx, wy, DRY ? 1 : frames]);
+  t.selCenter = () => pg.evaluate(async () => { // world centre of the selection's bbox
+    const m = await import('/js/model.js'), r = await import('/js/render.js');
+    const bs = m.state.selection.map(s => r.elementBBox(m.byId(s.id))).filter(Boolean);
+    return [(Math.min(...bs.map(b => b[0])) + Math.max(...bs.map(b => b[2]))) / 2, (Math.min(...bs.map(b => b[1])) + Math.max(...bs.map(b => b[3]))) / 2];
+  });
   t.deselect = () => t.m(m => { m.state.selection = []; m.changed(); });
   t.select = refs => t.m((m, refs) => { m.state.selection = refs; m.changed(); }, refs);
   t.load = doc => t.m((m, d) => { m.loadDocJSON(JSON.stringify(d)); }, doc);

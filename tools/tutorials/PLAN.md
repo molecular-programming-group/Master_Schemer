@@ -24,7 +24,7 @@ check it off, commit.
 ## Feature themes
 
 - [x] 06-rendering-styles — Draw as Line / DNA / Sequence, toon vs soft, outline, colour by sequence, View overrides, colour themes, export dialog (PNG with math)
-- [ ] 07-objects-menus-library — Objects panel (names, filter, rename), groups and nesting, adaptive right-click menus, memory slots, library (save selection, stock proteins, shapes, surface block)
+- [x] 07-objects-menus-library (as 07-objects-library) — Objects panel (names, filter, rename), groups and nesting, adaptive right-click menus, memory slots, library (save selection, stock proteins, shapes, surface block)
 - [ ] 08-linking-in-depth — area links between shapes/groups, partial pairing, hairpin (segment↔segment), link styles, z-order, notes with live object references
 
 ## Scenes (inspired by the scheme library)
