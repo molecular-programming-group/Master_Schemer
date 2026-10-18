@@ -1,0 +1,223 @@
+{
+ "version": 3,
+ "palette": [],
+ "groups": [],
+ "labelSlots": [],
+ "notes": "",
+ "elements": [
+  {
+   "type": "path",
+   "id": "ss1",
+   "pts": [
+    [
+     0,
+     0
+    ],
+    [
+     240,
+     0
+    ]
+   ],
+   "color": "#c8352e",
+   "width": 2,
+   "label": "ss auto",
+   "segments": [],
+   "linecap": "butt",
+   "dna": 20
+  },
+  {
+   "type": "path",
+   "id": "ss2",
+   "pts": [
+    [
+     0,
+     60
+    ],
+    [
+     240,
+     60
+    ]
+   ],
+   "color": "#2f6fd0",
+   "width": 2,
+   "label": "ss 40 nt",
+   "segments": [],
+   "linecap": "butt",
+   "dna": 20,
+   "bases": 40
+  },
+  {
+   "type": "path",
+   "id": "A",
+   "pts": [
+    [
+     0,
+     140
+    ],
+    [
+     360,
+     140
+    ]
+   ],
+   "color": "#e0701f",
+   "width": 2,
+   "label": "A",
+   "segments": [
+    {
+     "t0": 120,
+     "t1": 260,
+     "color": "#e0701f",
+     "label": "c"
+    }
+   ],
+   "linecap": "butt",
+   "dna": 20
+  },
+  {
+   "type": "path",
+   "id": "B",
+   "pts": [
+    [
+     280,
+     160
+    ],
+    [
+     100,
+     160
+    ]
+   ],
+   "color": "#c8352e",
+   "width": 2,
+   "label": "B",
+   "segments": [],
+   "linecap": "butt",
+   "dna": 20
+  },
+  {
+   "type": "link",
+   "id": "L1",
+   "a": {
+    "id": "A",
+    "seg": 0
+   },
+   "b": {
+    "id": "B"
+   },
+   "style": "bases",
+   "bases": 40,
+   "fill": "#2b2622"
+  },
+  {
+   "type": "path",
+   "id": "C",
+   "pts": [
+    [
+     0,
+     240
+    ],
+    [
+     160,
+     240
+    ],
+    [
+     160,
+     380
+    ],
+    [
+     300,
+     380
+    ]
+   ],
+   "color": "#3a8a3e",
+   "width": 2,
+   "label": "turns",
+   "segments": [
+    {
+     "t0": 60,
+     "t1": 140,
+     "color": "#7a4fd0"
+    }
+   ],
+   "linecap": "butt",
+   "dna": 20
+  },
+  {
+   "type": "path",
+   "id": "dg",
+   "pts": [
+    [
+     340,
+     240
+    ],
+    [
+     420,
+     320
+    ],
+    [
+     520,
+     320
+    ]
+   ],
+   "color": "#2b2622",
+   "width": 2,
+   "label": "ink",
+   "segments": [],
+   "linecap": "butt",
+   "dna": 20
+  },
+  {
+   "type": "path",
+   "id": "H",
+   "pts": [
+    [
+     420,
+     0
+    ],
+    [
+     620,
+     0
+    ],
+    [
+     620,
+     20
+    ],
+    [
+     420,
+     20
+    ]
+   ],
+   "color": "#1f8fa0",
+   "width": 2,
+   "label": "hairpin",
+   "segments": [
+    {
+     "t0": 40,
+     "t1": 180,
+     "color": "#1f8fa0"
+    },
+    {
+     "t0": 240,
+     "t1": 380,
+     "color": "#c03a8c"
+    }
+   ],
+   "linecap": "butt",
+   "dna": 20
+  },
+  {
+   "type": "link",
+   "id": "HL",
+   "a": {
+    "id": "H",
+    "seg": 0
+   },
+   "b": {
+    "id": "H",
+    "seg": 1
+   },
+   "style": "bases",
+   "bases": 40,
+   "fill": "#2b2622"
+  }
+ ]
+}
