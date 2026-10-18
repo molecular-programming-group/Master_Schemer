@@ -16,6 +16,30 @@ export const SEL = '#b57f1d'; // honey selection accent (matches --primary)
 const CARD_STROKE = '#ded7ca';
 const FONT = 'ui-sans-serif, system-ui, sans-serif';
 
+// Text-note font choices (el.font). Generic fallbacks last, so a missing face
+// still lands in the right family on every OS.
+export const FONTS = {
+  sans: ['Sans (system)', FONT],
+  helvetica: ['Helvetica / Arial', 'Helvetica, Arial, "Liberation Sans", sans-serif'],
+  times: ['Times', '"Times New Roman", Times, "Liberation Serif", serif'],
+  georgia: ['Georgia', 'Georgia, "DejaVu Serif", serif'],
+  mono: ['Monospace', 'ui-monospace, Menlo, "DejaVu Sans Mono", monospace'],
+};
+export const LINE_H = 1.3; // default line spacing (el.lh overrides)
+const fontOf = el => FONTS[el.font]?.[1] || FONT;
+const lhOf = el => el.lh || LINE_H;
+const decoOf = el => [el.underline && 'underline', el.strike && 'line-through'].filter(Boolean).join(' ');
+
+// CSS for a text note's whole-element formatting (live overlay, export, editor).
+export function textStyle(el) {
+  return {
+    fontFamily: fontOf(el), fontSize: `${el.size}px`, fontWeight: el.bold ? 700 : 400,
+    fontStyle: el.italic ? 'italic' : 'normal', textDecoration: decoOf(el) || 'none',
+    textAlign: el.align || 'left', lineHeight: lhOf(el),
+  };
+}
+const cssText = o => Object.entries(o).map(([k, v]) => `${k.replace(/[A-Z]/g, c => '-' + c.toLowerCase())}:${v}`).join(';');
+
 export function svgEl(tag, attrs = {}, parent = null) {
   const el = document.createElementNS(NS, tag);
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
@@ -54,13 +78,53 @@ const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&
 
 export const hasMath = text => text.includes('$') && !!window.katex;
 
+// Inline formatting is a few HTML tags typed (or inserted by the text toolbar)
+// into the text itself: <b> <i> <u> <s> <sup> <sub>. Anything else stays literal.
+export const INLINE_TAGS = ['b', 'i', 'u', 's', 'sup', 'sub'];
+const TAG_SPLIT = /<(\/?)(b|i|u|s|sup|sub)>/;
+const stripTags = t => t.replace(new RegExp(TAG_SPLIT.source, 'g'), '');
+
 // A text element is "rich" (HTML-rendered) when it has math or a wrap box.
 export const isRichText = el => hasMath(el.text) || !!el.w;
 
-export function richHTML(text) {
+// Inline tags → tspans, so plain notes and labels stay pure SVG (WebKit drops
+// HTML overlays from PNG export). Raised/lowered runs shift with dy, so a
+// line's tspans need absolute y, not dy, to start each line clean.
+function appendRuns(parent, line, size) {
+  if (!TAG_SPLIT.test(line)) { parent.textContent = line || ' '; return; }
+  const on = new Set(), parts = line.split(TAG_SPLIT);
+  let shift = 0;
+  for (let i = 0; i < parts.length; i += 3) {
+    if (parts[i]) {
+      const want = on.has('sup') ? -0.38 : on.has('sub') ? 0.22 : 0, attrs = {};
+      if (want !== shift) { attrs.dy = (want - shift) * size; shift = want; }
+      if (on.has('b')) attrs['font-weight'] = 700;
+      if (on.has('i')) attrs['font-style'] = 'italic';
+      const deco = [on.has('u') && 'underline', on.has('s') && 'line-through'].filter(Boolean).join(' ');
+      if (deco) attrs['text-decoration'] = deco;
+      if (want) attrs['font-size'] = size * 0.7;
+      svgEl('tspan', attrs, parent).textContent = parts[i];
+    }
+    if (i + 2 < parts.length) parts[i + 1] ? on.delete(parts[i + 2]) : on.add(parts[i + 2]);
+  }
+}
+
+// ponytail: tags are per line (each line is its own <div>), so a tag left open
+// at a line end closes there; reopen it on the next line to carry it over.
+// el (a note) carries its whole-note formatting into the math too, since
+// KaTeX uses its own fonts: bold → \boldsymbol, Helvetica → \mathsf,
+// Monospace → \mathtt. The default font keeps classic math type.
+function noteTex(tex, el) {
+  if (el?.font === 'helvetica') tex = `\\mathsf{${tex}}`;
+  else if (el?.font === 'mono') tex = `\\mathtt{${tex}}`;
+  return el?.bold ? `\\boldsymbol{${tex}}` : tex;
+}
+
+export function richHTML(text, el) {
   return text.split('\n').map(line =>
     line.split(/\$([^$]+)\$/)
-      .map((part, i) => i % 2 ? katexHTML(part) : esc(part))
+      .map((part, i) => i % 2 ? katexHTML(noteTex(part, el))
+        : esc(part).replace(/&lt;(\/?)(b|i|u|s|sup|sub)&gt;/g, '<$1$2>'))
       .join('') || '&nbsp;'
   ).map(h => `<div>${h}</div>`).join('');
 }
@@ -91,8 +155,8 @@ export function elementBBox(el) {
       const box = richBoxes.get(el.id);
       if (box) return [el.x, top, el.x + box[0], top + box[1]];
       const lines = el.text.split('\n');
-      const w = el.w || Math.max(...lines.map(l => l.length)) * el.size * 0.6;
-      return [el.x, el.y - el.size, el.x + w, el.y - el.size + lines.length * el.size * 1.3];
+      const w = el.w || Math.max(...lines.map(l => stripTags(l).length)) * el.size * 0.6;
+      return [el.x, el.y - el.size, el.x + w, el.y - el.size + lines.length * el.size * lhOf(el)];
     }
     case 'arrow': {
       const a = byId(el.from), b = byId(el.to);
@@ -253,7 +317,7 @@ function haloText(parent, x, y, text, size, color, weight = 500, extra = {}) {
     fill: color, stroke: '#ffffff', 'stroke-width': size * 0.28,
     'paint-order': 'stroke', 'stroke-linejoin': 'round', ...extra,
   }, parent);
-  t.textContent = text;
+  appendRuns(t, text, size);
   return t;
 }
 
@@ -540,10 +604,10 @@ function renderText(el) {
     div.className = 'math-note';
     div.style.left = `${el.x}px`;
     div.style.top = `${top}px`;
-    div.style.font = `${el.size}px ${FONT}`;
+    Object.assign(div.style, textStyle(el));
     div.style.color = color;
     div.style.width = el.w ? `${el.w}px` : 'max-content';
-    div.innerHTML = richHTML(el.text);
+    div.innerHTML = richHTML(el.text, el);
     // invisible SVG twin so clicks and marquees still find the note
     const hit = svgEl('rect', {
       x: el.x, y: top, width: el.w || el.size, height: el.size * 1.3,
@@ -559,14 +623,23 @@ function renderText(el) {
   }
   richBoxes.delete(el.id);
   const t = svgEl('text', {
-    x: el.x, y: el.y, 'font-size': el.size, 'font-family': FONT,
-    fill: color, 'data-role': 'text-body',
+    x: el.x, y: el.y, 'font-size': el.size, 'font-family': fontOf(el),
+    'font-weight': el.bold ? 700 : 400, 'font-style': el.italic ? 'italic' : 'normal',
+    fill: color, 'data-role': 'text-body', ...(decoOf(el) ? { 'text-decoration': decoOf(el) } : {}),
   }, g);
-  el.text.split('\n').forEach((line, i) => {
-    const span = svgEl('tspan', { x: el.x, dy: i === 0 ? 0 : el.size * 1.3 }, t);
-    span.textContent = line || ' ';
+  const spans = el.text.split('\n').map((line, i) => {
+    const span = svgEl('tspan', { x: el.x, y: el.y + i * el.size * lhOf(el) }, t);
+    appendRuns(span, line, el.size);
+    return span;
   });
-  return { node: g };
+  if (!el.align || el.align === 'left' || spans.length < 2) return { node: g };
+  // centre/right: shift each line within the widest one (needs layout to measure)
+  const measure = () => {
+    const ws = spans.map(sp => sp.getComputedTextLength());
+    const max = Math.max(...ws), k = el.align === 'center' ? 0.5 : 1;
+    spans.forEach((sp, i) => sp.setAttribute('x', el.x + (max - ws[i]) * k));
+  };
+  return { node: g, measure };
 }
 
 // ---- links (filled area spanning two objects/segments/groups) ----
@@ -1137,9 +1210,9 @@ function exportRichText(el) {
   }, g);
   const div = document.createElement('div');
   div.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
-  div.style.cssText = `font:${el.size}px ${FONT};color:${resolveColor(el.color)};` +
-    `line-height:1.3;${el.w ? '' : 'width:max-content;'}`;
-  div.innerHTML = richHTML(el.text);
+  div.style.cssText = `${cssText(textStyle(el))};color:${resolveColor(el.color)};` +
+    `${el.w ? '' : 'width:max-content;'}`;
+  div.innerHTML = richHTML(el.text, el);
   fo.appendChild(div);
   return g;
 }

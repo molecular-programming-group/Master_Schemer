@@ -8,7 +8,7 @@ import {
   nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex, bladeCross,
   resizeEndSegments,
 } from './geom.js';
-import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink } from './render.js';
+import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle } from './render.js';
 
 const $ = id => document.getElementById(id);
 const preview = () => $('layer-preview');
@@ -60,6 +60,10 @@ export function startInlineEdit(el, opts) {
   node.style.fontSize = `${opts.size * s}px`;
   node.style.fontWeight = opts.weight || 400;
   node.style.color = opts.color || '#2b2622';
+  if (el.type === 'text') { // the editor previews the note's whole-element formatting
+    const { fontSize, ...rest } = textStyle(el);
+    Object.assign(node.style, rest);
+  }
   if (opts.multiline) node.rows = (node.value.match(/\n/g)?.length ?? 0) + 1;
   wrap.appendChild(node);
   // hide the SVG twin while editing
@@ -115,7 +119,7 @@ export function editElementText(el) {
 }
 
 function createTextAt(wp, w) {
-  const el = { type: 'text', x: wp[0], y: wp[1], text: '', size: 14, color: state.color };
+  const el = { type: 'text', x: wp[0], y: wp[1], text: '', size: 14, color: state.color, ...state.textDefaults };
   if (w) el.w = w; // wrap box: text folds at this width
   startInlineEdit(el, {
     field: 'text', multiline: true, size: el.size, color: resolveColor(el.color),

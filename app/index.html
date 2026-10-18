@@ -44,6 +44,10 @@
     <symbol id="i-dist-h" viewBox="0 0 24 24"><rect x="3" y="7" width="4" height="10" rx="1" fill="currentColor" stroke="none"/><rect x="10" y="4" width="4" height="16" rx="1" fill="currentColor" stroke="none"/><rect x="17" y="8.5" width="4" height="7" rx="1" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-dist-v" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="4" y="10" width="16" height="4" rx="1" fill="currentColor" stroke="none"/><rect x="8.5" y="17" width="7" height="4" rx="1" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+    <symbol id="i-ta-left" viewBox="0 0 24 24"><path d="M4 6h16M4 10h10M4 14h16M4 18h10"/></symbol>
+    <symbol id="i-ta-center" viewBox="0 0 24 24"><path d="M4 6h16M7 10h10M4 14h16M7 18h10"/></symbol>
+    <symbol id="i-ta-right" viewBox="0 0 24 24"><path d="M4 6h16M10 10h10M4 14h16M10 18h10"/></symbol>
+    <symbol id="i-textbar" viewBox="0 0 24 24"><path d="M4 7V5h11v2M9.5 5v13M7.5 18h4M15 12h5M17.5 12v6"/></symbol>
   </defs>
 </svg>
 
@@ -119,6 +123,26 @@
       </div>
     </div>
     <div class="menu">
+      <button class="menu-title" aria-haspopup="true" aria-expanded="false">Text</button>
+      <div class="menu-list" role="menu" id="textMenu">
+        <button role="menuitemcheckbox" data-fmt="b">Bold<kbd>Ctrl+B</kbd></button>
+        <button role="menuitemcheckbox" data-fmt="i">Italic<kbd>Ctrl+I</kbd></button>
+        <button role="menuitemcheckbox" data-fmt="u">Underline<kbd>Ctrl+U</kbd></button>
+        <button role="menuitemcheckbox" data-fmt="s">Strikethrough</button>
+        <button role="menuitem" data-fmt="sup">Superscript<kbd>Ctrl+Shift++</kbd></button>
+        <button role="menuitem" data-fmt="sub">Subscript<kbd>Ctrl+=</kbd></button>
+        <hr>
+        <button role="menuitem" data-fmt="bigger">Bigger<kbd>Ctrl+Shift+&gt;</kbd></button>
+        <button role="menuitem" data-fmt="smaller">Smaller<kbd>Ctrl+Shift+&lt;</kbd></button>
+        <hr>
+        <button role="menuitemradio" data-fmt="align:left">Align Text Left</button>
+        <button role="menuitemradio" data-fmt="align:center">Center Text</button>
+        <button role="menuitemradio" data-fmt="align:right">Align Text Right</button>
+        <hr id="fontsAfter">
+        <button role="menuitem" data-fmt="clear">Clear Formatting</button>
+      </div>
+    </div>
+    <div class="menu">
       <button class="menu-title" aria-haspopup="true" aria-expanded="false">View</button>
       <div class="menu-list" role="menu">
         <button role="menuitem" data-click="zoomIn">Zoom In<kbd>+</kbd></button>
@@ -143,6 +167,7 @@
       <button class="menu-title" aria-haspopup="true" aria-expanded="false">Window</button>
       <div class="menu-list" role="menu">
         <button role="menuitemcheckbox" data-panel="toolbar">Toolbar</button>
+        <button role="menuitemcheckbox" data-panel="textbar">Text Toolbar</button>
         <button role="menuitemcheckbox" data-panel="tools">Tools</button>
         <button role="menuitemcheckbox" data-panel="objects">Objects</button>
         <button role="menuitemcheckbox" data-panel="library">Library</button>
@@ -185,6 +210,39 @@
   <div class="topbar-group">
     <button class="icon-btn" data-dist="h" data-tip="Distribute horizontally (3+ objects)" aria-label="Distribute horizontally (3+ objects)"><svg><use href="#i-dist-h"/></svg></button>
     <button class="icon-btn" data-dist="v" data-tip="Distribute vertically (3+ objects)" aria-label="Distribute vertically (3+ objects)"><svg><use href="#i-dist-v"/></svg></button>
+  </div>
+  <div class="topbar-group ctrl-end">
+    <button class="icon-btn" id="textbarToggle" data-tip="Text toolbar" aria-label="Show text toolbar" aria-pressed="true"><svg><use href="#i-textbar"/></svg></button>
+  </div>
+</nav>
+
+<nav id="textbar" aria-label="Text toolbar">
+  <div class="topbar-group">
+    <select id="tbFont" title="Font" aria-label="Font"></select>
+    <button class="icon-btn" data-fmt="smaller" data-tip="Smaller (Ctrl+Shift+&lt;)" aria-label="Smaller text"><span class="glyph">A<small>−</small></span></button>
+    <input id="tbSize" type="number" min="6" max="144" step="1" list="tbSizes" title="Font size" aria-label="Font size">
+    <datalist id="tbSizes"><option>8</option><option>10</option><option>12</option><option>14</option><option>16</option><option>18</option><option>20</option><option>24</option><option>28</option><option>32</option><option>36</option><option>48</option><option>60</option><option>72</option></datalist>
+    <button class="icon-btn" data-fmt="bigger" data-tip="Bigger (Ctrl+Shift+&gt;)" aria-label="Bigger text"><span class="glyph">A<small>+</small></span></button>
+  </div>
+  <div class="topbar-group">
+    <button class="icon-btn" data-fmt="b" data-tip="Bold (Ctrl+B)" aria-label="Bold" aria-pressed="false"><span class="glyph"><b>B</b></span></button>
+    <button class="icon-btn" data-fmt="i" data-tip="Italic (Ctrl+I)" aria-label="Italic" aria-pressed="false"><span class="glyph"><i>I</i></span></button>
+    <button class="icon-btn" data-fmt="u" data-tip="Underline (Ctrl+U)" aria-label="Underline" aria-pressed="false"><span class="glyph"><u>U</u></span></button>
+    <button class="icon-btn" data-fmt="s" data-tip="Strikethrough" aria-label="Strikethrough" aria-pressed="false"><span class="glyph"><s>S</s></span></button>
+    <button class="icon-btn" data-fmt="sup" data-tip="Superscript — select text while editing (Ctrl+Shift++)" aria-label="Superscript"><span class="glyph">x<sup>2</sup></span></button>
+    <button class="icon-btn" data-fmt="sub" data-tip="Subscript — select text while editing (Ctrl+=)" aria-label="Subscript"><span class="glyph">x<sub>2</sub></span></button>
+  </div>
+  <div class="topbar-group">
+    <button class="icon-btn" data-fmt="align:left" data-tip="Align text left" aria-label="Align text left" aria-pressed="false"><svg><use href="#i-ta-left"/></svg></button>
+    <button class="icon-btn" data-fmt="align:center" data-tip="Center text" aria-label="Center text" aria-pressed="false"><svg><use href="#i-ta-center"/></svg></button>
+    <button class="icon-btn" data-fmt="align:right" data-tip="Align text right" aria-label="Align text right" aria-pressed="false"><svg><use href="#i-ta-right"/></svg></button>
+    <select id="tbLh" title="Line spacing" aria-label="Line spacing">
+      <option value="1">1.0</option><option value="1.15">1.15</option><option value="1.3">1.3</option><option value="1.5">1.5</option><option value="2">2.0</option>
+    </select>
+  </div>
+  <div class="topbar-group">
+    <button class="btn" data-fmt="clear" data-tip="Clear formatting">Clear</button>
+    <span class="textbar-hint" id="textbarHint"></span>
   </div>
 </nav>
 

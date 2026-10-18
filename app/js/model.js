@@ -71,6 +71,7 @@ export const state = {
   selection: [],
   tool: 'select',
   color: INK,
+  textDefaults: {}, // formatting for new notes, set from the text toolbar with no note selected
   width: 2,
   snap: true, // annotation shapes snap to the half-grid (toggle in the status bar)
   view: { tx: 0, ty: 0, s: 1 },
