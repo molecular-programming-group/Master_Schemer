@@ -556,7 +556,8 @@ export const tools = {
       changed();
     },
     dbl(e) {
-      const group = e.target.closest('[data-id]');
+      // pointer capture retargets dblclick to the svg itself, so look under the cursor
+      const group = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-id]');
       if (!group) return;
       const el = byId(group.getAttribute('data-id'));
       if (el) editElementText(el);
