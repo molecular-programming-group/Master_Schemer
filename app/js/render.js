@@ -700,16 +700,18 @@ export function linkStrand(ref) {
 // base count, and the diameter that looks natural at that spacing.
 
 export const dnaBpg = () => state.doc.dnaBpg || DEFAULT_BPG;
-// Global display switch: off draws every DNA strand as its plain line (and
-// duplexes as base-pair rungs) without touching the document — each line keeps
-// its own Draw-as setting for when it's back on.
-export const dnaView = { show: true };
-// View → Show Sequences: a strand with a sequence draws as its letters instead
-// (of its line or molecule). Display only, like dnaView.
-export const seqView = { show: false };
-const hasSeq = el => !!seqLetters(el.seq) || (el.segments || []).some(s => seqLetters(s.string));
-export const seqStrand = el => seqView.show && el.type === 'path' && hasSeq(el);
-const shownDNA = el => !!el.dna && dnaView.show && !seqStrand(el);
+// How strands are drawn: 'own' follows each strand's Draw as (el.seqLook →
+// its letters, el.dna → a molecule, else its line); 'line', 'dna' and 'seq'
+// draw every strand that way (View → Draw Strands). Display only: the
+// document keeps each strand's own setting.
+export const strandView = { mode: 'own' };
+export const lookOf = el => {
+  if (el.type !== 'path') return 'line';
+  if (strandView.mode !== 'own') return strandView.mode;
+  return el.seqLook ? 'seq' : el.dna ? 'dna' : 'line';
+};
+export const seqStrand = el => lookOf(el) === 'seq';
+const shownDNA = el => lookOf(el) === 'dna';
 export const diam = el => (typeof el.dna === 'number' ? el.dna : naturalD(dnaBpg()));
 
 const dnaEnd = ref => {
@@ -1021,7 +1023,7 @@ function elKey(el, salt) {
   // links trace live geometry: rekey when either endpoint's outline moves
   if (el.type === 'link') key += '|' + ptsAttr([...linkTargetPoints(el.a), ...linkTargetPoints(el.b)]);
   // DNA strands and duplexes depend on each other (shape, counts, colours) and the DNA grid
-  if (el.dna || (el.type === 'link' && duplexLink(el))) key += dnaKey(el);
+  if (shownDNA(el) || (el.type === 'link' && duplexLink(el))) key += dnaKey(el);
   if (seqStrand(el)) key += '|seq' + dnaBpg();
   return key;
 }

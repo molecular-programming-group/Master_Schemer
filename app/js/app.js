@@ -8,7 +8,7 @@ import {
 import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
-  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, dnaView, invalidateRenderCache, seqView,
+  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, strandView, lookOf, invalidateRenderCache,
   FONTS, LINE_H, INLINE_TAGS,
 } from './render.js';
 import { DEFAULT_BPG, spacing, uAt, gridPitch, naturalBases, seqLetters } from './dna.js';
@@ -572,7 +572,7 @@ function createLink(targets) {
     fill: resolveColor(currentColor()) || '#8a857c', opacity: 0.45,
   });
   // two DNA strands pair up as a duplex rather than a filled area
-  if (targets.every(t => byId(t.id)?.dna) && linkStrand(el.a) && linkStrand(el.b)) el.style = 'bases';
+  if (targets.every(t => byId(t.id) && lookOf(byId(t.id)) === 'dna') && linkStrand(el.a) && linkStrand(el.b)) el.style = 'bases';
   state.selection = [{ id: el.id }];
   changed();
 }
@@ -2101,6 +2101,24 @@ function setDNA(els, on) {
   }
 }
 
+// A strand's own Draw as (what View → Draw Strands → As Each Strand Is Set shows).
+const ownLook = el => (el.seqLook ? 'seq' : el.dna ? 'dna' : 'line');
+const LOOKS = { line: 'Line', dna: 'DNA molecule', seq: 'Sequence (letters)' };
+function setLook(els, look) {
+  for (const el of els) {
+    if (look === 'seq') { el.seqLook = true; delete el.dna; continue; }
+    delete el.seqLook;
+    setDNA([el], look === 'dna');
+  }
+}
+// While View → Draw Strands overrides every strand, say so where its own setting is edited.
+function lookNote() {
+  const p = document.createElement('p');
+  p.className = 'muted';
+  p.textContent = `Shown as ${{ line: 'lines', dna: 'DNA molecules', seq: 'sequences' }[strandView.mode]} for now: View → Draw Strands is set to all strands.`;
+  return p;
+}
+
 // Back onto the DNA grid: grid diameter, and every count — the strands' own,
 // their segments', their duplexes' — back to what the drawn length gives.
 function snapDNA(els) {
@@ -2258,12 +2276,6 @@ function spacingNote(len, n, D, auto, reset, what = 'bases') {
 
 function dnaControls(el) {
   const frag = document.createDocumentFragment();
-  if (!dnaView.show) {
-    const p = document.createElement('p');
-    p.className = 'muted';
-    p.textContent = 'DNA display is off — drawn as a plain line (DNA in the status bar, or View → DNA Molecules).';
-    frag.appendChild(p);
-  }
   frag.appendChild(fieldRow('Diameter', sliderNum(() => +diam(el).toFixed(1),
     v => { el.dna = v; }, { min: 4, max: 80, step: 0.5 })));
   const lay = dnaLayout(el);
@@ -2380,20 +2392,26 @@ function renderPanel() {
   }
   if (single && ['path', 'aline', 'ellipse', 'ink', 'rect'].includes(single.el.type) && single.seg === undefined) {
     const el = single.el;
+    const look = el.type === 'path' ? ownLook(el) : 'line';
     if (el.type === 'path') {
-      styleSec.appendChild(fieldRow('Draw as', mappedSelect({ line: 'Line', dna: 'DNA molecule' },
-        () => (el.dna ? 'dna' : 'line'), v => setDNA([el], v === 'dna'))));
+      styleSec.appendChild(fieldRow('Draw as', mappedSelect(LOOKS, () => look, v => setLook([el], v))));
+      if (strandView.mode !== 'own') styleSec.appendChild(lookNote());
+      styleSec.appendChild(sequenceField(el));
+      if (look === 'seq') styleSec.appendChild(fieldRow('Letters', mappedSelect(
+        { strand: 'Strand colour', sequence: 'A C G T colours' },
+        () => (el.dnaColor === 'sequence' ? 'sequence' : 'strand'),
+        v => { if (v === 'sequence') el.dnaColor = v; else delete el.dnaColor; })));
     }
-    if (el.dna) styleSec.appendChild(dnaControls(el));
-    else styleSec.appendChild(fieldRow('Line style', selectControl(
+    if (look === 'dna') styleSec.appendChild(dnaControls(el));
+    else if (look === 'line') styleSec.appendChild(fieldRow('Line style', selectControl(
       ['solid', 'dashed', 'dotted'], () => el.dash || 'solid', v => { el.dash = v; })));
-    if (el.dna) { /* caps, ends and patterns don't apply to a molecule */ } else if (['path', 'aline', 'ink'].includes(el.type)) {
+    if (look !== 'line') { /* caps, ends and patterns don't apply to a molecule or letters */ } else if (['path', 'aline', 'ink'].includes(el.type)) {
       styleSec.appendChild(fieldRow('Line ends', selectControl(
         ['rounded', 'flat', 'square'],
         () => LINECAP_NAMES[el.linecap || 'round'],
         v => { el.linecap = LINECAP_VALUES[v]; })));
     }
-    if ((el.type === 'path' && !el.dna) || el.type === 'aline') {
+    if ((el.type === 'path' && look === 'line') || el.type === 'aline') {
       styleSec.appendChild(fieldRow('Start cap', selectControl(
         CAPS, () => el.cap0 || 'none', v => { el.cap0 = v; })));
       styleSec.appendChild(fieldRow('End cap', selectControl(
@@ -2401,7 +2419,7 @@ function renderPanel() {
       styleSec.appendChild(harpoonFlips(el));
     }
     if (el.type === 'path') {
-      if (!el.dna) styleSec.appendChild(patternControls(el, `line:${el.id}`));
+      if (look === 'line') styleSec.appendChild(patternControls(el, `line:${el.id}`));
       styleSec.appendChild(fieldRow('Corner radius', sliderNum(
         () => el.corner || 0,
         v => { if (v) el.corner = v; else delete el.corner; },
@@ -2467,9 +2485,11 @@ function renderPanel() {
     }
     const paths = state.selection.filter(s => s.seg === undefined).map(s => byId(s.id)).filter(p => p?.type === 'path');
     if (paths.length) {
-      sec.appendChild(checkboxRow(paths.length === n ? 'Draw as DNA molecules' : `Draw the ${paths.length} lines as DNA molecules`,
-        () => paths.every(p => p.dna),
-        v => setDNA(paths, v)));
+      const looks = new Set(paths.map(ownLook));
+      sec.appendChild(fieldRow(paths.length === n ? 'Draw as' : `Draw the ${paths.length} strands as`,
+        mappedSelect(looks.size > 1 ? { '': 'Mixed', ...LOOKS } : LOOKS, () => (looks.size > 1 ? '' : [...looks][0]),
+          v => { if (v) setLook(paths, v); })));
+      if (strandView.mode !== 'own') sec.appendChild(lookNote());
       if (paths.every(p => p.dna)) {
         sec.appendChild(fieldRow('Diameter', sliderNum(() => +diam(paths[0]).toFixed(1),
           v => { for (const p of paths) p.dna = v; }, { min: 4, max: 80, step: 0.5 })));
@@ -2631,7 +2651,6 @@ function renderPanel() {
       sec.appendChild(labelFields(el, 'name this object'));
       if (el.type !== 'text') sec.appendChild(labelDisplayFields(el));
     }
-    if (el.type === 'path') sec.appendChild(sequenceField(el));
     if (el.type === 'text') {
       const src = boundInput(() => el.text, v => { el.text = v; }, { textarea: true });
       src.classList.add('fmt-src'); // the text toolbar formats its selection
@@ -3201,14 +3220,14 @@ const MENU_ACTS = {
   selectNone: () => { state.selection = []; refresh(); },
   zoomSel: zoomToSelection, grid: toggleGrid, exportPng: () => showExport('png'),
   collapseAll, expandAll, themes: () => showThemes(),
-  ticks: toggleTicks, baseSnap: () => setBaseSnap(!state.baseSnap, true), seqView: () => setSeqView(!seqView.show, true),
+  ticks: toggleTicks, baseSnap: () => setBaseSnap(!state.baseSnap, true),
   fitSeq: fitToSequence,
 };
 // checkbox items whose state isn't mirrored by a toolbar button
 const MENU_CHECKS = {
   grid: () => !document.body.classList.contains('hide-grid'),
   ticks: () => !document.body.classList.contains('hide-ticks'),
-  baseSnap: () => !!state.baseSnap, seqView: () => seqView.show,
+  baseSnap: () => !!state.baseSnap,
 };
 
 // Tools menu mirrors the tool rail (so tools stay reachable when the rail is hidden)
@@ -3243,6 +3262,8 @@ function setMenu(m) {
   }
   for (const it of m.querySelectorAll('[data-check]'))
     it.setAttribute('aria-checked', String(MENU_CHECKS[it.dataset.check]()));
+  for (const it of m.querySelectorAll('[data-look]'))
+    it.setAttribute('aria-checked', String(it.dataset.look === strandView.mode));
   for (const it of m.querySelectorAll('[data-bpg]'))
     it.setAttribute('aria-checked', String(+it.dataset.bpg === dnaBpg()));
   for (const it of m.querySelectorAll('[data-pick-tool]'))
@@ -3267,6 +3288,7 @@ menubar.addEventListener('click', e => {
   else if (item.dataset.panel) togglePanel(item.dataset.panel);
   else if (item.dataset.pickTool) setTool(item.dataset.pickTool);
   else if (item.dataset.bpg) setBpg(+item.dataset.bpg);
+  else if (item.dataset.look) setStrandView(item.dataset.look, true);
   else if (item.dataset.fmt) applyFormat(item.dataset.fmt);
 });
 menubar.addEventListener('pointerover', e => {
@@ -3495,32 +3517,26 @@ window.addEventListener('keydown', e => {
 // ---- appearance (a UI pref, like the notes panel) ----
 // Unset follows the OS; once toggled, the choice sticks.
 
-// View → DNA Molecules: draw DNA strands as molecules or as plain lines. A
-// display preference (remembered per browser), not a document edit.
-const DNA_VIEW_KEY = 'master-schemer-dna-view';
-function setDNAView(show, remember) {
-  dnaView.show = show;
-  $('dnaToggle').setAttribute('aria-pressed', String(show));
-  if (remember) try { localStorage.setItem(DNA_VIEW_KEY, show ? 'on' : 'off'); } catch { /* full */ }
+// View → Draw Strands: each as set, or all as lines / molecules / sequences.
+// A display preference (remembered per browser), not a document edit. The
+// status bar's DNA button flips between all-lines and each-as-set.
+const STRAND_VIEW_KEY = 'master-schemer-strand-view';
+function setStrandView(mode, remember) {
+  strandView.mode = mode;
+  $('dnaToggle').setAttribute('aria-pressed', String(mode !== 'line'));
+  if (remember) try { localStorage.setItem(STRAND_VIEW_KEY, mode); } catch { /* full */ }
   invalidateRenderCache();
   refresh();
 }
-$('dnaToggle').addEventListener('click', () => setDNAView(!dnaView.show, true));
+$('dnaToggle').addEventListener('click', () => setStrandView(strandView.mode === 'line' ? 'own' : 'line', true));
 {
   let saved = null;
-  try { saved = localStorage.getItem(DNA_VIEW_KEY); } catch { /* blocked */ }
-  if (saved === 'off') setDNAView(false, false);
+  try {
+    // ponytail: the old on/off DNA pref carries over once; drop after a release or two
+    saved = localStorage.getItem(STRAND_VIEW_KEY) ?? (localStorage.getItem('master-schemer-dna-view') === 'off' ? 'line' : null);
+  } catch { /* blocked */ }
+  if (['line', 'dna', 'seq'].includes(saved)) setStrandView(saved, false);
 }
-
-// View → Show Sequences: strands with a sequence draw as their letters. A display pref.
-const SEQ_VIEW_KEY = 'master-schemer-seq-view';
-function setSeqView(show, remember) {
-  seqView.show = show;
-  if (remember) try { localStorage.setItem(SEQ_VIEW_KEY, show ? 'on' : ''); } catch { /* full */ }
-  invalidateRenderCache();
-  refresh();
-}
-try { if (localStorage.getItem(SEQ_VIEW_KEY) === 'on') seqView.show = true; } catch { /* blocked */ }
 
 const THEME_KEY = 'master-schemer-theme';
 function setTheme(dark, remember) {

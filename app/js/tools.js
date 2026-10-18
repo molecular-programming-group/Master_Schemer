@@ -8,7 +8,7 @@ import {
   nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex, bladeCross,
   resizeEndSegments,
 } from './geom.js';
-import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle, dnaBpg, seqView } from './render.js';
+import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle, dnaBpg, strandView } from './render.js';
 import { gridPitch } from './dna.js';
 
 const $ = id => document.getElementById(id);
@@ -24,7 +24,7 @@ const ptsAttr = pts => pts.map(p => `${p[0]},${p[1]}`).join(' ');
 const legSnap = (a, q) => (state.baseSnap ? snap8(a, q, gridPitch(dnaBpg()), true) : snap8(a, q, GRID / 2));
 // While drawing with base snap or sequences shown: the strand's base count at the cursor.
 function baseCount(pts, extra = 0) {
-  if (!state.baseSnap && !seqView.show) return;
+  if (!state.baseSnap && strandView.mode !== 'seq') return;
   const z = pts[pts.length - 1], s = state.view.s;
   svgEl('text', { x: z[0] + 10 / s, y: z[1] - 10 / s, 'font-size': 11 / s, fill: SEL, 'font-weight': 600 }, preview())
     .textContent = `${Math.round((polylineLength(pts) + extra) / gridPitch(dnaBpg()))} nt`;

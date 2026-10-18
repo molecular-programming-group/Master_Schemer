@@ -153,10 +153,14 @@
         <hr>
         <button role="menuitemcheckbox" data-click="dataToggle">Show Data Boxes</button>
         <button role="menuitemcheckbox" data-click="hoverToggle">Data on Hover</button>
-        <button role="menuitemcheckbox" data-click="dnaToggle">DNA Molecules</button>
-        <button role="menuitemcheckbox" data-act="seqView" data-check="seqView">Show Sequences</button>
         <button role="menuitemcheckbox" data-click="themeToggle">Dark Theme</button>
         <button role="menuitem" data-act="themes">Color Themes…</button>
+        <hr>
+        <div class="menu-label">Draw Strands</div>
+        <button role="menuitemradio" data-look="own">As Each Strand Is Set</button>
+        <button role="menuitemradio" data-look="line">All as Lines</button>
+        <button role="menuitemradio" data-look="dna">All as DNA Molecules</button>
+        <button role="menuitemradio" data-look="seq">All as Sequences</button>
         <hr>
         <button role="menuitem" data-act="expandAll">Expand All Objects</button>
         <button role="menuitem" data-act="collapseAll">Collapse All Objects</button>
@@ -347,7 +351,7 @@
     <button class="status-toggle" id="dataToggle" aria-pressed="false" data-tip="Show every object's data box">Data</button>
     <button class="status-toggle" id="hoverToggle" aria-pressed="false" data-tip="Show an object's data when you hover it">Data on hover</button>
     <button class="status-toggle" id="notesToggle" aria-pressed="true" data-tip="Show or hide the notes panel">Notes</button>
-    <button class="status-toggle" id="dnaToggle" aria-pressed="true" data-tip="Draw DNA strands as molecules, or every line plain (each keeps its own setting)">DNA</button>
+    <button class="status-toggle" id="dnaToggle" aria-pressed="true" data-tip="Draw strands as each is set, or every strand as a plain line (View → Draw Strands has more)">DNA</button>
     <button class="status-toggle" id="themeToggle" aria-pressed="false" data-tip="Switch between the light and dark interface">Dark</button>
     <span id="coords">0, 0</span>
   </span>

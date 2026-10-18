@@ -105,8 +105,8 @@ molecules start in toon shading with a black outline.
   plus the shading and colour-by controls for both strands.
 - **Sequences.** A strand's **Sequence** field (5′→3′) or a domain's
   **String** holding A/C/G/T/U/N sets its base count; a domain's sequence
-  overrides the strand's over that domain. **View → Show Sequences** draws such
-  strands as their letters along the line, one per base, each on a faint tile
+  overrides the strand's over that domain. Drawn as *Sequence*, a strand shows
+  its letters along the line, one per base, each on a faint tile
   of the strand colour so base boundaries show. The letters appear
   once you zoom in far enough to read them, and are kept upright, so a strand
   running right to left reads backwards. A strand whose sequence doesn't match its
@@ -118,12 +118,14 @@ molecules start in toon shading with a black outline.
   letters readable at 100%), the base ticks (one per base along the grid
   lines, shown once zoomed in), and **Draw Strands in Whole Bases**, which
   makes the Strand tool draw whole-base legs and shows the count as you draw.
-- **Global switch.** **DNA** in the status bar (or View → DNA Molecules) draws
-  every DNA strand as its plain line, and every duplex as base-pair rungs,
-  without changing the document. Each line keeps its own Draw-as setting, so a
-  scheme can mix molecules and plain lines. To convert many lines at once,
-  select them (Ctrl+A works, other objects are ignored) and tick **Draw the
-  lines as DNA molecules**.
+- **Draw as.** Each strand is drawn as a *Line*, a *DNA molecule* or a
+  *Sequence* (its letters), picked under **Draw as** in its Style panel, with
+  its **Sequence** box right below. Select several strands (Ctrl+A works, other
+  objects are ignored) to set them all at once.
+- **Global switch.** **View → Draw Strands** shows strands *as each is set*,
+  or *all* as lines, DNA molecules or sequences, without changing the document
+  (each strand keeps its own Draw as). **DNA** in the status bar flips between
+  all lines and as-set.
 - **Look.** **Shading** can be *Soft* (rendered) or *Toon* (flat bands), and
   **Black outline** is independent of colour. **Colour by** can be:
   - *Strand*.
