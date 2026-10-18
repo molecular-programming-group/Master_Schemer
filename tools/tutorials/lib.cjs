@@ -147,6 +147,7 @@ async function run(name, story, { hide = ['library', 'notes'] } = {}) {
   };
   t.check = async (name, pause = 700) => { const s = `#panel label:has-text("${name}") input[type=checkbox]`; await t.reveal(s); await t.click(s, pause); };
   t.fill = async (name, value, delay) => t.field(`${t.F(name)} input, ${t.F(name)} textarea`, value, delay);
+  t.slot = async i => { const s = `#panel .swatch.slot >> nth=${i}`; await t.reveal(s); await t.click(s, 400); };
   t.swatch = async i => { const s = `.swatches:not(:has(.slot)) .swatch >> nth=${i}`; await t.reveal(s); await t.click(s, 350); };
 
   try {
