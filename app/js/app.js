@@ -1159,6 +1159,22 @@ try {
   }
 } catch { /* storage blocked — skip seeding */ }
 
+// Stock surface: a slab in oblique view (top, front and side faces, grouped), to
+// stand immobilized strands on.
+try {
+  const SEED_KEY = 'master-schemer-lib-seeded-surface1';
+  if (!localStorage.getItem(SEED_KEY)) {
+    const g = newId(), face = (pts, fill) => ({ type: 'aline', id: newId(), pts, closed: true, color: '#2b2622', width: 1, cap0: 'none', cap1: 'none', fill, group: g });
+    library.push({ id: newId(), category: 'Shapes', name: 'surface block', groups: [{ id: g, name: 'surface' }], elements: [
+      face([[30, 0], [230, 0], [200, 20], [0, 20]], '#dedad3'),
+      face([[0, 20], [200, 20], [200, 34], [0, 34]], '#aaa49b'),
+      face([[200, 20], [230, 0], [230, 14], [200, 34]], '#8d877f'),
+    ] });
+    localStorage.setItem(SEED_KEY, '1');
+    saveLibrary();
+  }
+} catch { /* storage blocked — skip seeding */ }
+
 // Memory-slot refs ('slot:<id>' colours and labels) resolved to plain values, for
 // copies leaving the document or a slot going away: read from `palette`/`labels`;
 // refs to ids in `keep` stay live.
