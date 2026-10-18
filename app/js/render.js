@@ -68,7 +68,7 @@ const texCache = new Map();
 function katexHTML(tex) {
   if (!texCache.has(tex)) {
     let html = tex;
-    try { html = window.katex.renderToString(tex, { throwOnError: false }); } catch { /* raw */ }
+    try { html = window.katex.renderToString(tex, { throwOnError: false }); } catch { html = esc(tex); }
     texCache.set(tex, html);
   }
   return texCache.get(tex);
@@ -120,13 +120,14 @@ function noteTex(tex, el) {
   return el?.bold ? `\\boldsymbol{${tex}}` : tex;
 }
 
+// One line as HTML: $…$ through KaTeX, inline tags kept, everything else escaped.
+export const inlineHTML = (line, el) => line.split(/\$([^$]+)\$/)
+  .map((part, i) => i % 2 ? katexHTML(noteTex(part, el))
+    : esc(part).replace(/&lt;(\/?)(b|i|u|s|sup|sub)&gt;/g, '<$1$2>'))
+  .join('');
+
 export function richHTML(text, el) {
-  return text.split('\n').map(line =>
-    line.split(/\$([^$]+)\$/)
-      .map((part, i) => i % 2 ? katexHTML(noteTex(part, el))
-        : esc(part).replace(/&lt;(\/?)(b|i|u|s|sup|sub)&gt;/g, '<$1$2>'))
-      .join('') || '&nbsp;'
-  ).map(h => `<div>${h}</div>`).join('');
+  return text.split('\n').map(line => inlineHTML(line, el) || '&nbsp;').map(h => `<div>${h}</div>`).join('');
 }
 
 // Measured world-unit sizes of rich text elements, filled after first paint.
