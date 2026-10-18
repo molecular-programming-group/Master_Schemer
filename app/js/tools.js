@@ -8,7 +8,7 @@ import {
   nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex, bladeCross,
   resizeEndSegments,
 } from './geom.js';
-import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle, dnaBpg, strandView } from './render.js';
+import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle, dnaBpg, strandView, anchorFrac, textWidth } from './render.js';
 import { gridPitch } from './dna.js';
 
 const $ = id => document.getElementById(id);
@@ -103,9 +103,12 @@ export function startInlineEdit(el, opts) {
 
 export function editElementText(el) {
   if (el.type === 'text') {
+    // an anchored note's editor spans the note (plus room to type), placed so its
+    // centred/right text stays put
+    const k = anchorFrac(el), pad = el.anchored && !el.w ? 2 * el.size : 0;
     startInlineEdit(el, {
       field: 'text', multiline: true, size: el.size, color: resolveColor(el.color),
-      world: [el.x, el.y - el.size], width: el.w,
+      world: [el.x - k * (textWidth(el) + pad), el.y - el.size], width: el.w || (pad && textWidth(el) + pad),
       onDone: v => {
         if (v === null || v === el.text) return changed();
         beginChange();
@@ -283,7 +286,7 @@ export const tools = {
         const el = byId(handle.getAttribute('data-id'));
         let orig;
         if (el.type === 'ellipse') orig = { x: el.cx - el.rx, y: el.cy - el.ry, w: 2 * el.rx, h: 2 * el.ry };
-        else if (el.type === 'text') { const b = elementBBox(el); orig = { x: el.x, w: b[2] - b[0] }; }
+        else if (el.type === 'text') { const w = textWidth(el); orig = { x: el.x - anchorFrac(el) * w, w }; }
         else orig = { x: el.x, y: el.y, w: el.w, h: el.h };
         drag = { mode: 'resize', el, handle: handle.getAttribute('data-handle'), orig };
         return;
@@ -494,7 +497,7 @@ export const tools = {
           if (h.includes('w')) x0 = Math.min(p[0], x1 - GRID);
           if (h.includes('e')) x1 = Math.max(p[0], x0 + GRID);
           began();
-          drag.el.x = r1(x0);
+          drag.el.x = r1(x0 + anchorFrac(drag.el) * (x1 - x0)); // x stays the alignment anchor
           drag.el.w = r1(x1 - x0);
           changed();
           return;

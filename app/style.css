@@ -390,6 +390,8 @@ body.show-keys .tool-btn[data-key]::before {
   white-space: nowrap;
   text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 4px #fff;
 }
+/* KaTeX could not typeset it: the raw source, red, with a wavy underline */
+#mathLayer .katex-error { text-decoration: underline wavy; }
 
 /* Data boxes: an object's hidden notes, shown always or on hover. Same
    transform trick as the math layer so they track pan/zoom. */

@@ -4,7 +4,7 @@
 import { state, byId, resolveColor, resolveLabel, groupElementMembers } from './model.js';
 import {
   GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint, basePairRungs, defaultBases,
-  convexHull, ellipsePoints, roundedPathD,
+  convexHull, ellipsePoints, roundedPathD, smoothPolyline, extendPolyline,
 } from './geom.js';
 import {
   drawBrush, brushPath, strandLayout, midline, naturalBases, uAt, outlineOf, DEFAULT_BPG, naturalD,
@@ -69,7 +69,12 @@ const texCache = new Map();
 function katexHTML(tex) {
   if (!texCache.has(tex)) {
     let html = tex;
-    try { html = window.katex.renderToString(tex, { throwOnError: false }); } catch { html = esc(tex); }
+    // throwOnError:false already turns parse errors into a red .katex-error span;
+    // anything else KaTeX throws (e.g. no font metrics for \textsf{\textbf{\textit…}})
+    // gets the same red mark instead of passing for plain text
+    try { html = window.katex.renderToString(tex, { throwOnError: false }); } catch (e) {
+      html = `<span class="katex-error" title="${esc(String(e.message)).replace(/"/g, '&quot;')}" style="color:#cc0000">${esc(tex)}</span>`;
+    }
     texCache.set(tex, html);
   }
   return texCache.get(tex);
@@ -131,8 +136,29 @@ export function richHTML(text, el) {
   return text.split('\n').map(line => inlineHTML(line, el) || '&nbsp;').map(h => `<div>${h}</div>`).join('');
 }
 
-// Measured world-unit sizes of rich text elements, filled after first paint.
+// Measured world-unit sizes of text notes, filled after first paint: [w, h] of
+// a rich note's box, or [x0, y0, x1, y1] of a plain note's unrotated text
+// relative to its (x, y), so a box survives moving the note.
 const richBoxes = new Map();
+
+// A note's alignment anchor. Notes with `anchored` hang off x by their
+// alignment — x is the left edge, centre or right edge of every line, so a
+// centred caption needs no guessed width. Older notes (no `anchored`) keep x
+// as the left edge and align lines within the widest one.
+export const anchorFrac = el => (el.anchored ? { center: 0.5, right: 1 }[el.align] || 0 : 0);
+
+// A note's unrotated box: measured once drawn, estimated before that.
+function textBox(el) {
+  const box = richBoxes.get(el.id);
+  if (box?.length === 4) return [el.x + box[0], el.y + box[1], el.x + box[2], el.y + box[3]];
+  const top = el.y - el.size * 1.15;
+  if (box) { const x0 = el.x - anchorFrac(el) * box[0]; return [x0, top, x0 + box[0], top + box[1]]; }
+  const lines = el.text.split('\n');
+  const w = el.w || Math.max(...lines.map(l => stripTags(l).length)) * el.size * 0.6;
+  const x0 = el.x - anchorFrac(el) * w;
+  return [x0, el.y - el.size, x0 + w, el.y - el.size + lines.length * el.size * lhOf(el)];
+}
+export const textWidth = el => { const b = textBox(el); return b[2] - b[0]; };
 
 // ---- element bounding boxes (world units) ----
 
@@ -153,12 +179,12 @@ export function elementBBox(el) {
       return [el.cx - el.rx - m, el.cy - el.ry - m, el.cx + el.rx + m, el.cy + el.ry + m];
     }
     case 'text': {
-      const top = el.y - el.size * 1.15;
-      const box = richBoxes.get(el.id);
-      if (box) return [el.x, top, el.x + box[0], top + box[1]];
-      const lines = el.text.split('\n');
-      const w = el.w || Math.max(...lines.map(l => stripTags(l).length)) * el.size * 0.6;
-      return [el.x, el.y - el.size, el.x + w, el.y - el.size + lines.length * el.size * lhOf(el)];
+      const b = textBox(el);
+      if (!el.rotate) return b;
+      // rotated (el.rotate degrees, clockwise) about the anchor point (x, y)
+      const r = el.rotate * Math.PI / 180, c = Math.cos(r), sn = Math.sin(r);
+      return bboxOfPts([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]].map(([x, y]) =>
+        [el.x + (x - el.x) * c - (y - el.y) * sn, el.y + (x - el.x) * sn + (y - el.y) * c]));
     }
     case 'arrow': {
       const a = byId(el.from), b = byId(el.to);
@@ -313,10 +339,20 @@ function capGlyph(parent, p, d, cap, color, w, flip) {
 // once after the fresh nodes are attached (rich text needs layout to size its
 // hit target).
 
+// The halo behind a label: white, unless the label itself is light (a white
+// label on a dark fill), which then gets a dark halo so it still reads.
+export function haloOf(color) {
+  const m = /^#([0-9a-f]{6})$/i.exec(color || '');
+  if (!m) return '#ffffff';
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16) / 255)
+    .map(c => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6 ? '#2b2622' : '#ffffff';
+}
+
 function haloText(parent, x, y, text, size, color, weight = 500, extra = {}) {
   const t = svgEl('text', {
     x, y, 'font-size': size, 'font-family': FONT, 'font-weight': weight,
-    fill: color, stroke: '#ffffff', 'stroke-width': size * 0.28,
+    fill: color, stroke: haloOf(color), 'stroke-width': size * 0.28,
     'paint-order': 'stroke', 'stroke-linejoin': 'round', ...extra,
   }, parent);
   appendRuns(t, text, size);
@@ -338,6 +374,24 @@ function labelPos(pts, t, off, side) {
   return [m[0] + nx * off * -side, m[1] + ny * off * -side];
 }
 
+// Label look (size, colour, weight). Each key comes from the first of: the
+// owner (element or segment) itself, its shared label slot, the document-wide
+// default (doc.labelStyle), else the built-in look. Style rides on the slot
+// because a slot is one label shown in many places — the panel writes there
+// when the owner is on a shared label, so every copy changes together.
+export const LABEL_STYLE_KEYS = ['labelSize', 'labelColor', 'labelWeight'];
+export function labelStyleOf(owner) {
+  const l = owner.label;
+  const slot = typeof l === 'string' && l.startsWith('slot:') ? state.doc.labelSlots?.find(s => s.id === l.slice(5)) : null;
+  const doc = state.doc.labelStyle || {};
+  const o = {};
+  for (const k of LABEL_STYLE_KEYS) {
+    const v = owner[k] ?? slot?.[k] ?? doc[k];
+    if (v !== undefined) o[k] = v;
+  }
+  return o;
+}
+
 // Object/segment label at anchor + user offset. Draggable via data-labelfor.
 // Math labels render as overlay divs (pointer-events:none), so they get an
 // invisible SVG twin carrying data-labelfor so the same drag machinery moves them.
@@ -345,16 +399,23 @@ function drawLabel(g, divs, measures, owner, anchor, opts) {
   if (owner.labelHide) return;
   const text = resolveLabel(owner.label);
   if (!text) return;
+  const st = labelStyleOf(owner);
+  opts = { ...opts, size: st.labelSize || opts.size, weight: st.labelWeight || 600,
+    color: st.labelColor ? resolveColor(st.labelColor) : opts.color };
   const off = owner.labelOff || [0, 0];
   const p = [anchor[0] + off[0], anchor[1] + off[1]];
   if (opts.follow && !hasMath(text)) { contourLabel(g, text, p, opts); return; }
   if (hasMath(text)) {
     const div = document.createElement('div');
     div.className = 'math-label';
+    div.dataset.id = opts.id; // export finds the element's math labels by this
     div.style.left = `${p[0]}px`;
     div.style.top = `${p[1]}px`;
-    div.style.font = `600 ${opts.size}px ${FONT}`;
+    div.style.font = `${opts.weight} ${opts.size}px ${FONT}`;
     div.style.color = opts.color;
+    // (a \color inside the math overrides opts.color, so then keep the white halo)
+    const halo = text.includes('\\color') ? '#ffffff' : haloOf(opts.color);
+    if (halo !== '#ffffff') div.style.textShadow = `0 0 3px ${halo}, 0 0 3px ${halo}, 0 0 4px ${halo}`;
     div.innerHTML = richHTML(text);
     divs.push(div);
     const hit = svgEl('rect', {
@@ -368,7 +429,7 @@ function drawLabel(g, divs, measures, owner, anchor, opts) {
     });
     return;
   }
-  haloText(g, p[0], p[1], text, opts.size, opts.color, 600, {
+  haloText(g, p[0], p[1], text, opts.size, opts.color, opts.weight, {
     'text-anchor': 'middle', 'dominant-baseline': 'middle',
     'data-labelfor': opts.id, ...(opts.segi !== undefined ? { 'data-segi': opts.segi } : {}),
     style: 'cursor:move',
@@ -389,19 +450,24 @@ function offsetPolyline(pts, d) {
 // A label that follows its strand (el.labelsFollow): the text rides a copy of the
 // strand's path (opts.follow) set off by the label's distance from it, centred,
 // so it bends with the strand. Dragging the label moves that distance. Math
-// labels are HTML overlays and stay straight.
-// ponytail: text longer than its path is cut off at the path end, and a tight
-// inside bend bunches the letters.
+// labels are HTML overlays and stay straight. The path is smoothed over about a
+// letter height either way (a zigzag domain gives a calm line, a corner a
+// curve) and runs on past both ends, so text longer than its domain spills over
+// instead of being cut off. It reads left to right where the text sits.
 function contourLabel(g, text, p, opts) {
-  const pts = opts.follow, L = polylineLength(pts), m = pointAt(pts, L / 2);
+  // two passes: one leaves ripples that the sideways offset blows up into loops
+  const pts = smoothPolyline(smoothPolyline(opts.follow, opts.size), opts.size);
+  const L = polylineLength(pts), m = pointAt(pts, L / 2);
   const a = pointAt(pts, Math.max(0, L / 2 - 4)), b = pointAt(pts, L / 2 + 4);
   const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
   const d = ((p[0] - m[0]) * (b[1] - a[1]) - (p[1] - m[1]) * (b[0] - a[0])) / l;
-  let line = offsetPolyline(pts, d);
-  if (line[line.length - 1][0] < line[0][0]) line = line.reverse(); // read left to right
+  const tl = stripTags(text).length * opts.size * 0.6; // ponytail: estimated text length
+  const c0 = pointAt(pts, Math.max(0, L / 2 - tl / 2)), c1 = pointAt(pts, Math.min(L, L / 2 + tl / 2));
+  let line = extendPolyline(offsetPolyline(pts, d), tl);
+  if (c1[0] - c0[0] < -1e-6) line = line.reverse(); // read left to right
   const id = `lp-${opts.id}-${opts.segi ?? 'el'}`;
   svgEl('path', { id, d: 'M' + line.map(q => `${q[0]} ${q[1]}`).join(' L'), fill: 'none', stroke: 'none' }, g);
-  const t = haloText(g, 0, 0, '', opts.size, opts.color, 600, {
+  const t = haloText(g, 0, 0, '', opts.size, opts.color, opts.weight, {
     'text-anchor': 'middle', 'dominant-baseline': 'middle',
     'data-labelfor': opts.id, ...(opts.segi !== undefined ? { 'data-segi': opts.segi } : {}),
     style: 'cursor:move',
@@ -763,7 +829,8 @@ function renderALine(el) {
 
 function renderText(el) {
   const g = svgEl('g', { 'data-id': el.id });
-  const color = resolveColor(el.color);
+  if (el.rotate) g.setAttribute('transform', `rotate(${el.rotate} ${el.x} ${el.y})`);
+  const color = resolveColor(el.color), k = anchorFrac(el);
   if (isRichText(el)) {
     const top = el.y - el.size * 1.15;
     const div = document.createElement('div');
@@ -772,6 +839,10 @@ function renderText(el) {
     div.style.top = `${top}px`;
     Object.assign(div.style, textStyle(el));
     div.style.color = color;
+    if (k || el.rotate) { // hang off the anchor, and turn about it like the SVG twin
+      div.style.transformOrigin = `${k * 100}% ${el.size * 1.15}px`;
+      div.style.transform = `translateX(${-k * 100}%) rotate(${el.rotate || 0}deg)`;
+    }
     div.style.width = el.w ? `${el.w}px` : 'max-content';
     div.innerHTML = richHTML(el.text, el);
     // invisible SVG twin so clicks and marquees still find the note
@@ -782,28 +853,35 @@ function renderText(el) {
     const measure = () => {
       const w = el.w || div.offsetWidth, h = div.offsetHeight || el.size * 1.3;
       richBoxes.set(el.id, [w, h]);
+      hit.setAttribute('x', el.x - k * w);
       hit.setAttribute('width', w);
       hit.setAttribute('height', h);
     };
     return { node: g, divs: [div], measure };
   }
-  richBoxes.delete(el.id);
   const t = svgEl('text', {
     x: el.x, y: el.y, 'font-size': el.size, 'font-family': fontOf(el),
     'font-weight': el.bold ? 700 : 400, 'font-style': el.italic ? 'italic' : 'normal',
     fill: color, 'data-role': 'text-body', ...(decoOf(el) ? { 'text-decoration': decoOf(el) } : {}),
+    ...(k ? { 'text-anchor': k === 1 ? 'end' : 'middle' } : {}),
   }, g);
   const spans = el.text.split('\n').map((line, i) => {
     const span = svgEl('tspan', { x: el.x, y: el.y + i * el.size * lhOf(el) }, t);
     appendRuns(span, line, el.size);
     return span;
   });
-  if (!el.align || el.align === 'left' || spans.length < 2) return { node: g };
-  // centre/right: shift each line within the widest one (needs layout to measure)
+  // the real ink box, so Fit and the selection frame the note as drawn
+  const fit = () => {
+    const b = t.getBBox();
+    if (b.width) richBoxes.set(el.id, [b.x - el.x, b.y - el.y, b.x + b.width - el.x, b.y + b.height - el.y]);
+  };
+  if (el.anchored || !el.align || el.align === 'left' || spans.length < 2) return { node: g, measure: fit };
+  // old centre/right: shift each line within the widest one (needs layout to measure)
   const measure = () => {
     const ws = spans.map(sp => sp.getComputedTextLength());
-    const max = Math.max(...ws), k = el.align === 'center' ? 0.5 : 1;
-    spans.forEach((sp, i) => sp.setAttribute('x', el.x + (max - ws[i]) * k));
+    const max = Math.max(...ws), f = el.align === 'center' ? 0.5 : 1;
+    spans.forEach((sp, i) => sp.setAttribute('x', el.x + (max - ws[i]) * f));
+    fit();
   };
   return { node: g, measure };
 }
@@ -1262,6 +1340,7 @@ const nodeCache = new Map(); // id → { key, node, divs }
 function elKey(el, salt) {
   let key = JSON.stringify(el);
   if (key.includes('slot:')) key += salt;
+  if (state.doc.labelStyle) key += JSON.stringify(state.doc.labelStyle); // document-wide label look
   if (el.type === 'arrow') {
     const a = byId(el.from), b = byId(el.to);
     key += a && b ? `|${a.x},${a.y},${a.w},${a.h}|${b.x},${b.y},${b.w},${b.h}` : '|x';
@@ -1592,8 +1671,8 @@ function renderDataBoxes(layer) {
 function exportRichText(el) {
   const g = svgEl('g');
   const box = richBoxes.get(el.id);
-  const fo = svgEl('foreignObject', {
-    x: el.x, y: el.y - el.size * 1.15,
+  const fo = svgEl('foreignObject', { // the clone keeps the note's rotate() transform
+    x: el.x - anchorFrac(el) * (el.w || box?.[0] || 0), y: el.y - el.size * 1.15,
     width: el.w || box?.[0] || 2000, height: (box?.[1] || 1000) + 4,
     style: 'overflow:visible',
   }, g);
@@ -1606,19 +1685,18 @@ function exportRichText(el) {
   return g;
 }
 
-// Math label → centered foreignObject at the element's label anchor.
-function exportMathLabel(el) {
-  const b = elementBBox(el);
-  const off = el.labelOff || [0, 0];
-  const cx = (b[0] + b[2]) / 2 + off[0], top = b[1] - 9 + off[1];
+// Math labels → foreignObjects where the live overlay draws them (centred on
+// their anchor), with the same font, colour and halo — segment labels included.
+function exportMathLabel(d) {
+  const w = d.offsetWidth, h = d.offsetHeight;
   const fo = svgEl('foreignObject', {
-    x: cx - 150, y: top - 12, width: 300, height: 40, style: 'overflow:visible',
+    x: parseFloat(d.style.left) - w / 2, y: parseFloat(d.style.top) - h / 2, width: w, height: h, style: 'overflow:visible',
   });
   const div = document.createElement('div');
   div.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
-  div.style.cssText =
-    `display:flex;justify-content:center;font:600 12.5px ${FONT};color:${resolveColor(el.color) || '#2b2622'};`;
-  div.innerHTML = richHTML(resolveLabel(el.label));
+  div.style.cssText = `white-space:nowrap;font:${d.style.font};color:${d.style.color};` +
+    `text-shadow:${d.style.textShadow || '0 0 3px #fff, 0 0 3px #fff, 0 0 4px #fff'}`;
+  div.innerHTML = d.innerHTML;
   fo.appendChild(div);
   return fo;
 }
@@ -1661,9 +1739,8 @@ export async function exportSVGString({ plain = false, only = null, grid = false
   out.setAttribute('width', x1 - x0);
   out.setAttribute('height', y1 - y0);
 
-  const needsMath = !plain && state.doc.elements.some(el =>
-    (el.type === 'text' && isRichText(el)) ||
-    (el.label && !el.labelHide && hasMath(resolveLabel(el.label))));
+  const needsMath = !plain && (state.doc.elements.some(el => el.type === 'text' && isRichText(el)) ||
+    !!$('mathLayer').querySelector('.math-label'));
   if (needsMath) {
     const css = await katexCSS();
     if (css) {
@@ -1678,14 +1755,17 @@ export async function exportSVGString({ plain = false, only = null, grid = false
   for (const id of ['layer-cards', 'layer-back', 'layer-under', 'layer-draw']) {
     out.appendChild($(id).cloneNode(true));
   }
+  const mathLabels = new Map(); // element id → its math label overlays
+  for (const d of $('mathLayer').querySelectorAll('.math-label')) {
+    if (!mathLabels.has(d.dataset.id)) mathLabels.set(d.dataset.id, []);
+    mathLabels.get(d.dataset.id).push(d);
+  }
   for (const el of plain ? [] : state.doc.elements) {
     const clone = out.querySelector(`[data-id="${el.id}"]`);
     if (!clone) continue;
     if (el.type === 'text' && isRichText(el)) {
       clone.replaceChildren(...exportRichText(el).childNodes);
-    } else if (el.label && !el.labelHide && hasMath(resolveLabel(el.label))) {
-      clone.appendChild(exportMathLabel(el));
-    }
+    } else clone.append(...(mathLabels.get(el.id) || []).map(exportMathLabel));
   }
   out.querySelectorAll('[data-hit], [data-ph]').forEach(n => n.remove());
   if (only) out.querySelectorAll('[data-id]').forEach(n => { if (!only.has(n.dataset.id)) n.remove(); });

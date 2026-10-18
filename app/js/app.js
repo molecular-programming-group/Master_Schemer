@@ -7,9 +7,9 @@ import {
 } from './model.js';
 import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments } from './geom.js';
 import {
-  render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
+  render, renderNow, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
   linkStrand, rungSeqs, refSeq, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, strandView, lookOf, dnaView, invalidateRenderCache,
-  FONTS, LINE_H, INLINE_TAGS, inlineHTML,
+  FONTS, LINE_H, INLINE_TAGS, inlineHTML, LABEL_STYLE_KEYS, labelStyleOf, anchorFrac, textWidth,
 } from './render.js';
 import { DEFAULT_BPG, seqOf, spacing, tintRef, uAt, worldPerA, gridPitch, naturalBases, seqLetters } from './dna.js';
 import MOLS from './mol-tex.js';
@@ -170,7 +170,10 @@ function zoomCenter(factor) {
   zoomAt([svg.clientWidth / 2, svg.clientHeight / 2], factor);
 }
 
-function fitView(box = contentBBox()) {
+function fitView(box) {
+  // draw everything first: a note's real size (KaTeX math especially) is only
+  // known once laid out, and a just-opened file hasn't been drawn yet
+  if (!box) { renderNow(false); box = contentBBox(); }
   const v = state.view;
   if (!box) { v.tx = 80; v.ty = 80; v.s = 1; refresh(); return; }
   const w = Math.max(box[2] - box[0], GRID), h = Math.max(box[3] - box[1], GRID);
@@ -311,7 +314,7 @@ $('textbarToggle').addEventListener('click', () => togglePanel('textbar'));
 
 const FLAG = { b: 'bold', i: 'italic', u: 'underline', s: 'strike' };
 const SIZES = [6, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 96, 120, 144];
-const FMT_KEYS = ['font', 'size', 'bold', 'italic', 'underline', 'strike', 'align', 'lh'];
+const FMT_KEYS = ['font', 'size', 'bold', 'italic', 'underline', 'strike', 'align', 'anchored', 'lh'];
 const textTargets = () => selectedElements().filter(el => el.type === 'text');
 // A field holding a note's or label's source: the canvas editor, or the
 // panel's Text / Label fields (marked .fmt-src).
@@ -359,6 +362,14 @@ function textHint(msg) {
   $('hint').textContent = msg;
 }
 
+// Move a note's x from its current anchor to fraction k of its width, along
+// its (possibly rotated) baseline, so the text itself doesn't move.
+function reanchor(o, k) {
+  const dx = (k - anchorFrac(o)) * textWidth(o), r = (o.rotate || 0) * Math.PI / 180;
+  o.x = +(o.x + dx * Math.cos(r)).toFixed(2);
+  o.y = +(o.y + dx * Math.sin(r)).toFixed(2);
+}
+
 function applyFormat(f) {
   const [cmd, arg] = f.split(':');
   const ed = noteEditor();
@@ -378,7 +389,13 @@ function applyFormat(f) {
   const set = (o, k, v, dflt) => { if (v === dflt || v === undefined) delete o[k]; else o[k] = v; };
   const update = o => {
     if (FLAG[cmd]) set(o, FLAG[cmd], !first[FLAG[cmd]] || undefined);
-    else if (cmd === 'align') set(o, 'align', arg, 'left');
+    else if (cmd === 'align') {
+      // the note's x becomes the alignment anchor (left edge, centre, right
+      // edge); a placed note shifts its x so it stays where it is on screen
+      if (o.type === 'text') reanchor(o, { center: 0.5, right: 1 }[arg] || 0);
+      set(o, 'align', arg, 'left');
+      set(o, 'anchored', arg !== 'left' || undefined, undefined);
+    }
     else if (cmd === 'font') set(o, 'font', arg, 'sans');
     else if (cmd === 'lh') set(o, 'lh', +arg, LINE_H);
     else if (cmd === 'size') o.size = clamp(+arg || 14, 6, 144);
@@ -386,6 +403,7 @@ function applyFormat(f) {
       const cur = o.size || 14;
       o.size = cmd === 'bigger' ? SIZES.find(n => n > cur) ?? 144 : SIZES.findLast(n => n < cur) ?? 6;
     } else if (cmd === 'clear') {
+      if (o.anchored) reanchor(o, 0); // back to a left-anchored note, without moving it
       for (const k of FMT_KEYS) if (k !== 'size') delete o[k];
       if (typeof o.text === 'string') o.text = o.text.replace(new RegExp(`</?(${INLINE_TAGS.join('|')})>`, 'g'), '');
     }
@@ -1081,12 +1099,18 @@ function assetFromSelection() {
   const els = state.doc.elements.filter(el => ids.has(el.id))
     .map(el => JSON.parse(JSON.stringify(el)));
   // freeze palette/label slot refs — another document won't have these slots
+  // (a label's style too: its slot's and the document's are baked onto it)
+  const freezeLabel = o => {
+    Object.assign(o, labelStyleOf(o));
+    if (o.labelColor) o.labelColor = resolveColor(o.labelColor);
+    o.label = resolveLabel(o.label);
+  };
   for (const el of els) {
     if (el.color !== undefined) el.color = resolveColor(el.color);
-    if (el.label) el.label = resolveLabel(el.label);
+    if (el.label) freezeLabel(el);
     for (const seg of el.segments || []) {
       seg.color = resolveColor(seg.color);
-      seg.label = resolveLabel(seg.label);
+      if (seg.label) freezeLabel(seg); else seg.label = resolveLabel(seg.label);
     }
   }
   const groups = state.doc.groups.filter(g => els.some(el => el.group === g.id))
@@ -2225,6 +2249,46 @@ function labelDisplayFields(target) {
   return frag;
 }
 
+// Label size, weight and colour. `get` gives the style in effect, `put(k, v)`
+// stores one key and `reset` (offered when `own` says there is something to
+// clear) clears them; dflt is the built-in look (size, colour).
+const WEIGHTS = { 400: 'Regular', 600: 'Semibold', 700: 'Bold' };
+function labelStyleControls(key, get, put, own, reset, dflt) {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(fieldRow('Label size', numberControl(() => get().labelSize || dflt.size, v => put('labelSize', v),
+    { min: 4, max: 144, step: 0.5 })));
+  frag.appendChild(fieldRow('Label weight', mappedSelect(WEIGHTS, () => String(get().labelWeight || 600),
+    v => put('labelWeight', +v))));
+  frag.appendChild(fieldRow('Label colour', colorPicker(key,
+    () => (get().labelColor ? resolveColor(get().labelColor) : dflt.color),
+    Object.assign(hex => { put('labelColor', hex); render(); }, { begin: beginChange }), changed)));
+  if (own()) {
+    frag.appendChild(smallButton('Reset label style', () => { beginChange(); reset(); changed(); },
+      'Clear this label style'));
+  }
+  return frag;
+}
+
+// One element's or segment's label style. On a shared label it is written to
+// the slot (owner fields cleared), so every copy of the label restyles together.
+function labelStyleFields(owner, key, dflt) {
+  if (!resolveLabel(owner.label || '')) return document.createDocumentFragment();
+  const l = owner.label;
+  const slot = typeof l === 'string' && l.startsWith('slot:') ? state.doc.labelSlots.find(s => s.id === l.slice(5)) : null;
+  return labelStyleControls(key, () => labelStyleOf(owner),
+    (k, v) => { if (slot) { slot[k] = v; delete owner[k]; } else owner[k] = v; },
+    () => LABEL_STYLE_KEYS.some(k => owner[k] !== undefined || slot?.[k] !== undefined),
+    () => { for (const k of LABEL_STYLE_KEYS) { delete owner[k]; if (slot) delete slot[k]; } }, dflt);
+}
+
+// The document-wide label style (doc.labelStyle): every label without its own.
+function docLabelStyleFields() {
+  const st = () => state.doc.labelStyle || {};
+  return labelStyleControls('lab:doc', st,
+    (k, v) => { (state.doc.labelStyle ||= {})[k] = v; },
+    () => !!state.doc.labelStyle, () => { delete state.doc.labelStyle; }, { size: 12, color: '#2b2622' });
+}
+
 // ---- DNA strands ----
 
 // What a duplex backbone takes its colour from: the paired segment, or the
@@ -2749,6 +2813,12 @@ function renderPanel() {
         beginChange(); delete state.doc.bg; changed();
       }, 'Back to white'));
     }
+    sec.appendChild(sectionTitle('Labels'));
+    const lp = document.createElement('p');
+    lp.className = 'muted';
+    lp.textContent = 'For every domain and object label that has no style of its own.';
+    sec.appendChild(lp);
+    sec.appendChild(docLabelStyleFields());
   } else if (!single) {
     sec.appendChild(sectionTitle(`${n} objects`));
     const row = document.createElement('div');
@@ -2810,6 +2880,7 @@ function renderPanel() {
     }
     sec.appendChild(labelFields(seg, 'e.g. domain a'));
     sec.appendChild(labelDisplayFields(seg));
+    sec.appendChild(labelStyleFields(seg, `lab:${el.id}.${single.seg}`, { size: 12, color: resolveColor(seg.color) }));
     sec.appendChild(fieldRow('String', boundInput(
       () => seg.string || '', v => { seg.string = v; },
       { placeholder: 'e.g. domain sequence' })));
@@ -2947,7 +3018,10 @@ function renderPanel() {
       }
     } else if (el.type !== 'text' || isSemantic(el)) {
       sec.appendChild(labelFields(el, 'name this object'));
-      if (el.type !== 'text') sec.appendChild(labelDisplayFields(el));
+      if (el.type !== 'text') {
+        sec.appendChild(labelDisplayFields(el));
+        sec.appendChild(labelStyleFields(el, `lab:${el.id}`, { size: 12.5, color: resolveColor(el.color) || '#2b2622' }));
+      }
     }
     if (el.type === 'text') {
       const src = boundInput(() => el.text, v => { el.text = v; }, { textarea: true });
@@ -2963,6 +3037,16 @@ function renderPanel() {
         changed();
       });
       sec.appendChild(fieldRow('Size', sizeInput));
+      // alignment goes through the text toolbar's command, which keeps the note in place
+      const alignSel = document.createElement('select');
+      for (const [v, t] of Object.entries({ left: 'Left', center: 'Centre', right: 'Right' })) alignSel.add(new Option(t, v));
+      alignSel.value = el.align || 'left';
+      alignSel.addEventListener('change', () => applyFormat(`align:${alignSel.value}`));
+      sec.appendChild(fieldRow('Align', alignSel));
+      sec.appendChild(fieldRow('Rotation (°, clockwise)', numberControl(
+        () => el.rotate || 0,
+        v => { v = ((v % 360) + 540) % 360 - 180; if (v) el.rotate = v; else delete el.rotate; },
+        { min: -360, max: 360, step: 15 })));
       sec.appendChild(fieldRow('Wrap width (0 = none)', numberControl(
         () => el.w || 0,
         v => { if (v >= GRID) el.w = v; else delete el.w; },
