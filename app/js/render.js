@@ -4,7 +4,7 @@
 import { state, byId, resolveColor, resolveLabel, groupElementMembers } from './model.js';
 import {
   GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint, basePairRungs, defaultBases,
-  convexHull, ellipsePoints, roundedPathD, smoothPolyline, extendPolyline,
+  convexHull, ellipsePoints, roundedPathD, smoothPolyline, extendPolyline, drawnPts, smoothD, smoothPts, rotatePt,
 } from './geom.js';
 import {
   drawBrush, brushPath, strandLayout, midline, naturalBases, uAt, outlineOf, DEFAULT_BPG, naturalD,
@@ -167,16 +167,23 @@ export function elementBBox(el) {
     case 'card': return [el.x, el.y, el.x + el.w, el.y + el.h];
     case 'rect': {
       const m = (el.width ?? 2) + 2;
+      if (el.rot) { // the turned corners' box
+        const b = bboxOfPts(elOutline(el));
+        return [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
+      }
       return [el.x - m, el.y - m, el.x + el.w + m, el.y + el.h + m];
     }
     case 'path': case 'ink': case 'aline': {
-      const b = bboxOfPts(el.type === 'aline' ? alinePts(el.pts) : el.pts);
-      const m = shownDNA(el) ? diam(el) * 0.75 + 4 : (el.width ?? 2) + 4 + (el.comb ? el.combLen ?? 6 : 0);
+      const b = bboxOfPts(el.type === 'aline' ? alinePts(el) : el.type === 'path' ? drawnPts(el) : el.pts);
+      const m = shownDNA(el) ? diam(el) * 0.75 + 4 : Math.max((el.width ?? 2) + 4 + (el.comb ? el.combLen ?? 6 : 0), el.capSize || 0);
       return [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
     }
     case 'ellipse': {
       const m = (el.width ?? 2) + 2;
-      return [el.cx - el.rx - m, el.cy - el.ry - m, el.cx + el.rx + m, el.cy + el.ry + m];
+      // a turned ellipse's half extents: √(rx²cos² + ry²sin²) across, likewise down
+      const a = (el.rot || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+      const hx = Math.hypot(el.rx * c, el.ry * s), hy = Math.hypot(el.rx * s, el.ry * c);
+      return [el.cx - hx - m, el.cy - hy - m, el.cx + hx + m, el.cy + hy + m];
     }
     case 'text': {
       const b = textBox(el);
@@ -277,8 +284,15 @@ export const paintOf = (obj, fg) =>
   (obj.pattern && obj.pattern !== 'none' &&
     patternRef(obj.pattern, fg, obj.patternBg && resolveColor(obj.patternBg), obj.patternScale)) || fg;
 
-// Fill for closed shapes (rect/ellipse): a pattern, a color ref, or 'none'.
+// Fill for closed shapes (rect/ellipse/closed line note): a pattern, a color
+// ref, or 'none' — plus its opacity (el.fillOpacity) when set.
 const fillOf = el => (el.fill ? paintOf(el, resolveColor(el.fill)) : 'none');
+const fillAttrs = el => ({ fill: fillOf(el), ...(el.fill && el.fillOpacity !== undefined ? { 'fill-opacity': el.fillOpacity } : {}) });
+
+// A rect/ellipse turned by el.rot degrees about its centre: its body goes in
+// a rotated group (the label stays upright outside it).
+const shapeCenter = el => (el.type === 'ellipse' ? [el.cx, el.cy] : [el.x + el.w / 2, el.y + el.h / 2]);
+const rotGroup = (g, el) => (el.rot ? svgEl('g', { transform: `rotate(${el.rot} ${shapeCenter(el).join(' ')})` }, g) : g);
 
 function strokeAttrs(el) {
   // dotted strokes need round caps or the dots vanish
@@ -303,20 +317,35 @@ function endDir(pts, end) {
   return [dx / n, dy / n];
 }
 
-export const CAPS = ['none', 'arrow', 'harpoon', 'barb', 'square', 'circle'];
+export const CAPS = ['none', 'arrow', 'hollow', 'vee', 'harpoon', 'barb', 'square', 'circle', 'dot'];
+// Caps with a direction, which el.cap0rev / el.cap1rev turn around to point back
+// along the line. (Separate from capNflip, which only ever moved a harpoon's
+// barb: old documents carry capNflip on arrows too, where it did nothing.)
+export const POINTED_CAPS = ['arrow', 'hollow', 'vee', 'barb'];
 
 // End-cap glyph at p pointing along outward unit dir d. `flip` mirrors the
-// (one-sided) harpoon barb to the other side of the line.
-function capGlyph(parent, p, d, cap, color, w, flip) {
+// (one-sided) harpoon barb to the other side of the line; `rev` turns a pointed
+// head around. `size` (el.capSize) overrides the stroke-derived head size.
+function capGlyph(parent, p, d, cap, color, w, flip, size, rev) {
   if (!cap || cap === 'none') return;
-  const s = Math.max(7, w * 2.1);
+  const s = size || Math.max(7, w * 2.1);
+  if (rev && POINTED_CAPS.includes(cap)) d = [-d[0], -d[1]];
   const n = [-d[1], d[0]];
   const P = (a, b) => [p[0] + d[0] * a + n[0] * b, p[1] + d[1] * a + n[1] * b];
   const poly = pts => svgEl('polygon', {
     points: pts.map(q => `${q[0]},${q[1]}`).join(' '), fill: color, stroke: 'none',
   }, parent);
   if (cap === 'arrow') poly([P(s * 0.75, 0), P(-s * 0.55, s * 0.55), P(-s * 0.55, -s * 0.55)]);
-  else if (cap === 'barb') { // swept-back barbed head
+  else if (cap === 'hollow') { // open triangle: outlined, filled with the page so the line stops at its base
+    poly([P(s * 0.75, 0), P(-s * 0.55, s * 0.55), P(-s * 0.55, -s * 0.55)]).setAttribute('fill', state.doc.bg || '#ffffff');
+    const t = parent.lastChild, sw = Math.max(1, Math.min(w, s * 0.16));
+    t.setAttribute('stroke', color); t.setAttribute('stroke-width', sw); t.setAttribute('stroke-linejoin', 'miter');
+  } else if (cap === 'vee') { // open V / stick head: two strokes meeting at the tip
+    svgEl('polyline', {
+      points: [P(-s * 0.6, s * 0.6), P(w / 2, 0), P(-s * 0.6, -s * 0.6)].map(q => `${q[0]},${q[1]}`).join(' '),
+      fill: 'none', stroke: color, 'stroke-width': w, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+    }, parent);
+  } else if (cap === 'barb') { // swept-back barbed head
     poly([P(s * 0.8, 0), P(-s * 0.75, s * 0.7), P(-s * 0.3, 0), P(-s * 0.75, -s * 0.7)]);
   } else if (cap === 'harpoon') {
     // one-sided barb whose flat edge lies flush with the stroke's outer edge
@@ -329,8 +358,8 @@ function capGlyph(parent, p, d, cap, color, w, flip) {
   } else if (cap === 'square') {
     const h = s * 0.42;
     poly([P(h, h), P(h, -h), P(-h, -h), P(-h, h)]);
-  } else if (cap === 'circle') {
-    svgEl('circle', { cx: p[0], cy: p[1], r: s * 0.42, fill: color, stroke: 'none' }, parent);
+  } else if (cap === 'circle' || cap === 'dot') { // dot: a bigger blob (dye, bead)
+    svgEl('circle', { cx: p[0], cy: p[1], r: s * (cap === 'dot' ? 0.75 : 0.42), fill: color, stroke: 'none' }, parent);
   }
 }
 
@@ -525,7 +554,8 @@ function renderArrow(el) {
 function renderPath(el) {
   const g = svgEl('g', { 'data-id': el.id });
   const divs = [], measures = [];
-  const pts = ptsAttr(el.pts);
+  const P = drawnPts(el); // the smooth curve's samples, or the vertices
+  const pts = ptsAttr(P);
   const w = el.width ?? 2;
   const color = resolveColor(el.color);
   const dna = shownDNA(el), seq = seqStrand(el), plain = !dna && !seq;
@@ -536,7 +566,7 @@ function renderPath(el) {
   const unpaired = (t0, t1) => runs.some(r => (t0 + t1) / 2 >= r.t0 && (t0 + t1) / 2 <= r.t1);
   for (const r of runs) {
     svgEl('polyline', {
-      points: dna ? ptsAttr(subPath(el.pts, r.t0, r.t1)) : pts,
+      points: dna ? ptsAttr(subPath(P, r.t0, r.t1)) : pts,
       fill: 'none', stroke: 'transparent', 'stroke-width': hitW, 'data-hit': '1',
     }, g);
   }
@@ -544,12 +574,12 @@ function renderPath(el) {
   if (seq) drawSeqStrand(g, el);
   // a segment thinner than its strand would show the strand as an outline round it
   const thin = plain ? (el.segments || []).filter(sg => segWidth(sg, w) < w) : [];
-  if (plain) svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color),
+  if (plain) svgEl('path', { d: el.smooth ? smoothD(el.pts) : roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color),
     ...(thin.length ? { mask: underMask(g, el, thin, w) } : {}) }, g);
-  const len = polylineLength(el.pts);
+  const len = polylineLength(P);
   const labelOff = dna ? diam(el) / 2 + 9 : 16;
   (el.segments || []).forEach((seg, i) => {
-    const sp = subPath(el.pts, seg.t0, seg.t1);
+    const sp = subPath(P, seg.t0, seg.t1);
     const sa = ptsAttr(sp);
     const segColor = resolveColor(seg.color);
     const scap = seg.linecap || 'round';
@@ -559,18 +589,18 @@ function renderPath(el) {
       }, g);
     }
     if (plain) svgEl('path', {
-      d: roundedPathD(sp, el.corner || 0), fill: 'none', stroke: paintOf(seg, segColor),
+      d: roundedPathD(sp, el.smooth ? 0 : el.corner || 0), fill: 'none', stroke: paintOf(seg, segColor),
       'stroke-width': segWidth(seg, w),
       'stroke-linejoin': scap === 'round' ? 'round' : 'miter', 'stroke-linecap': scap, 'data-seg': i,
     }, g);
-    drawLabel(g, divs, measures, seg, labelPos(el.pts, (seg.t0 + seg.t1) / 2, labelOff, 1),
+    drawLabel(g, divs, measures, seg, labelPos(P, (seg.t0 + seg.t1) / 2, labelOff, 1),
       { size: 12, color: segColor, id: el.id, segi: i, follow: el.labelsFollow && sp });
   });
   if (plain && el.ticks) { // a short grey dash across the strand at each domain junction
     const ts = new Set();
     for (const s of el.segments || []) for (const t of [s.t0, s.t1]) if (t > 0.5 && t < len - 0.5) ts.add(+t.toFixed(2));
     for (const t of ts) {
-      const [x, y] = pointAt(el.pts, t), a = pointAt(el.pts, Math.max(0, t - 2)), b = pointAt(el.pts, t + 2);
+      const [x, y] = pointAt(P, t), a = pointAt(P, Math.max(0, t - 2)), b = pointAt(P, t + 2);
       const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, h = w + 2;
       const nx = (b[1] - a[1]) / l * h, ny = -(b[0] - a[0]) / l * h;
       svgEl('line', { x1: x - nx, y1: y - ny, x2: x + nx, y2: y + ny, stroke: '#8f8f8f', 'stroke-width': Math.max(1, w * 0.45) }, g);
@@ -588,28 +618,28 @@ function renderPath(el) {
   };
   const c0 = capStyle(0), c1 = capStyle(1);
   if (plain) { // a DNA strand ends in its own molecular caps
-    capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, c0.paint, c0.w, el.cap0flip);
-    capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, c1.paint, c1.w, el.cap1flip);
+    capGlyph(g, P[0], endDir(P, 0), el.cap0, c0.paint, c0.w, el.cap0flip, el.capSize, el.cap0rev);
+    capGlyph(g, P[P.length - 1], endDir(P, 1), el.cap1, c1.paint, c1.w, el.cap1flip, el.capSize, el.cap1rev);
   } else if (dna && dnaView.ends) { // View → Mark 3′ Ends: a low-key chevron just past the 3' cap
-    const d = endDir(el.pts, 1), D = diam(el), z = el.pts[el.pts.length - 1];
+    const d = endDir(P, 1), D = diam(el), z = P[P.length - 1];
     chevron(g, [z[0] + d[0] * (D * 0.55 + 3), z[1] + d[1] * (D * 0.55 + 3)], d, Math.max(2.5, D * 0.22),
       { stroke: c1.paint, 'stroke-width': Math.max(1.2, D * 0.08), opacity: 0.7 });
   }
-  drawLabel(g, divs, measures, el, labelPos(el.pts, len / 2, dna ? labelOff - 2 : 14, -1),
-    { size: 12.5, color, id: el.id, follow: el.labelsFollow && el.pts });
+  drawLabel(g, divs, measures, el, labelPos(P, len / 2, dna ? labelOff - 2 : 14, -1),
+    { size: 12.5, color, id: el.id, follow: el.labelsFollow && P });
   return { node: g, divs, measures, under };
 }
 
 // A mask hiding a strand's line under the segments thinner than it. Past a
 // strand end it runs on a little, so the line's own end cap goes too.
 function underMask(g, el, segs, w) {
-  const id = `under-${el.id}`, b = bboxOfPts(el.pts), m = 2 * w + 20, L = polylineLength(el.pts);
+  const P = drawnPts(el), id = `under-${el.id}`, b = bboxOfPts(P), m = 2 * w + 20, L = polylineLength(P);
   const box = { x: b[0] - m, y: b[1] - m, width: b[2] - b[0] + 2 * m, height: b[3] - b[1] + 2 * m };
   const mask = svgEl('mask', { id, maskUnits: 'userSpaceOnUse', ...box }, g);
   svgEl('rect', { ...box, fill: '#fff' }, mask);
   for (const sg of segs) {
-    const sp = subPath(el.pts, sg.t0, sg.t1);
-    const past = (end, q) => { const d = endDir(el.pts, end); return [q[0] + d[0] * w, q[1] + d[1] * w]; };
+    const sp = subPath(P, sg.t0, sg.t1);
+    const past = (end, q) => { const d = endDir(P, end); return [q[0] + d[0] * w, q[1] + d[1] * w]; };
     if (sg.t0 <= 0.5) sp.unshift(past(0, sp[0]));
     if (sg.t1 >= L - 0.5) sp.push(past(1, sp[sp.length - 1]));
     svgEl('path', { d: roundedPathD(sp, el.corner || 0), fill: 'none', stroke: '#000', 'stroke-width': w + 1,
@@ -642,7 +672,7 @@ function pairedSpans(el) {
 // their stretch like rungs, in the colour of the domain under them. Stretches a
 // base-pair link pairs are skipped: they have rungs.
 function drawComb(g, el, w, L) {
-  const step = el.combStep || 6, tl = el.combLen ?? 6, sides = { left: [1], right: [-1], both: [1, -1] }[el.comb] || [1];
+  const P = drawnPts(el), step = el.combStep || 6, tl = el.combLen ?? 6, sides = { left: [1], right: [-1], both: [1, -1] }[el.comb] || [1];
   const runs = [];
   let at = 0;
   for (const [t0, t1] of pairedSpans(el)) { if (t0 > at) runs.push([at, t0]); at = Math.max(at, t1); }
@@ -652,7 +682,7 @@ function drawComb(g, el, w, L) {
     const n = Math.round((r1 - r0) / step);
     for (let i = 0; i < n; i++) {
       const t = r0 + (i + 0.5) * (r1 - r0) / n;
-      const [x, y] = pointAt(el.pts, t), a = pointAt(el.pts, Math.max(0, t - 1)), b = pointAt(el.pts, Math.min(L, t + 1));
+      const [x, y] = pointAt(P, t), a = pointAt(P, Math.max(0, t - 1)), b = pointAt(P, Math.min(L, t + 1));
       const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, nx = (b[1] - a[1]) / l, ny = -(b[0] - a[0]) / l; // left of the run
       for (const s of sides) {
         const o = s * w / 2, e = s * (w / 2 + tl);
@@ -717,22 +747,23 @@ function renderEllipse(el) {
   const g = svgEl('g', { 'data-id': el.id });
   const divs = [], measures = [];
   const base = { cx: el.cx, cy: el.cy, rx: el.rx, ry: el.ry };
+  const body = rotGroup(g, el);
   svgEl('ellipse', {
     ...base, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, (el.width ?? 2) + 8), 'data-hit': '1',
-  }, g);
+  }, body);
   if (el.glow) {
     // a blurred oversized halo, then a bright-cored gradient body on top
     const c = resolveColor(el.fill) || resolveColor(el.color) || '#3ad13a';
     svgEl('ellipse', {
       cx: el.cx, cy: el.cy, rx: el.rx * 1.7, ry: el.ry * 1.7,
       fill: c, 'fill-opacity': 0.55, filter: 'url(#glowBlur)', stroke: 'none',
-    }, g);
-    svgEl('ellipse', { ...base, fill: glowRef(c), stroke: 'none' }, g);
+    }, body);
+    svgEl('ellipse', { ...base, fill: glowRef(c), stroke: 'none' }, body);
     drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
     return { node: g, divs, measures };
   }
-  svgEl('ellipse', { ...base, ...strokeAttrs(el), fill: fillOf(el) }, g);
+  svgEl('ellipse', { ...base, ...strokeAttrs(el), ...fillAttrs(el) }, body);
   drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
   return { node: g, divs, measures };
 }
@@ -788,23 +819,37 @@ function renderRect(el) {
   const g = svgEl('g', { 'data-id': el.id });
   const divs = [], measures = [];
   const base = { x: el.x, y: el.y, width: el.w, height: el.h, rx: el.r || 0 };
+  const body = rotGroup(g, el);
   svgEl('rect', {
     ...base, fill: 'none', stroke: 'transparent',
     'stroke-width': Math.max(12, (el.width ?? 2) + 8), 'data-hit': '1',
-  }, g);
-  svgEl('rect', { ...base, ...strokeAttrs(el), fill: fillOf(el) }, g);
+  }, body);
+  svgEl('rect', { ...base, ...strokeAttrs(el), ...fillAttrs(el) }, body);
   drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
   return { node: g, divs, measures };
 }
 
-// A line note is straight [a, b] or a quadratic curve [a, control, b].
-export const alineD = ([a, c, b]) => b
-  ? `M${a[0]} ${a[1]} Q${c[0]} ${c[1]} ${b[0]} ${b[1]}` : `M${a[0]} ${a[1]} L${c[0]} ${c[1]}`;
-// Points along the curve (for bounding boxes and link outlines).
-function alinePts(pts) {
-  if (pts.length < 3) return pts;
-  const [a, c, b] = pts, q = (t, i) => (1 - t) ** 2 * a[i] + 2 * (1 - t) * t * c[i] + t * t * b[i];
-  return Array.from({ length: 17 }, (_, k) => [q(k / 16, 0), q(k / 16, 1)]);
+// A line note is straight [a, b], a quadratic curve [a, control, b] (its bend
+// handle), or a polyline through 4+ points. el.smooth draws the smooth curve
+// through all its points instead; el.closed joins the last back to the first
+// (a polygon, which can take a fill).
+export const alineQuad = el => el.pts.length === 3 && !el.smooth && !el.closed;
+const alineSmooth = el => el.smooth && el.pts.length > 2;
+export function alineD(el) {
+  const p = el.pts;
+  if (alineQuad(el)) { const [a, c, b] = p; return `M${a[0]} ${a[1]} Q${c[0]} ${c[1]} ${b[0]} ${b[1]}`; }
+  if (alineSmooth(el)) return smoothD(p, el.closed);
+  return `M${p.map(q => q.join(' ')).join(' L')}${el.closed ? ' Z' : ''}`;
+}
+// Points along the line (for bounding boxes, link outlines and caps).
+export function alinePts(el) {
+  const pts = el.pts;
+  if (alineQuad(el)) {
+    const [a, c, b] = pts, q = (t, i) => (1 - t) ** 2 * a[i] + 2 * (1 - t) * t * c[i] + t * t * b[i];
+    return Array.from({ length: 17 }, (_, k) => [q(k / 16, 0), q(k / 16, 1)]);
+  }
+  if (alineSmooth(el)) return smoothPts(pts, el.closed);
+  return el.closed ? [...pts, pts[0]] : pts;
 }
 // The curve's midpoint: where its bend handle sits.
 export const alineMid = ([a, c, b]) => b
@@ -815,14 +860,18 @@ function renderALine(el) {
   const divs = [], measures = [];
   const a = el.pts[0], b = el.pts[el.pts.length - 1];
   const color = resolveColor(el.color);
-  const d = alineD(el.pts);
+  const d = alineD(el), P = alinePts(el);
+  // a filled polygon is clickable inside too
   svgEl('path', {
-    d, fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(12, (el.width ?? 2) + 8), 'data-hit': '1',
+    d, fill: el.closed && el.fill ? 'transparent' : 'none', stroke: 'transparent',
+    'stroke-width': Math.max(12, (el.width ?? 2) + 8), 'data-hit': '1',
   }, g);
-  svgEl('path', { d, fill: 'none', ...strokeAttrs(el) }, g);
-  // a quadratic's end tangents point at its control point, so endDir works unchanged
-  capGlyph(g, a, endDir(el.pts, 0), el.cap0, color, el.width ?? 2, el.cap0flip);
-  capGlyph(g, b, endDir(el.pts, 1), el.cap1, color, el.width ?? 2, el.cap1flip);
+  svgEl('path', { d, ...strokeAttrs(el), ...(el.closed ? fillAttrs(el) : {}), ...(el.noStroke ? { stroke: 'none' } : {}) }, g);
+  if (!el.closed) { // a closed outline has no ends to cap
+    const T = alineQuad(el) ? el.pts : P; // a quadratic's end tangents point exactly at its control point
+    capGlyph(g, a, endDir(T, 0), el.cap0, color, el.width ?? 2, el.cap0flip, el.capSize, el.cap0rev);
+    capGlyph(g, b, endDir(T, 1), el.cap1, color, el.width ?? 2, el.cap1flip, el.capSize, el.cap1rev);
+  }
   drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color, id: el.id });
   return { node: g, divs, measures };
 }
@@ -891,11 +940,13 @@ function renderText(el) {
 // Boundary points of one element, in world units.
 function elOutline(el) {
   switch (el.type) {
-    case 'path': case 'ink': return el.pts;
-    case 'aline': return alinePts(el.pts);
-    case 'ellipse': return ellipsePoints(el.cx, el.cy, el.rx, el.ry);
+    case 'path': return drawnPts(el);
+    case 'ink': return el.pts;
+    case 'aline': return alinePts(el);
+    case 'ellipse': return ellipsePoints(el.cx, el.cy, el.rx, el.ry).map(p => rotatePt(p, [el.cx, el.cy], el.rot));
     case 'rect': case 'card':
-      return [[el.x, el.y], [el.x + el.w, el.y], [el.x + el.w, el.y + el.h], [el.x, el.y + el.h]];
+      return [[el.x, el.y], [el.x + el.w, el.y], [el.x + el.w, el.y + el.h], [el.x, el.y + el.h]]
+        .map(p => rotatePt(p, shapeCenter(el), el.rot));
     default: {
       const b = elementBBox(el);
       return [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]];
@@ -927,8 +978,10 @@ export { defaultBases };
 export function linkStrand(ref) {
   const sp = linkSpan(ref);
   if (!sp) return null;
-  return sp.whole ? sp.el.pts : subPath(sp.el.pts, sp.t0, sp.t1);
+  return sp.whole ? strandPts(sp.el) : subPath(strandPts(sp.el), sp.t0, sp.t1);
 }
+// The points a strand-like element is drawn along (a smooth curve's samples).
+const strandPts = el => (el.type === 'path' ? drawnPts(el) : el.type === 'aline' ? alinePts(el) : el.pts);
 // A link end may pair only part of its domain (or line): ref.f0..ref.f1, as
 // fractions of it from its start (unset = 0..1).
 export const hasRange = ref => ref?.f0 !== undefined || ref?.f1 !== undefined;
@@ -938,7 +991,7 @@ export function linkSpan(ref) {
   const el = ref && !ref.group && byId(ref.id);
   if (!el || !['path', 'aline', 'ink'].includes(el.type)) return null;
   const s = ref.seg !== undefined && el.segments?.[ref.seg];
-  const [t0, t1] = narrow(ref, s ? s.t0 : 0, s ? s.t1 : polylineLength(el.pts));
+  const [t0, t1] = narrow(ref, s ? s.t0 : 0, s ? s.t1 : polylineLength(strandPts(el)));
   return { el, t0, t1, whole: !s && !hasRange(ref) };
 }
 
@@ -990,11 +1043,11 @@ function lineSeq(e) {
     if (!q || s.t0 - at > 0.5) return '';
     seq += q; at = s.t1;
   }
-  return segs.length && polylineLength(e.pts) - at <= 0.5 ? seq : '';
+  return segs.length && polylineLength(drawnPts(e)) - at <= 0.5 ? seq : '';
 }
 const refSpan = (ref, e) => {
   const s = ref.seg !== undefined && e.segments?.[ref.seg];
-  return narrow(ref, ...(s ? [s.t0, s.t1] : [0, polylineLength(e.pts)]));
+  return narrow(ref, ...(s ? [s.t0, s.t1] : [0, polylineLength(drawnPts(e))]));
 };
 // The duplex's base pairs: a paired domain's sequence length, else the link's
 // own count, else the grid's count.
@@ -1030,7 +1083,7 @@ function dnaFixed(el) {
 // A strand's own count, else its sequence's: the free bases are what the
 // sequence leaves after the fixed spans.
 export function dnaLayout(el) {
-  const L = polylineLength(el.pts), pitch = gridPitch(dnaBpg()), fixed = dnaFixed(el);
+  const L = polylineLength(drawnPts(el)), pitch = gridPitch(dnaBpg()), fixed = dnaFixed(el);
   const lay = strandLayout(L, pitch, fixed, el.bases);
   const seq = seqLetters(el.seq).length;
   if (el.bases !== undefined || !seq || !lay.freeLen) return lay;
@@ -1052,7 +1105,7 @@ function seqAt(e, lay, i) {
 // The unpaired stretches of a strand: [{ t0, t1, before, after }], with the
 // paired spans (duplexes) they run on from / into.
 function dnaRuns(el, lay) {
-  const L = polylineLength(el.pts), runs = [];
+  const L = polylineLength(drawnPts(el)), runs = [];
   let at = 0, before = null;
   for (const sp of lay.spans.filter(x => x.paired)) {
     if (sp.t0 - at >= 0.5) runs.push({ t0: at, t1: sp.t0, before, after: sp });
@@ -1095,7 +1148,7 @@ function strandLayers(e, tex, btex, tOf, seqColor) {
 function duplexGeom(l) {
   const A = dnaEnd(l.a), B = dnaEnd(l.b);
   const [a0, a1] = refSpan(l.a, A), [b0, b1] = refSpan(l.b, B);
-  const mid = midline(subPath(A.pts, a0, a1), subPath(B.pts, b0, b1), a1 - a0, b1 - b0, pointAt);
+  const mid = midline(subPath(drawnPts(A), a0, a1), subPath(drawnPts(B), b0, b1), a1 - a0, b1 - b0, pointAt);
   return { A, B, a0, a1, b0, b1, mid, D: (diam(A) + diam(B)) / 2, n: duplexBases(l) };
 }
 
@@ -1118,7 +1171,7 @@ function junction(sp, atStart) {
 // Draws the strand into g; returns its outline node (or null), which the
 // caller layers under all molecules.
 function drawDNAStrand(g, el) {
-  const D = diam(el), lay = dnaLayout(el);
+  const D = diam(el), lay = dnaLayout(el), P = drawnPts(el);
   const target = svgEl('g', {}, g);
   for (const run of dnaRuns(el, lay)) {
     const { t0, t1 } = run;
@@ -1135,13 +1188,13 @@ function drawDNAStrand(g, el) {
     const dE = jE ? Math.min(D * 0.9, (t1 - t0) / (both ? 3 : 2)) : 0;
     const verts = [];
     if (jS) verts.push({ p: jS.p, t: t0 });
-    verts.push({ p: pointAt(el.pts, t0 + dS), t: t0 + dS });
+    verts.push({ p: pointAt(P, t0 + dS), t: t0 + dS });
     let acc = 0;
-    for (let i = 1; i < el.pts.length - 1; i++) {
-      acc += Math.hypot(el.pts[i][0] - el.pts[i - 1][0], el.pts[i][1] - el.pts[i - 1][1]);
-      if (acc > t0 + dS && acc < t1 - dE) verts.push({ p: el.pts[i], t: acc });
+    for (let i = 1; i < P.length - 1; i++) {
+      acc += Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]);
+      if (acc > t0 + dS && acc < t1 - dE) verts.push({ p: P[i], t: acc });
     }
-    verts.push({ p: pointAt(el.pts, t1 - dE), t: t1 - dE });
+    verts.push({ p: pointAt(P, t1 - dE), t: t1 - dE });
     if (jE) verts.push({ p: jE.p, t: t1 });
     let knots = [[t0, c + dir * uS(t0)], ...lay.knots.filter(([t]) => t > t0 && t < t1).map(([t, u]) => [t, c + dir * u]), [t1, c + dir * uS(t1)]];
     let caps = { head: !jS, tail: !jE };
@@ -1172,8 +1225,8 @@ function drawDNAStrand(g, el) {
 // doesn't match its drawn length says by how many bases at its 3′ end.
 // The plain line stands in when zoomed out too far to read (renderNow's data-seq).
 function drawSeqStrand(g, el) {
-  const lay = dnaLayout(el), pitch = gridPitch(dnaBpg()), L = polylineLength(el.pts), k = el.seqScale || 1; // letter size
-  svgEl('polyline', { class: 'seq-far', points: ptsAttr(el.pts), fill: 'none', stroke: resolveColor(el.color),
+  const P = drawnPts(el), lay = dnaLayout(el), pitch = gridPitch(dnaBpg()), L = polylineLength(P), k = el.seqScale || 1; // letter size
+  svgEl('polyline', { class: 'seq-far', points: ptsAttr(P), fill: 'none', stroke: resolveColor(el.color),
     'stroke-width': el.width ?? 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, g);
   const near = svgEl('g', { class: 'seq-near', 'font-family': 'ui-monospace, Menlo, Consolas, monospace',
     'font-weight': 600, 'text-anchor': 'middle', 'dominant-baseline': 'central' }, g);
@@ -1181,12 +1234,12 @@ function drawSeqStrand(g, el) {
   const trace = svgEl('g', { fill: 'none', 'stroke-opacity': 0.16, 'stroke-linecap': 'butt', 'stroke-linejoin': 'round' }, near);
   for (let i = 0; i < lay.n; i++) {
     const t0 = tAt(lay.knots, i), t1 = tAt(lay.knots, i + 1), gap = Math.min((t1 - t0) * 0.1, pitch * 0.12);
-    svgEl('polyline', { points: ptsAttr(subPath(el.pts, t0 + gap, t1 - gap)), stroke: strandColor(el, (t0 + t1) / 2),
+    svgEl('polyline', { points: ptsAttr(subPath(P, t0 + gap, t1 - gap)), stroke: strandColor(el, (t0 + t1) / 2),
       'stroke-width': +(Math.min(t1 - t0, pitch) * 1.3 * k).toFixed(2) }, trace); // as tall as its letter
   }
   for (let i = 0; i < lay.n; i++) {
     const t0 = tAt(lay.knots, i), t1 = tAt(lay.knots, i + 1), t = (t0 + t1) / 2;
-    const [x, y] = pointAt(el.pts, t), a = pointAt(el.pts, t - 0.01), b = pointAt(el.pts, t + 0.01);
+    const [x, y] = pointAt(P, t), a = pointAt(P, t - 0.01), b = pointAt(P, t + 0.01);
     let deg = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
     if (deg > 90.5 || deg <= -89.5) deg += 180; // upright: leftward and upward runs read flipped
     if (Math.abs(deg) > 60) deg = 0; // a steep run stacks its letters upright
@@ -1198,7 +1251,7 @@ function drawSeqStrand(g, el) {
   }
   const off = lay.n - naturalBases(L, pitch);
   if (off) {
-    const d = endDir(el.pts, 1), z = el.pts[el.pts.length - 1];
+    const d = endDir(P, 1), z = P[P.length - 1];
     svgEl('text', { x: z[0] + d[0] * pitch * 1.5, y: z[1] + d[1] * pitch * 1.5, 'font-size': pitch * 1.2, 'font-weight': 600,
       'text-anchor': d[0] < -0.5 ? 'end' : d[0] > 0.5 ? 'start' : 'middle', 'dominant-baseline': 'central',
       fill: '#b5561d' }, g)
@@ -1341,6 +1394,7 @@ function elKey(el, salt) {
   let key = JSON.stringify(el);
   if (key.includes('slot:')) key += salt;
   if (state.doc.labelStyle) key += JSON.stringify(state.doc.labelStyle); // document-wide label look
+  if (key.includes('"hollow"')) key += state.doc.bg; // hollow heads are filled with the page
   if (el.type === 'arrow') {
     const a = byId(el.from), b = byId(el.to);
     key += a && b ? `|${a.x},${a.y},${a.w},${a.h}|${b.x},${b.y},${b.w},${b.h}` : '|x';
@@ -1384,18 +1438,18 @@ function chevron(parent, p, d, r, attrs) {
 // A selected DNA strand's 5'→3' sense (its points run 5' → 3'): chevrons along
 // the line and 5′ / 3′ at its ends, haloed so they read over the molecule.
 function polarityGhost(overlay, el, s, color = SEL) {
-  const len = polylineLength(el.pts), step = 48 / s, r = 5 / s;
+  const P = drawnPts(el), len = polylineLength(P), step = 48 / s, r = 5 / s;
   const off = diam(el) * 0.6 + 8 / s;
   for (const w of [[4.5 / s, '#ffffff', 0.9], [1.75 / s, color, 1]]) {
     const at = { stroke: w[1], 'stroke-width': w[0], opacity: w[2] };
     for (let t = (len % step) / 2 || step / 2; t < len; t += step) {
-      const a = pointAt(el.pts, Math.max(0, t - 1)), b = pointAt(el.pts, Math.min(len, t + 1));
+      const a = pointAt(P, Math.max(0, t - 1)), b = pointAt(P, Math.min(len, t + 1));
       const d = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-      chevron(overlay, pointAt(el.pts, t), [(b[0] - a[0]) / d, (b[1] - a[1]) / d], r, at);
+      chevron(overlay, pointAt(P, t), [(b[0] - a[0]) / d, (b[1] - a[1]) / d], r, at);
     }
   }
   for (const end of [0, 1]) {
-    const p = el.pts[end ? el.pts.length - 1 : 0], d = endDir(el.pts, end);
+    const p = P[end ? P.length - 1 : 0], d = endDir(P, end);
     svgEl('text', {
       x: p[0] + d[0] * off, y: p[1] + d[1] * off, 'font-size': 12 / s, 'font-weight': 700,
       'text-anchor': 'middle', 'dominant-baseline': 'central', fill: color,
@@ -1414,13 +1468,13 @@ function renderSelection(overlay) {
       const seg = el.segments?.[sel.seg];
       if (!seg) continue;
       svgEl('polyline', {
-        points: ptsAttr(subPath(el.pts, seg.t0, seg.t1)), fill: 'none',
+        points: ptsAttr(subPath(drawnPts(el), seg.t0, seg.t1)), fill: 'none',
         stroke: SEL, 'stroke-width': segWidth(seg, el.width ?? 2) + 9 / s, opacity: 0.35,
         'stroke-linecap': 'round', 'stroke-linejoin': 'round',
       }, overlay);
       // draggable segment boundaries
       if (single) {
-        const p0 = pointAt(el.pts, seg.t0), p1 = pointAt(el.pts, seg.t1);
+        const p0 = pointAt(drawnPts(el), seg.t0), p1 = pointAt(drawnPts(el), seg.t1);
         handleDot(overlay, p0[0], p0[1], s, { 'data-seghandle': '0', 'data-id': el.id, 'data-segi': sel.seg });
         handleDot(overlay, p1[0], p1[1], s, { 'data-seghandle': '1', 'data-id': el.id, 'data-segi': sel.seg });
       }
@@ -1431,7 +1485,7 @@ function renderSelection(overlay) {
       for (const ref of [el.a, el.b]) {
         const st = byId(ref.id);
         svgEl('polyline', {
-          points: ptsAttr(st.pts), fill: 'none', stroke: resolveColor(st.color), 'stroke-width': 2 / s,
+          points: ptsAttr(drawnPts(st)), fill: 'none', stroke: resolveColor(st.color), 'stroke-width': 2 / s,
           'stroke-dasharray': `${6 / s} ${4 / s}`, opacity: 0.9, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
         }, overlay);
         polarityGhost(overlay, st, s, resolveColor(st.color));
@@ -1443,7 +1497,7 @@ function renderSelection(overlay) {
         opacity: 0.3, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
       };
       if (el.type === 'ink') svgEl('path', { d: inkD(el.pts), ...attrs }, overlay);
-      else svgEl('polyline', { points: ptsAttr(el.pts), ...attrs }, overlay);
+      else svgEl('polyline', { points: ptsAttr(drawnPts(el)), ...attrs }, overlay);
       if (shownDNA(el)) polarityGhost(overlay, el, s);
     }
     const b = elementBBox(el);
@@ -1463,8 +1517,9 @@ function renderSelection(overlay) {
         [box[0], box[1], 'nw'], [box[2], box[1], 'ne'],
         [box[0], box[3], 'sw'], [box[2], box[3], 'se'],
       ]) {
+        const [qx, qy] = el.rot ? rotatePt([hx, hy], shapeCenter(el), el.rot) : [hx, hy]; // a turned shape's corners
         svgEl('rect', {
-          x: hx - hs / 2, y: hy - hs / 2, width: hs, height: hs,
+          x: qx - hs / 2, y: qy - hs / 2, width: hs, height: hs,
           fill: '#ffffff', stroke: SEL, 'stroke-width': 1.5 / s,
           'data-handle': name, 'data-id': el.id,
           style: `cursor:${name === 'nw' || name === 'se' ? 'nwse' : 'nesw'}-resize`,
@@ -1490,9 +1545,13 @@ function renderSelection(overlay) {
       handleDot(overlay, z[0], z[1], s, { 'data-pend': '1', 'data-id': el.id });
     }
     // annotation line/arrow endpoints: drag to reshape (like resizing a shape)
-    if (el.type === 'aline' && single) {
-      [0, el.pts.length - 1].forEach(i =>
+    // (a line through more points, smooth or closed: a dot on every point)
+    const bendable = el.type === 'aline' && (el.pts.length === 2 || alineQuad(el));
+    if (el.type === 'aline' && single && state.tool !== 'edit') {
+      (bendable ? [0, el.pts.length - 1] : el.pts.map((p, i) => i)).forEach(i =>
         handleDot(overlay, el.pts[i][0], el.pts[i][1], s, { 'data-aend': i, 'data-id': el.id }));
+    }
+    if (bendable && single && state.tool !== 'edit') {
       // middle handle: drag to bend the line into a curve, back to straight to undo
       const m = alineMid(el.pts);
       svgEl('rect', {
@@ -1503,7 +1562,7 @@ function renderSelection(overlay) {
       }, overlay);
     }
     // vertex handles for the line-edit tool
-    if (el.type === 'path' && single && state.tool === 'edit') {
+    if ((el.type === 'path' || el.type === 'aline') && single && state.tool === 'edit') {
       const hs = 8 / s;
       el.pts.forEach((p, i) => {
         svgEl('rect', {

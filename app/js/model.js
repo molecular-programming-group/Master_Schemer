@@ -1,6 +1,6 @@
 // Document model, selection, history, persistence.
 
-import { polylineLength, subPath, splitSegments } from './geom.js';
+import { polylineLength, subPath, splitSegments, drawnPts } from './geom.js';
 import { defaultPalette } from './themes.js';
 import MOLS from './mol-tex.js';
 
@@ -239,17 +239,19 @@ export function cloneElements(ids) {
 // the cut lands too close to an end.
 export function cutPath(el, tc) {
   if (el?.type !== 'path') return null;
-  const total = polylineLength(el.pts);
+  const P = drawnPts(el), total = polylineLength(P);
   if (tc <= 0.5 || tc >= total - 0.5) return null;
   beginChange();
   const [segsA, segsB] = splitSegments(el.segments, tc, total);
   const mk = (pts, segments) => {
     const c = JSON.parse(JSON.stringify(el)); // deep-copy so children never share refs
     delete c.bases; // a DNA strand's free base count doesn't split meaningfully: back to auto
+    // ponytail: a smooth strand's halves keep the curve as its dense samples (same look, many vertices)
+    delete c.smooth;
     return Object.assign(c, { id: newId(), pts, segments });
   };
-  const a = mk(subPath(el.pts, 0, tc), segsA);
-  const b = mk(subPath(el.pts, tc, total), segsB);
+  const a = mk(subPath(P, 0, tc), segsA);
+  const b = mk(subPath(P, tc, total), segsB);
   const i = state.doc.elements.indexOf(el);
   state.doc.elements.splice(i, 1, a, b); // children take the parent's paint slot
   state.doc.elements = state.doc.elements.filter(x =>
@@ -266,7 +268,7 @@ export function cutPath(el, tc) {
 // other segment index (and the links using it) holds. Returns the two halves.
 export function splitDomain(el, tc) {
   if (el?.type !== 'path') return null;
-  const total = polylineLength(el.pts);
+  const total = polylineLength(drawnPts(el));
   tc = Math.round(tc * 10) / 10;
   const segs = el.segments ||= [];
   let i = segs.findIndex(s => s.t0 < tc && tc < s.t1);

@@ -6,9 +6,12 @@ import {
 import {
   GRID, snap, snapPt, snapHalf, snapHalfPt, eq, dirOf, snap8, simplify, polylineLength,
   nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex, bladeCross,
-  resizeEndSegments,
+  resizeEndSegments, drawnPts, rotatePt,
 } from './geom.js';
-import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle, dnaBpg, strandView, anchorFrac, textWidth } from './render.js';
+import {
+  svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle, dnaBpg, strandView, alinePts, alineQuad, alineMid,
+  anchorFrac, textWidth,
+} from './render.js';
 import { gridPitch } from './dna.js';
 
 const $ = id => document.getElementById(id);
@@ -163,12 +166,13 @@ function hitCard(wp) {
   return null;
 }
 
-function nearestPath(wp) {
+// Nearest strand (or, with notes, also line note) to wp, measured along what is drawn.
+function nearestPath(wp, notes = false) {
   const threshold = Math.max(12 / state.view.s, 8);
   let best = null;
   for (const el of state.doc.elements) {
-    if (el.type !== 'path') continue;
-    const n = nearestOnPath(el.pts, wp);
+    if (el.type !== 'path' && !(notes && el.type === 'aline')) continue;
+    const n = nearestOnPath(el.type === 'aline' ? alinePts(el) : drawnPts(el), wp);
     if (n.d <= threshold && (!best || n.d < best.d)) best = { el, t: n.t, d: n.d };
   }
   return best;
@@ -176,9 +180,10 @@ function nearestPath(wp) {
 
 // Arc length on el nearest to wp, snapped to the half-grid lattice.
 function halfSnapT(el, wp) {
-  const n = nearestOnPath(el.pts, wp);
-  const q = snapHalfPt(pointAt(el.pts, n.t));
-  const n2 = nearestOnPath(el.pts, q);
+  const P = drawnPts(el);
+  const n = nearestOnPath(P, wp);
+  const q = snapHalfPt(pointAt(P, n.t));
+  const n2 = nearestOnPath(P, q);
   return n2.d < 1 ? n2.t : n.t; // lattice point off the path: keep the raw hit
 }
 
@@ -301,7 +306,7 @@ export const tools = {
         drag = {
           mode: 'endresize', el, end, i: end ? el.pts.length - 1 : 0,
           origSegs: JSON.parse(JSON.stringify(el.segments || [])),
-          origTotal: polylineLength(el.pts),
+          origTotal: polylineLength(drawnPts(el)),
         };
         return;
       }
@@ -442,7 +447,7 @@ export const tools = {
         began();
         const el = drag.el;
         el.pts[drag.i] = snapHalfPt(wp);
-        el.segments = resizeEndSegments(drag.origSegs, drag.origTotal, polylineLength(el.pts), drag.end);
+        el.segments = resizeEndSegments(drag.origSegs, drag.origTotal, polylineLength(drawnPts(el)), drag.end);
         changed();
         return;
       }
@@ -504,13 +509,19 @@ export const tools = {
         }
         const o = drag.orig, h = drag.handle, el = drag.el;
         let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
-        // cards keep the whole-grid lattice; rect/ellipse follow the snap toggle
-        const p = el.type === 'card' ? snapPt(wp) : annSnap(wp);
+        // cards keep the whole-grid lattice; rect/ellipse follow the snap toggle.
+        // A turned shape resizes in its own frame (no snap), opposite corner fixed.
+        const oc = [o.x + o.w / 2, o.y + o.h / 2];
+        const p = el.rot ? rotatePt(wp, oc, -el.rot) : el.type === 'card' ? snapPt(wp) : annSnap(wp);
         const min = el.type === 'card' ? 2 * GRID : GRID / 2;
         if (h.includes('w')) x0 = Math.min(p[0], x1 - min);
         if (h.includes('e')) x1 = Math.max(p[0], x0 + min);
         if (h.includes('n')) y0 = Math.min(p[1], y1 - min);
         if (h.includes('s')) y1 = Math.max(p[1], y0 + min);
+        if (el.rot) { // the new box's centre, turned back into the world; the box re-centres on it
+          const c = rotatePt([(x0 + x1) / 2, (y0 + y1) / 2], oc, el.rot), hw = (x1 - x0) / 2, hh = (y1 - y0) / 2;
+          [x0, x1, y0, y1] = [c[0] - hw, c[0] + hw, c[1] - hh, c[1] + hh];
+        }
         began();
         if (el.type === 'ellipse') {
           el.rx = r1((x1 - x0) / 2); el.ry = r1((y1 - y0) / 2);
@@ -646,7 +657,7 @@ export const tools = {
       if (!drag) return;
       drag.t1 = halfSnapT(drag.el, wp);
       clearPreview();
-      const sp = subPath(drag.el.pts, Math.min(drag.t0, drag.t1), Math.max(drag.t0, drag.t1));
+      const sp = subPath(drawnPts(drag.el), Math.min(drag.t0, drag.t1), Math.max(drag.t0, drag.t1));
       svgEl('polyline', {
         points: ptsAttr(sp), fill: 'none', stroke: resolveColor(state.color),
         'stroke-width': (drag.el.width ?? 2) + 2.5, opacity: 0.85,
@@ -670,21 +681,35 @@ export const tools = {
   },
 
   edit: {
-    hint: 'Click a line to select it · drag a square handle to reshape · click the selected line to add a vertex',
+    hint: 'Click a line or line note to select it · drag a square handle to reshape · click the selected line to add a vertex · Alt+click a vertex to remove it',
     down(e, wp) {
       const v = e.target.closest?.('[data-vertex]');
       if (v) {
-        drag = { mode: 'vertex', el: byId(v.getAttribute('data-id')), i: +v.getAttribute('data-vertex') };
+        const el = byId(v.getAttribute('data-id')), i = +v.getAttribute('data-vertex');
+        if (e.altKey && el.pts.length > 2) { // drop a vertex
+          beginChange();
+          el.pts.splice(i, 1);
+          changed();
+          return;
+        }
+        drag = { mode: 'vertex', el, i };
         return;
       }
-      const hit = nearestPath(wp);
+      const hit = nearestPath(wp, true);
       // clicking the already-selected line inserts a vertex there and grabs it
       if (hit && isSelected(hit.el.id, undefined)) {
         beginChange();
-        const t = nearestOnPath(hit.el.pts, wp).t;
-        const i = insertIndex(hit.el.pts, t);
-        hit.el.pts.splice(i, 0, snapHalfPt(pointAt(hit.el.pts, t)));
-        drag = { mode: 'vertex', el: hit.el, i, began: true };
+        const el = hit.el;
+        // a single-bend line note becomes the smooth curve through its ends and bend
+        if (el.type === 'aline' && alineQuad(el)) { el.pts = [el.pts[0], alineMid(el.pts).map(r1), el.pts[2]]; el.smooth = true; }
+        // the new vertex goes where the click meets the drawn line, between the
+        // vertices it lies between (on a smooth curve: the nearest vertex leg)
+        const P = el.type === 'aline' ? alinePts(el) : drawnPts(el);
+        const q = el.type === 'aline' ? annSnap(pointAt(P, nearestOnPath(P, wp).t)) : snapHalfPt(pointAt(P, nearestOnPath(P, wp).t));
+        const ring = el.type === 'aline' && el.closed ? [...el.pts, el.pts[0]] : el.pts;
+        const i = insertIndex(ring, nearestOnPath(ring, q).t);
+        el.pts.splice(i, 0, q);
+        drag = { mode: 'vertex', el, i, began: true };
         changed();
         return;
       }
@@ -694,7 +719,7 @@ export const tools = {
     move(e, wp) {
       if (!drag) return;
       began();
-      drag.el.pts[drag.i] = snapHalfPt(wp);
+      drag.el.pts[drag.i] = drag.el.type === 'aline' ? annSnap(wp) : snapHalfPt(wp);
       changed();
     },
     up() {
@@ -893,11 +918,11 @@ export const tools = {
         for (let i = state.doc.elements.length - 1; i >= 0; i--) {
           const el = state.doc.elements[i];
           if (el.type !== 'path') continue;
-          const tc = bladeCross(el.pts, drag.a, drag.b);
+          const tc = bladeCross(drawnPts(el), drag.a, drag.b);
           if (tc !== null) { drag.locked = el; drag.t = tc; break; }
         }
       } else {
-        const tc = bladeCross(drag.locked.pts, drag.a, drag.b);
+        const tc = bladeCross(drawnPts(drag.locked), drag.a, drag.b);
         if (tc !== null) drag.t = tc; // blade off the line: keep the last dot
       }
       clearPreview();
@@ -906,7 +931,7 @@ export const tools = {
         stroke: SEL, 'stroke-width': 1.5 / state.view.s, 'stroke-dasharray': `${5 / state.view.s}`,
       }, preview());
       if (drag.locked && drag.t !== null) {
-        const p = pointAt(drag.locked.pts, drag.t);
+        const p = pointAt(drawnPts(drag.locked), drag.t);
         svgEl('circle', {
           cx: p[0], cy: p[1], r: 6 / state.view.s,
           fill: '#fff', 'fill-opacity': 0.85, stroke: SEL, 'stroke-width': 2 / state.view.s,
@@ -922,8 +947,8 @@ export const tools = {
     },
   },
 
-  aline: { hint: 'Drag to draw a line annotation · drag its middle ◆ handle to curve it · snaps to grid (toggle in the status bar)' },
-  aarrow: { hint: 'Drag to draw an arrow annotation · drag its middle ◆ handle to curve it · snaps to grid (toggle in the status bar)' },
+  aline: { hint: 'Drag to draw a line annotation · drag its middle ◆ handle to curve it · add points with the line-edit tool · snaps to grid (toggle in the status bar)' },
+  aarrow: { hint: 'Drag to draw an arrow annotation · drag its middle ◆ handle to curve it · add points with the line-edit tool · snaps to grid (toggle in the status bar)' },
 
   text: {
     hint: 'Click to place a note — or drag a box to set its wrap width · $math$ for LaTeX',

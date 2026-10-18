@@ -5,9 +5,9 @@ import {
   isSemantic, resolveColor, resolveLabel, reorder, pruneGroups,
   byGroup, childGroups, topLevelGroups, groupElementMembers, displayName, kindWord, clearNameCache,
 } from './model.js';
-import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments } from './geom.js';
+import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments, drawnPts } from './geom.js';
 import {
-  render, renderNow, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
+  render, renderNow, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, POINTED_CAPS, PATTERNS, dataView, alineD, alineMid,
   linkStrand, rungSeqs, refSeq, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, strandView, lookOf, dnaView, invalidateRenderCache,
   FONTS, LINE_H, INLINE_TAGS, inlineHTML, LABEL_STYLE_KEYS, labelStyleOf, anchorFrac, textWidth,
 } from './render.js';
@@ -229,6 +229,7 @@ function transformSelection(op) { // 'cw' | 'ccw' | 'h' | 'v'
   const pt = p => rot ? rot90(p, c, op === 'cw' ? 1 : -1) : flipPt(p, c, op);
   beginChange();
   for (const el of els) {
+    if (!rot && el.rot) el.rot = -el.rot; // a mirrored turned shape turns the other way
     if (el.type === 'ellipse') {
       [el.cx, el.cy] = pt([el.cx, el.cy]);
       if (rot) [el.rx, el.ry] = [el.ry, el.rx];
@@ -1082,6 +1083,26 @@ try {
   }
 } catch { /* storage blocked — skip seeding */ }
 
+// Stock shapes: closed line notes (polygons), so every vertex stays editable.
+try {
+  const SEED_KEY = 'master-schemer-lib-seeded-shapes1';
+  if (!localStorage.getItem(SEED_KEY)) {
+    const poly = (name, pts, fill) => ({
+      id: newId(), category: 'Shapes', name, groups: [], // (not `stock`: a protein-set reissue drops those)
+      elements: [{ type: 'aline', id: newId(), pts, closed: true, color: '#2b2622', width: 1.5, cap0: 'none', cap1: 'none', ...(fill ? { fill } : {}) }],
+    });
+    const arrow = [[0, 10], [50, 10], [50, 0], [80, 20], [50, 40], [50, 30], [0, 30]];
+    library.push(
+      poly('block arrow', arrow, '#c9c2b6'),
+      poly('block arrow (hollow)', arrow),
+      poly('double block arrow (hollow)', [[0, 20], [25, 0], [25, 10], [75, 10], [75, 0], [100, 20], [75, 40], [75, 30], [25, 30], [25, 40]]),
+      poly('chevron', [[0, 0], [60, 0], [80, 20], [60, 40], [0, 40], [20, 20]], '#c9c2b6'),
+    );
+    localStorage.setItem(SEED_KEY, '1');
+    saveLibrary();
+  }
+} catch { /* storage blocked — skip seeding */ }
+
 function assetFromSelection() {
   const ids = new Set();
   for (const s of state.selection) {
@@ -1299,8 +1320,8 @@ function assetThumbnail(asset) {
         fill: el.type === 'card' ? (el.fill || '#ffffff') : (el.fill || 'none'), stroke, 'stroke-width': sw });
     } else if (Array.isArray(el.pts) && el.pts.length) {
       for (const p of el.pts) acc(p[0], p[1]);
-      if (el.type === 'aline') mk({ tag: 'path', d: alineD(el.pts), fill: 'none', stroke, 'stroke-width': sw });
-      else mk({ tag: 'polyline', points: el.pts.map(p => p.join(',')).join(' '), fill: 'none', stroke, 'stroke-width': sw });
+      if (el.type === 'aline') mk({ tag: 'path', d: alineD(el), fill: el.closed && el.fill || 'none', stroke, 'stroke-width': sw });
+      else mk({ tag: 'polyline', points: drawnPts(el).map(p => p.join(',')).join(' '), fill: 'none', stroke, 'stroke-width': sw });
     }
   }
   if (!isFinite(x0)) { x0 = 0; y0 = 0; x1 = 1; y1 = 1; }
@@ -2218,20 +2239,48 @@ function fillControl(el, { label = 'Fill', optional = true, pattern = true } = {
   return frag;
 }
 
-// A "flip harpoon" checkbox appears for whichever end caps are harpoons.
-function harpoonFlips(el) {
+// A flip checkbox for each end cap that has a side or a direction: a harpoon's
+// barb goes to the other side (capNflip), a pointed head turns around (capNrev). Then the head size
+// (el.capSize, both ends; 0 = from the line width).
+function capOptions(el) {
   const frag = document.createDocumentFragment();
-  if (el.cap0 === 'harpoon') {
-    frag.appendChild(checkboxRow('Flip start harpoon', () => !!el.cap0flip, v => {
-      if (v) el.cap0flip = true; else delete el.cap0flip;
+  for (const [k, end] of [['cap0', 'start'], ['cap1', 'end']]) {
+    const cap = el[k], f = cap === 'harpoon' ? `${k}flip` : `${k}rev`;
+    if (cap !== 'harpoon' && !POINTED_CAPS.includes(cap)) continue;
+    frag.appendChild(checkboxRow(cap === 'harpoon' ? `Flip ${end} harpoon` : `Reverse ${end} head`, () => !!el[f], v => {
+      if (v) el[f] = true; else delete el[f];
     }));
   }
-  if (el.cap1 === 'harpoon') {
-    frag.appendChild(checkboxRow('Flip end harpoon', () => !!el.cap1flip, v => {
-      if (v) el.cap1flip = true; else delete el.cap1flip;
-    }));
+  if ((el.cap0 || 'none') !== 'none' || (el.cap1 || 'none') !== 'none') {
+    frag.appendChild(fieldRow('Cap size (0 = auto)', sliderNum(
+      () => el.capSize || 0,
+      v => { if (v) el.capSize = v; else delete el.capSize; },
+      { min: 0, max: 60, step: 0.5 })));
   }
   return frag;
+}
+
+// Fill opacity for a filled shape (el.fillOpacity; absent = opaque).
+const fillOpacityRow = el => fieldRow('Fill opacity', rangeControl(
+  () => el.fillOpacity ?? 1,
+  v => { if (v >= 1) delete el.fillOpacity; else el.fillOpacity = v; },
+  { min: 0, max: 1, step: 0.05 }));
+
+// Smooth (curve through the vertices) on/off. A strand's domains keep their
+// place in proportion, since the curve is longer than the polyline; a line
+// note's single bend handle becomes a vertex on the curve and back.
+function setSmooth(el, v) {
+  if (el.type === 'aline' && el.pts.length === 3 && !el.closed) {
+    const [a, m, b] = el.pts, r1 = x => Math.round(x * 10) / 10;
+    el.pts = v ? [a, alineMid(el.pts).map(r1), b] // control → the curve's midpoint
+      : [a, [r1(2 * m[0] - (a[0] + b[0]) / 2), r1(2 * m[1] - (a[1] + b[1]) / 2)], b];
+  }
+  const L0 = polylineLength(drawnPts(el));
+  if (v) el.smooth = true; else delete el.smooth;
+  const k = polylineLength(drawnPts(el)) / L0;
+  if (el.type === 'path' && L0 && k !== 1) {
+    for (const sg of el.segments || []) { sg.t0 = Math.round(sg.t0 * k * 10) / 10; sg.t1 = Math.round(sg.t1 * k * 10) / 10; }
+  }
 }
 
 function labelDisplayFields(target) {
@@ -2382,7 +2431,7 @@ function sequenceField(el) {
   const note = document.createElement('p');
   note.className = 'muted';
   const say = () => {
-    const n = dnaLayout(el).n, fit = naturalBases(polylineLength(el.pts), gridPitch(dnaBpg()));
+    const n = dnaLayout(el).n, fit = naturalBases(polylineLength(drawnPts(el)), gridPitch(dnaBpg()));
     const bad = (el.seq || '').trim() && !seqLetters(el.seq);
     note.textContent = bad ? 'Not a sequence (A C G T U N only) — kept as text.'
       : n === fit ? `${n} nt — fits the drawn length.`
@@ -2406,16 +2455,16 @@ function sequenceField(el) {
 function fitToSequence() {
   const sel = selectedElements();
   const els = sel.length ? sel.filter(el => el.type === 'path')
-    : state.doc.elements.filter(el => el.type === 'path' && dnaLayout(el).n !== naturalBases(polylineLength(el.pts), gridPitch(dnaBpg()))
+    : state.doc.elements.filter(el => el.type === 'path' && dnaLayout(el).n !== naturalBases(polylineLength(drawnPts(el)), gridPitch(dnaBpg()))
       && (seqLetters(el.seq) || (el.segments || []).some(s => seqLetters(s.string))));
   if (!els.length) return;
   beginChange();
   for (const el of els) {
-    const L = polylineLength(el.pts), want = dnaLayout(el).n * gridPitch(dnaBpg());
+    const L = polylineLength(drawnPts(el)), want = dnaLayout(el).n * gridPitch(dnaBpg());
     if (Math.abs(want - L) < 0.01) continue;
     const z = el.pts[el.pts.length - 1], y = el.pts[el.pts.length - 2];
     const leg = Math.hypot(z[0] - y[0], z[1] - y[1]), r3 = v => Math.round(v * 1000) / 1000;
-    if (Math.abs(want - L) >= leg) { // more than the last leg can take: scale the whole shape about its 5′ end
+    if (Math.abs(want - L) >= leg || el.smooth) { // (a smooth curve scales exactly: always this way) // more than the last leg can take: scale the whole shape about its 5′ end
       const k = want / L, o = el.pts[0];
       el.pts = el.pts.map(p => [r3(o[0] + (p[0] - o[0]) * k), r3(o[1] + (p[1] - o[1]) * k)]);
       el.segments = (el.segments || []).map(sg => ({ ...sg, t0: sg.t0 * k, t1: sg.t1 * k }));
@@ -2762,16 +2811,31 @@ function renderPanel() {
         () => LINECAP_NAMES[el.linecap || 'round'],
         v => { el.linecap = LINECAP_VALUES[v]; })));
     }
-    if ((el.type === 'path' && look === 'line') || el.type === 'aline') {
+    if (((el.type === 'path' && look === 'line') || el.type === 'aline') && !el.closed) {
       styleSec.appendChild(fieldRow('Start cap', selectControl(
         CAPS, () => el.cap0 || 'none', v => { el.cap0 = v; })));
       styleSec.appendChild(fieldRow('End cap', selectControl(
         CAPS, () => el.cap1 || 'none', v => { el.cap1 = v; })));
-      styleSec.appendChild(harpoonFlips(el));
+      styleSec.appendChild(capOptions(el));
+    }
+    if (el.type === 'path' || el.type === 'aline') {
+      styleSec.appendChild(checkboxRow('Smooth curve through the points', () => !!el.smooth, v => setSmooth(el, v)));
+    }
+    if (el.type === 'aline') { // a closed line note is a polygon: fillable, outline optional
+      styleSec.appendChild(checkboxRow('Closed shape', () => !!el.closed, v => {
+        if (v) el.closed = true; else delete el.closed;
+      }));
+      if (el.closed) {
+        styleSec.appendChild(checkboxRow('Outline', () => !el.noStroke, v => {
+          if (v) delete el.noStroke; else el.noStroke = true;
+        }));
+        styleSec.appendChild(fillControl(el));
+        if (el.fill) styleSec.appendChild(fillOpacityRow(el));
+      }
     }
     if (el.type === 'path') {
       if (look === 'line') styleSec.appendChild(patternControls(el, `line:${el.id}`));
-      styleSec.appendChild(fieldRow('Corner radius', sliderNum(
+      if (!el.smooth) styleSec.appendChild(fieldRow('Corner radius', sliderNum(
         () => el.corner || 0,
         v => { if (v) el.corner = v; else delete el.corner; },
         { min: 0, max: 8 * GRID, step: GRID / 2 })));
@@ -2783,7 +2847,14 @@ function renderPanel() {
         v => { el.r = v; },
         { min: 0, max: Math.floor(Math.min(el.w, el.h) / 2), step: 1 })));
     }
-    if (el.type === 'rect' || el.type === 'ellipse') styleSec.appendChild(fillControl(el));
+    if (el.type === 'rect' || el.type === 'ellipse') {
+      styleSec.appendChild(fieldRow('Rotation (°)', sliderNum(
+        () => el.rot || 0,
+        v => { if (v) el.rot = v; else delete el.rot; },
+        { min: -180, max: 180, step: 1 })));
+      styleSec.appendChild(fillControl(el));
+      if (el.fill && !el.glow) styleSec.appendChild(fillOpacityRow(el));
+    }
     styled = true;
   }
   if (styled) {
