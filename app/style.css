@@ -935,3 +935,27 @@ body.panning #canvas { cursor: grabbing !important; }
 .recent-tile:hover .recent-remove { display: grid; }
 .recent-remove:hover { color: var(--danger); }
 .recent-clear { align-self: flex-end; color: var(--muted); }
+
+/* ---- objects header: expand/collapse all ---- */
+.side-head-obj { display: flex; align-items: center; }
+.side-head-btns { margin-left: auto; display: flex; gap: 2px; }
+.side-head-btn {
+  width: 22px; height: 20px; border: none; border-radius: 5px; background: none;
+  color: var(--muted); font-size: 11px; cursor: pointer; padding: 0;
+}
+.side-head-btn:hover { background: var(--primary-soft); color: var(--ink); }
+
+/* ---- color themes popup ---- */
+.themes-btn { margin-top: 6px; }
+.modal-card.themes-card { width: min(520px, calc(100vw - 32px)); gap: 10px; }
+.themes-card > p { margin: 0; font-size: 12px; }
+.themes-list { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; }
+.theme-tile {
+  display: flex; flex-direction: column; gap: 5px; padding: 7px 9px; text-align: left;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg);
+  font: inherit; color: var(--ink); cursor: pointer;
+}
+.theme-tile:hover, .theme-tile:focus-visible { border-color: var(--primary); outline: none; background: var(--primary-soft); }
+.theme-name { font-size: 12px; font-weight: 600; }
+.theme-strip { display: flex; height: 18px; border-radius: 4px; overflow: hidden; }
+.theme-strip span { flex: 1; }
