@@ -58,7 +58,7 @@ body {
     "topbar topbar  topbar topbar topbar" 48px
     "ctrl   ctrl    ctrl   ctrl   ctrl"   var(--ctrl-h, 38px)
     "text   text    text   text   text"   var(--text-h, 38px)
-    "rail   sidebar canvas panel  notes"  1fr
+    "rail   sidebar canvas panel  notes"  minmax(0, 1fr)
     "status status  status status status" 28px
     / var(--rail-w, 48px) var(--side-w, 200px) 1fr var(--panel-w, 264px) var(--notes-w, 300px);
 }
@@ -202,7 +202,10 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   padding: 8px 0;
   background: var(--surface);
   border-right: 1px solid var(--line);
+  overflow-y: auto; /* short windows: the rail scrolls rather than pushing the status bar off */
+  scrollbar-width: none;
 }
+#toolrail > * { flex-shrink: 0; }
 
 .tool-btn {
   border: none;

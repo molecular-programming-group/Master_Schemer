@@ -138,7 +138,7 @@ async function run(name, story, { hide = ['library', 'notes'] } = {}) {
   t.wdrag = async (wpts, steps, mods) => { const s = []; for (const p of wpts) s.push(await t.W2S(...p)); await t.drag(s, steps, mods); };
   t.ctx = async (wx, wy, pause = 900) => { const [x, y] = await t.W2S(wx, wy); await t.move(x, y); await t.wait(200); await pg.mouse.click(x, y, { button: 'right' }); await t.wait(pause); await t.snap('ctx'); };
   t.ctxItem = async (text, pause = 500) => t.click(`#ctxMenu button:has-text("${text}"), .ctx-menu button:has-text("${text}")`, pause);
-  t.field = async (sel, value, delay = 45) => { await t.reveal(sel); await t.click(sel, 150); await pg.keyboard.press('Control+A'); await t.type(value, delay); await t.key('Enter', 300); await t.blur(); };
+  t.field = async (sel, value, delay = 45) => { await t.reveal(sel); await t.click(sel, 150); await pg.keyboard.press('Control+A'); await t.type(value, delay); await t.wait(300); await t.blur(); };
   t.F = name => `#panel label.field:has(> span:text-is("${name}"))`; // a properties-panel row
   t.pick = async (name, value, pause = 900) => { // choose in a panel <select>, visibly
     const sel = `${t.F(name)} select`;
