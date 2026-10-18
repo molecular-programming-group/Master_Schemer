@@ -139,6 +139,12 @@ export function midline(A, B, LA, LB, at, m = 64) {
 
 // ---- sequence colours ----
 
+// A field's text as a sequence: its bases (A C G T U N, upper-cased) with
+// spaces, digits, dashes and 5′/3′ marks dropped — or '' when it holds anything else.
+export function seqLetters(s) {
+  const t = (s || '').toUpperCase().replace(/[\s\d\-–—′'.]/g, '');
+  return /^[ACGTUN]+$/.test(t) ? t : '';
+}
 export const BASE_COLORS = { A: '#3a8a3e', C: '#2f6fd0', G: '#d59c12', T: '#c8352e' };
 export const COMPLEMENT = { A: 'T', T: 'A', C: 'G', G: 'C' };
 // Deterministic "random" base for strand `id` at base index i — a UMI look

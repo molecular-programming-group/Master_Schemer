@@ -81,7 +81,8 @@ body.hide-objects.hide-library #sidebar,
 body.hide-color.hide-props #panel { display: none; }
 body.hide-color.hide-props { --panel-w: 0px; }
 body.hide-notes { --notes-w: 0px; }
-body.hide-grid #gridRect { display: none; }
+body.hide-grid #gridRect, body.hide-grid #gridTickRect, body.hide-ticks #gridTickRect { display: none; }
+#world[data-seq="near"] .seq-far, #world[data-seq="far"] .seq-near { display: none; }
 
 button { font: inherit; color: inherit; }
 

@@ -8,7 +8,7 @@ import {
 } from './geom.js';
 import {
   drawBrush, brushPath, strandLayout, midline, naturalBases, uAt, outlineOf, DEFAULT_BPG, naturalD,
-  gridPitch, randomBase, BASE_COLORS, COMPLEMENT,
+  gridPitch, randomBase, BASE_COLORS, COMPLEMENT, seqLetters, tAt,
 } from './dna.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -424,7 +424,7 @@ function renderPath(el) {
   const pts = ptsAttr(el.pts);
   const w = el.width || 2;
   const color = resolveColor(el.color);
-  const dna = shownDNA(el);
+  const dna = shownDNA(el), seq = seqStrand(el), plain = !dna && !seq;
   const hitW = dna ? Math.max(12, diam(el)) : Math.max(12, w + 8);
   // inside a duplex a strand doesn't catch clicks: the duplex does (click it
   // again for its strands), so what you click is what you see
@@ -437,7 +437,8 @@ function renderPath(el) {
     }, g);
   }
   const under = dna ? drawDNAStrand(g, el) : null;
-  if (!dna) svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color) }, g);
+  if (seq) drawSeqStrand(g, el);
+  if (plain) svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color) }, g);
   const len = polylineLength(el.pts);
   const labelOff = dna ? diam(el) / 2 + 9 : 16;
   (el.segments || []).forEach((seg, i) => {
@@ -450,7 +451,7 @@ function renderPath(el) {
         points: sa, fill: 'none', stroke: 'transparent', 'stroke-width': hitW, 'data-hit': '1', 'data-seg': i,
       }, g);
     }
-    if (!dna) svgEl('path', {
+    if (plain) svgEl('path', {
       d: roundedPathD(sp, el.corner || 0), fill: 'none', stroke: paintOf(seg, segColor),
       'stroke-width': segWidth(seg, w),
       'stroke-linejoin': scap === 'round' ? 'round' : 'miter', 'stroke-linecap': scap, 'data-seg': i,
@@ -468,7 +469,7 @@ function renderPath(el) {
       : { w, paint: color };
   };
   const c0 = capStyle(0), c1 = capStyle(1);
-  if (!dna) { // a DNA strand ends in its own molecular caps
+  if (plain) { // a DNA strand ends in its own molecular caps
     capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, c0.paint, c0.w, el.cap0flip);
     capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, c1.paint, c1.w, el.cap1flip);
   }
@@ -703,7 +704,12 @@ export const dnaBpg = () => state.doc.dnaBpg || DEFAULT_BPG;
 // duplexes as base-pair rungs) without touching the document — each line keeps
 // its own Draw-as setting for when it's back on.
 export const dnaView = { show: true };
-const shownDNA = el => !!el.dna && dnaView.show;
+// View → Show Sequences: a strand with a sequence draws as its letters instead
+// (of its line or molecule). Display only, like dnaView.
+export const seqView = { show: false };
+const hasSeq = el => !!seqLetters(el.seq) || (el.segments || []).some(s => seqLetters(s.string));
+export const seqStrand = el => seqView.show && el.type === 'path' && hasSeq(el);
+const shownDNA = el => !!el.dna && dnaView.show && !seqStrand(el);
 export const diam = el => (typeof el.dna === 'number' ? el.dna : naturalD(dnaBpg()));
 
 const dnaEnd = ref => {
@@ -736,11 +742,34 @@ function dnaFixed(el) {
       fixed.push({ t0, t1, count: duplexBases(l), paired: true, link: l, role });
     }
   }
-  for (const s of el.segments || []) if (s.bases) fixed.push({ t0: s.t0, t1: s.t1, count: s.bases });
+  // a domain's own count, else its sequence's length
+  for (const s of el.segments || []) {
+    const count = s.bases || seqLetters(s.string).length;
+    if (count) fixed.push({ t0: s.t0, t1: s.t1, count });
+  }
   return fixed;
 }
-export const dnaLayout = el =>
-  strandLayout(polylineLength(el.pts), gridPitch(dnaBpg()), dnaFixed(el), el.bases);
+// A strand's own count, else its sequence's: the free bases are what the
+// sequence leaves after the fixed spans.
+export function dnaLayout(el) {
+  const L = polylineLength(el.pts), pitch = gridPitch(dnaBpg()), fixed = dnaFixed(el);
+  const lay = strandLayout(L, pitch, fixed, el.bases);
+  const seq = seqLetters(el.seq).length;
+  if (el.bases !== undefined || !seq || !lay.freeLen) return lay;
+  return strandLayout(L, pitch, fixed, Math.max(0, seq - (lay.n - lay.free)));
+}
+
+// Letter of strand e at base index i (as written: U and N kept): its domain's
+// sequence where one covers i, else the strand's own, else ''.
+function seqAt(e, lay, i) {
+  for (const s of e.segments || []) {
+    const seq = seqLetters(s.string);
+    if (!seq) continue;
+    const j = i - Math.round(uAt(lay.knots, s.t0));
+    if (j >= 0 && j < Math.round(uAt(lay.knots, s.t1) - uAt(lay.knots, s.t0))) return seq[j % seq.length];
+  }
+  return seqLetters(e.seq)[i] || '';
+}
 
 // The unpaired stretches of a strand: [{ t0, t1, before, after }], with the
 // paired spans (duplexes) they run on from / into.
@@ -759,16 +788,11 @@ const strandColor = (e, t) =>
   resolveColor((e.segments || []).find(s => t >= s.t0 && t <= s.t1)?.color ?? e.color);
 const fillet = D => D * 1.5; // tightest turn a strand takes without its texture visibly smearing
 
-// Base letter of strand e at base index i: its segment's sequence (the string
-// field, when it is one) or a fixed random base.
+// Base letter of strand e at base index i for the molecule's colours: its
+// sequence (U read as T) or, where it has none, a fixed random base.
 function baseLetter(e, lay, i) {
-  for (const s of e.segments || []) {
-    const seq = (s.string || '').toUpperCase().replace(/U/g, 'T').replace(/[^ACGT]/g, '');
-    if (!seq) continue;
-    const j = i - Math.round(uAt(lay.knots, s.t0));
-    if (j >= 0 && j < Math.round(uAt(lay.knots, s.t1) - uAt(lay.knots, s.t0))) return seq[j % seq.length];
-  }
-  return randomBase(e.id, i);
+  const b = seqAt(e, lay, i).replace('U', 'T');
+  return b && b !== 'N' ? b : randomBase(e.id, i);
 }
 const baseColor = e => resolveColor(e.baseColor) || '#f1ece2';
 
@@ -851,6 +875,38 @@ function drawDNAStrand(g, el) {
     });
   }
   return el.dnaOutline ? outlineOf(target, D) : null;
+}
+
+// A strand in sequence view: one letter per base at its place along the line,
+// turned to the line but kept upright. Letters keep their natural size on a
+// stretched strand and shrink on a compressed one; a strand whose sequence
+// doesn't match its drawn length says by how many bases at its 3′ end.
+// The plain line stands in when zoomed out too far to read (renderNow's data-seq).
+function drawSeqStrand(g, el) {
+  const lay = dnaLayout(el), pitch = gridPitch(dnaBpg()), L = polylineLength(el.pts);
+  svgEl('polyline', { class: 'seq-far', points: ptsAttr(el.pts), fill: 'none', stroke: resolveColor(el.color),
+    'stroke-width': el.width || 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, g);
+  const near = svgEl('g', { class: 'seq-near', 'font-family': 'ui-monospace, Menlo, Consolas, monospace',
+    'font-weight': 600, 'text-anchor': 'middle', 'dominant-baseline': 'central' }, g);
+  for (let i = 0; i < lay.n; i++) {
+    const t0 = tAt(lay.knots, i), t1 = tAt(lay.knots, i + 1), t = (t0 + t1) / 2;
+    const [x, y] = pointAt(el.pts, t), a = pointAt(el.pts, t - 0.01), b = pointAt(el.pts, t + 0.01);
+    let deg = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
+    if (deg > 90.5 || deg <= -89.5) deg += 180; // upright: leftward and upward runs read flipped
+    const ch = seqAt(el, lay, i);
+    const fill = el.dnaColor === 'sequence' && BASE_COLORS[ch.replace('U', 'T')] || strandColor(el, t);
+    svgEl('text', { x: 0, y: 0, 'font-size': +(Math.min(t1 - t0, pitch) * 1.45).toFixed(2), fill,
+      transform: `translate(${+x.toFixed(2)} ${+y.toFixed(2)}) rotate(${+deg.toFixed(1)})` }, near)
+      .textContent = ch || '·';
+  }
+  const off = lay.n - naturalBases(L, pitch);
+  if (off) {
+    const d = endDir(el.pts, 1), z = el.pts[el.pts.length - 1];
+    svgEl('text', { x: z[0] + d[0] * pitch * 1.5, y: z[1] + d[1] * pitch * 1.5, 'font-size': pitch * 1.2, 'font-weight': 600,
+      'text-anchor': d[0] < -0.5 ? 'end' : d[0] > 0.5 ? 'start' : 'middle', 'dominant-baseline': 'central',
+      fill: '#b5561d' }, g)
+      .textContent = `${off > 0 ? '+' : '−'}${Math.abs(off)} nt`;
+  }
 }
 
 // The double helix of a duplex link, laid along the midline between its two
@@ -959,6 +1015,7 @@ function elKey(el, salt) {
   if (el.type === 'link') key += '|' + ptsAttr([...linkTargetPoints(el.a), ...linkTargetPoints(el.b)]);
   // DNA strands and duplexes depend on each other (shape, counts, colours) and the DNA grid
   if (el.dna || (el.type === 'link' && duplexLink(el))) key += dnaKey(el);
+  if (seqStrand(el)) key += '|seq' + dnaBpg();
   return key;
 }
 
@@ -1096,6 +1153,19 @@ export function render() {
   requestAnimationFrame(() => { rafPending = false; renderNow(); });
 }
 
+// The tick tile: one grid square with a tick at every base along its top and
+// left edges (and their copies on the far edges, which the tile clips).
+function buildTicks(rect, bpg, pitch) {
+  rect.dataset.bpg = String(bpg);
+  const pat = $('gridTicks'), h = pitch * 0.35;
+  pat.replaceChildren();
+  const tick = (x1, y1, x2, y2) => svgEl('line', { x1, y1, x2, y2, stroke: '#cfc8bb', 'stroke-width': pitch * 0.1 }, pat);
+  for (let i = 1; i < bpg; i++) {
+    const v = i * pitch;
+    for (const e of [0, GRID]) { tick(v, e - h, v, e + h); tick(e - h, v, e + h, v); }
+  }
+}
+
 export function renderNow(cull = true) {
   const { tx, ty, s } = state.view;
   $('world').setAttribute('transform', `translate(${tx} ${ty}) scale(${s})`);
@@ -1116,6 +1186,13 @@ export function renderNow(cull = true) {
   grid.setAttribute('width', vw / s + 3 * GRID);
   grid.setAttribute('height', vh / s + 3 * GRID);
   grid.setAttribute('opacity', s < 0.4 ? 0 : Math.min(1, (s - 0.4) / 0.2 + 0.35));
+  // base ticks: one per base along the grid lines, fading in once they're 4px apart
+  const pitch = gridPitch(dnaBpg()), ticks = $('gridTickRect');
+  if (ticks.dataset.bpg !== String(dnaBpg())) buildTicks(ticks, dnaBpg(), pitch);
+  for (const k of ['x', 'y', 'width', 'height']) ticks.setAttribute(k, grid.getAttribute(k));
+  ticks.setAttribute('opacity', Math.max(0, Math.min(1, (pitch * s - 4) / 4)));
+  // sequence letters: drawn only once they're legible (about 6px)
+  $('world').dataset.seq = pitch * s * 1.45 >= 6 ? 'near' : 'far';
 
   // Viewport culling: only elements whose bbox meets the visible world rect
   // (plus a margin, so labels/caps just off-screen don't pop) are keyed, built,

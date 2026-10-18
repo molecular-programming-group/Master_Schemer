@@ -103,6 +103,18 @@ molecules start in toon shading with a black outline.
   swatch recolours both backbones (or just one, while its picker is open), and
   the panel has a picker for each backbone
   plus the shading and colour-by controls for both strands.
+- **Sequences.** A strand's **Sequence** field (5′→3′) or a domain's
+  **String** holding A/C/G/T/U/N sets its base count; a domain's sequence
+  overrides the strand's over that domain. **View → Show Sequences** draws such
+  strands as their letters along the line, one per base. The letters appear
+  once you zoom in far enough to read them, and are kept upright, so a strand
+  running right to left reads backwards. A strand whose sequence doesn't match its
+  drawn length shows the difference at its 3′ end (*+5 nt*), and **Grid → Fit
+  Strands to Sequence** moves its 3′ end to fix it.
+- **Grid menu.** It holds the scale (*N bases per square*; 1 or 2 make
+  letters readable at 100%), the base ticks (one per base along the grid
+  lines, shown once zoomed in), and **Snap Strands to Whole Bases**, which
+  makes the Strand tool draw whole-base legs and shows the count as you draw.
 - **Global switch.** **DNA** in the status bar (or View → DNA Molecules) draws
   every DNA strand as its plain line, and every duplex as base-pair rungs,
   without changing the document. Each line keeps its own Draw-as setting, so a

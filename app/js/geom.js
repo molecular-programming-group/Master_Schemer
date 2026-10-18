@@ -15,15 +15,18 @@ export const dirOf = (a, b) => [Math.sign(b[0] - a[0]), Math.sign(b[1] - a[1])];
 // Project q (relative to anchor a) onto the nearest of the 8 compass directions,
 // quantized to whole `step` increments along that direction (default: grid).
 // Never goes behind the anchor.
-export function snap8(a, q, step = GRID) {
+// euclid: `step` is the length along the direction (diagonals included), not per axis.
+export function snap8(a, q, step = GRID, euclid = false) {
   const dx = q[0] - a[0], dy = q[1] - a[1];
   if (dx === 0 && dy === 0) return [a[0], a[1]];
   const oct = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
   const ux = Math.round(Math.cos(oct * Math.PI / 4));
   const uy = Math.round(Math.sin(oct * Math.PI / 4));
+  if (euclid) step /= Math.hypot(ux, uy);
   const t = (dx * ux + dy * uy) / (ux * ux + uy * uy);
   const n = Math.max(0, Math.round(t / step));
-  return [(a[0] + n * step * ux) || 0, (a[1] + n * step * uy) || 0];
+  const r = v => Math.round(v * 1000) / 1000 || 0;
+  return [r(a[0] + n * step * ux), r(a[1] + n * step * uy)];
 }
 
 // Rotate p 90° about c. dir > 0 = clockwise in screen coords (y down).
