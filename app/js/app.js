@@ -9,7 +9,7 @@ import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength } from './geo
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
   linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, dnaView, invalidateRenderCache,
-  FONTS, LINE_H, INLINE_TAGS,
+  FONTS, LINE_H, INLINE_TAGS, inlineHTML,
 } from './render.js';
 import { DEFAULT_BPG, spacing, uAt } from './dna.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
@@ -693,7 +693,7 @@ function displayName(el, i) {
   const label = resolveLabel(el.label || '');
   if (el.type === 'text') return label || el.text.split('\n')[0].slice(0, 24) || 'note';
   const names = {
-    path: 'line', ink: 'freehand', ellipse: 'ellipse', rect: 'rectangle',
+    path: 'strand', ink: 'freehand', ellipse: 'ellipse', rect: 'rectangle',
     aline: 'line note', aarrow: 'arrow',
   };
   const kind = el.type === 'aline' && (el.cap0 !== 'none' || el.cap1 !== 'none') ? 'arrow' : names[el.type];
@@ -737,7 +737,7 @@ function sideItem({ depth, name, color, selected, onSelect, onRename, collapsibl
   }
   const label = document.createElement('span');
   label.className = 'side-name';
-  label.textContent = name;
+  label.innerHTML = inlineHTML(name.split('\n')[0]); // drawn as on canvas; rename edits the source
   row.appendChild(label);
   if (!onRename) {
     row.addEventListener('click', onSelect);
@@ -823,7 +823,7 @@ function parentNode(into, key, opts, hasChildren) {
 function segItems(el, depth, into) {
   (el.segments || []).forEach((seg, i) => {
     into.appendChild(sideItem({
-      depth, name: resolveLabel(seg.label || '') || `segment ${i + 1}`, color: resolveColor(seg.color),
+      depth, name: resolveLabel(seg.label || '') || `domain ${i + 1}`, color: resolveColor(seg.color),
       selected: state.selection.some(s => s.id === el.id && s.seg === i),
       onSelect: () => { state.selection = [{ id: el.id, seg: i }]; refresh(); },
       onRename: v => { setLabel(seg, v); },
@@ -1917,7 +1917,7 @@ function kindBadge(single, n) {
     cls = 'group'; kind = grp.name; detail = `${n} object${n === 1 ? '' : 's'}`;
   } else if (single?.seg !== undefined) {
     cls = 'primary'; kind = 'Domain';
-    detail = `segment ${single.seg + 1} of ${name(single.el)}`;
+    detail = `domain ${single.seg + 1} of ${name(single.el)}`;
   } else if (single) {
     [cls, kind] = kindOf(single.el);
     detail = name(single.el);
@@ -1939,7 +1939,7 @@ function kindBadge(single, n) {
   k.textContent = kind;
   const d = document.createElement('span');
   d.className = 'kind-detail';
-  d.textContent = detail;
+  d.innerHTML = inlineHTML(detail);
   box.append(tag, k, d);
   return box;
 }
@@ -2589,7 +2589,7 @@ function renderPanel() {
         dot.className = 'seg-dot';
         dot.style.background = resolveColor(seg.color);
         const name = document.createElement('span');
-        name.textContent = resolveLabel(seg.label || '') || `segment ${i + 1}`;
+        name.innerHTML = inlineHTML(resolveLabel(seg.label || '') || `domain ${i + 1}`);
         item.append(dot, name);
         item.addEventListener('click', () => {
           state.selection = [{ id: el.id, seg: i }];
