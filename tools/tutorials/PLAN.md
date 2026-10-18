@@ -19,7 +19,7 @@ check it off, commit.
 - [x] 02-primer-template — antiparallel strands, Domain tool, labels a / a*, Domains panel colour (a* lighter), Link with base pairs, fill vs rungs, DNA look
 - [x] 03-cut-ligate-cards — cut, Shift-cut nick, join lines, rotate/flip/align, duplicate, cards + connect arrows as reaction steps
 - [x] 04-text-labels — notes with rich text and math, label size/weight/colour (per label and document-wide), domain strings, Data field
-- [ ] 05-sequences-grid — Sequence field, Draw as Sequence, Grid menu (ticks, whole bases, bases per square, resize to grid), View → Draw Strands
+- [x] 05-sequences-grid — Sequence field, Draw as Sequence, Grid menu (ticks, whole bases, bases per square, resize to grid), View → Draw Strands
 
 ## Feature themes
 
