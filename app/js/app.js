@@ -2340,6 +2340,7 @@ Object.assign(MENU_ACTS, {
   flipH: () => transformSelection('h'), flipV: () => transformSelection('v'),
   alignLeft: () => alignSelection('left'), alignHcenter: () => alignSelection('hcenter'), alignRight: () => alignSelection('right'),
   alignTop: () => alignSelection('top'), alignVcenter: () => alignSelection('vcenter'), alignBottom: () => alignSelection('bottom'),
+  distH: () => distributeSelection('h'), distV: () => distributeSelection('v'),
 });
 
 $('snapToggle').addEventListener('click', () => {

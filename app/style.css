@@ -870,7 +870,7 @@ body.panning #canvas { cursor: grabbing !important; }
 .menu-list button {
   display: flex; align-items: center; gap: 24px; width: 100%;
   border: none; background: none; font: inherit; color: inherit; text-align: left;
-  padding: 6px 10px 6px 26px; border-radius: 5px; cursor: pointer;
+  padding: 6px 10px 6px 26px; border-radius: 5px; cursor: pointer; white-space: nowrap;
   position: relative;
 }
 .menu-list button:hover:not(:disabled), .menu-list button:focus-visible { background: var(--primary-soft); outline: none; }
