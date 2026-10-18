@@ -619,6 +619,14 @@ body.panning #canvas { cursor: grabbing !important; }
 }
 .modal-close:hover { color: var(--ink); }
 
+.export-card { width: min(380px, calc(100vw - 32px)); }
+.export-body { display: flex; flex-direction: column; gap: 8px; }
+.export-name { display: flex; align-items: center; gap: 4px; }
+.export-name input { flex: 1; min-width: 0; }
+.export-name span { color: var(--muted); }
+.export-actions { justify-content: flex-end; }
+.export-actions .btn:not(.outline) { background: var(--primary); border-color: var(--primary); color: #fff; }
+
 /* ---------- inline color picker ---------- */
 
 .picker { display: flex; flex-direction: column; gap: 8px; }

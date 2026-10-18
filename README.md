@@ -149,10 +149,15 @@ grid cell, `Ctrl+G` groups, `1` fits the scheme in view, `0` resets zoom.
 
 Documents autosave locally. **Save** / **Save As** (`Ctrl+S` /
 `Ctrl+Shift+S`) write a `.schemer.json` file — through native file dialogs in
-the desktop app — **Open** loads one, **Export SVG** produces a standalone
-vector file, and **Export CSV** dumps every object (or just the selection —
-a selected card exports its contents) with its type, name, group, card,
-color, and hidden data. Notes and labels using `$math$` render via KaTeX both
+the desktop app — and **Open** loads one. **Export** (`Ctrl+E` for SVG,
+`Ctrl+Shift+E` for PNG, or File → Export CSV) opens a dialog: pick the format
+and file name, whether to export only the selection, show the grid or leave the
+background transparent, and for PNG the resolution (1×–8×, with the pixel size
+shown). **Export…** then opens the save dialog to choose where it goes; the
+dialog remembers its settings and the last folder. **SVG** is a standalone
+vector file; **CSV** dumps every object (or just the selection — a selected
+card exports its contents) with its type, name, group, card, color, and hidden
+data. Notes and labels using `$math$` render via KaTeX both
 in-app and in exported SVGs — the export bakes the KaTeX stylesheet and fonts
 in as data URIs, so the file renders math anywhere with nothing alongside it.
 
