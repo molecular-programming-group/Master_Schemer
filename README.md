@@ -81,7 +81,7 @@ molecules start in toon shading with a black outline.
   strand, its domains and its duplexes back on the grid.
 - **Duplexes.** A **Base pairs** link between two DNA strands (or between two
   segments of one strand, for a hairpin) draws a double helix along the midline
-  between them, and each backbone takes its own strand's colour. The link's
+  between them (linking two DNA strands makes one straight away), and each backbone takes its own strand's colour. The link's
   base-pair count sets that domain's length on both strands. Where a strand
   carries on single-stranded, it leaves the duplex in phase along its own
   backbone and then bends out to its line, so a partly hybridized pair reads as

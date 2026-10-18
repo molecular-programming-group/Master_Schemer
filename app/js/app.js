@@ -397,6 +397,8 @@ function createLink(targets) {
     type: 'link', a: targets[0], b: targets[1],
     fill: resolveColor(currentColor()) || '#8a857c', opacity: 0.45,
   });
+  // two DNA strands pair up as a duplex rather than a filled area
+  if (targets.every(t => byId(t.id)?.dna) && linkStrand(el.a) && linkStrand(el.b)) el.style = 'bases';
   state.selection = [{ id: el.id }];
   changed();
 }
