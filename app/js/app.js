@@ -1233,7 +1233,7 @@ function assetThumbnail(asset) {
   const acc = (x, y) => { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; };
   const mk = attrs => { const n = document.createElementNS(SVGNS, attrs.tag); for (const k in attrs) if (k !== 'tag') n.setAttribute(k, attrs[k]); svgt.appendChild(n); };
   for (const el of asset.elements) {
-    const stroke = el.color || '#55504a', sw = el.width || 2;
+    const stroke = el.color || '#55504a', sw = el.width ?? 2;
     if (el.type === 'ellipse') {
       acc(el.cx - el.rx, el.cy - el.ry); acc(el.cx + el.rx, el.cy + el.ry);
       mk({ tag: 'ellipse', cx: el.cx, cy: el.cy, rx: el.rx, ry: el.ry,
@@ -2521,6 +2521,39 @@ function seqNote() {
 }
 const linkSeq = l => refSeq(l.a, byId(l.a.id)) || refSeq(l.b, byId(l.b.id));
 
+// Where along each end a base-pair link pairs: from/to as % of that end's domain
+// (or line), so a short domain can pair with part of a longer one. A fraction
+// like 6/13 is read as one. Both full = the old whole-domain pairing.
+function pairRangeRows(l) {
+  const frag = document.createDocumentFragment();
+  for (const [ref, name] of [[l.a, 'A'], [l.b, 'B']]) {
+    const row = document.createElement('div');
+    row.className = 'width-row';
+    const box = (k, dflt) => {
+      const node = document.createElement('input');
+      node.type = 'text'; node.size = 5;
+      node.value = +((ref[k] ?? dflt) * 100).toFixed(1);
+      node.title = 'Percent of the domain from its start, or a fraction such as 6/13';
+      node.addEventListener('change', () => {
+        const m = node.value.match(/^\s*([\d.]+)\s*\/\s*([\d.]+)\s*$/);
+        const v = clamp(m ? m[1] / m[2] : parseFloat(node.value) / 100, 0, 1);
+        const f0 = k === 'f0' ? v : ref.f0 ?? 0, f1 = k === 'f1' ? v : ref.f1 ?? 1;
+        if (!(f1 - f0 > 0.001)) { node.value = +((ref[k] ?? dflt) * 100).toFixed(1); return; }
+        beginChange();
+        if (v === dflt) delete ref[k]; else ref[k] = v;
+        changed();
+      });
+      return node;
+    };
+    const to = document.createElement('span');
+    to.className = 'muted'; to.textContent = 'to';
+    row.append(box('f0', 0), to, box('f1', 1));
+    const label = resolveLabel(backbone(ref).label || ''); // math/markup labels read badly here
+    frag.appendChild(fieldRow(`Pairs ${label && !/[$<]/.test(label) ? label : name} over (%)`, row));
+  }
+  return frag;
+}
+
 function duplexBasesControls(l) {
   const frag = document.createDocumentFragment();
   if (linkSeq(l)) {
@@ -2607,6 +2640,19 @@ function renderPanel() {
         { strand: 'Strand colour', sequence: 'A C G T colours' },
         () => (el.dnaColor === 'sequence' ? 'sequence' : 'strand'),
         v => { if (v === 'sequence') el.dnaColor = v; else delete el.dnaColor; })));
+      if (look === 'seq') styleSec.appendChild(fieldRow('Letter size', sliderNum(() => el.seqScale || 1,
+        v => { if (v === 1) delete el.seqScale; else el.seqScale = v; }, { min: 0.4, max: 3, step: 0.1 })));
+      if (look === 'line') {
+        styleSec.appendChild(fieldRow('Base ticks', mappedSelect(
+          { none: 'None', left: 'One side', right: 'Other side', both: 'Both sides' },
+          () => el.comb || 'none', v => { if (v === 'none') delete el.comb; else el.comb = v; })));
+        if (el.comb) {
+          styleSec.appendChild(fieldRow('Tick length', sliderNum(() => el.combLen ?? 6,
+            v => { if (v === 6) delete el.combLen; else el.combLen = v; }, { min: 1, max: 30, step: 0.5 })));
+          styleSec.appendChild(fieldRow('Tick spacing', sliderNum(() => el.combStep || 6,
+            v => { if (v === 6) delete el.combStep; else el.combStep = v; }, { min: 2, max: 30, step: 0.5 })));
+        }
+      }
     }
     if (look === 'dna') styleSec.appendChild(dnaControls(el));
     else if (look === 'line') styleSec.appendChild(fieldRow('Line style', selectControl(
@@ -2718,7 +2764,7 @@ function renderPanel() {
     if (el.dna) sec.appendChild(segmentBases(el, single.seg));
     else {
       sec.appendChild(fieldRow('Thickness', widthControl(
-        () => seg.width ?? ((el.width || 2) + 2.5),
+        () => seg.width ?? ((el.width ?? 2) + 2.5),
         v => { seg.width = v; },
         true)));
       sec.appendChild(fieldRow('Line ends', selectControl(
@@ -2762,6 +2808,7 @@ function renderPanel() {
     }
     if (bases && duplexLink(el)) {
       sec.appendChild(duplexBasesControls(el));
+      sec.appendChild(pairRangeRows(el));
       // the duplex has no colour of its own: each backbone is its strand's paired
       // segment (or line), hidden inside it — so edit them from here
       const nameOf = ref => resolveLabel(backbone(ref).label || '') || resolveLabel(byId(ref.id).label || '')
@@ -2805,9 +2852,17 @@ function renderPanel() {
         () => el.rung || 'line', v => { if (v === 'line') delete el.rung; else el.rung = v; })));
       if (el.rung === 'dot') sec.appendChild(fieldRow('Dot size', sliderNum(() => el.rungSize || 1.6,
         v => { if (v === 1.6) delete el.rungSize; else el.rungSize = v; }, { min: 0.5, max: 8, step: 0.1 })));
-      sec.appendChild(fieldRow('Colour by', mappedSelect({ fill: 'One colour', sequence: 'Sequence (A C G T)' },
+      else sec.appendChild(fieldRow('Rung width', sliderNum(() => el.rungWidth ?? 1.5,
+        v => { if (v === 1.5) delete el.rungWidth; else el.rungWidth = v; }, { min: 0.25, max: 8, step: 0.25 })));
+      sec.appendChild(fieldRow('Rungs', mappedSelect(
+        { auto: 'Auto', straight: 'Straight (from the shorter strand)', spread: 'Spread over both strands' },
+        () => el.rungAlign || 'auto', v => { if (v === 'auto') delete el.rungAlign; else el.rungAlign = v; })));
+      sec.appendChild(pairRangeRows(el));
+      sec.appendChild(fieldRow('Colour by', mappedSelect(
+        { fill: 'One colour', strands: 'Strand colours (two-tone)', sequence: 'Sequence (A C G T)' },
         () => el.rungColor || 'fill', v => { if (v === 'fill') delete el.rungColor; else el.rungColor = v; })));
-      sec.appendChild(fillControl(el, { optional: false, label: el.rungColor ? 'Unsequenced' : 'Base pair', pattern: false }));
+      if (el.rungColor !== 'strands') sec.appendChild(fillControl(el,
+        { optional: false, label: el.rungColor ? 'Unsequenced' : 'Base pair', pattern: false }));
       sec.appendChild(deleteButton());
       panel.appendChild(sec);
       return;
