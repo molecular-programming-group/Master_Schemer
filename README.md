@@ -109,11 +109,12 @@ molecules start in toon shading with a black outline.
   strands as their letters along the line, one per base. The letters appear
   once you zoom in far enough to read them, and are kept upright, so a strand
   running right to left reads backwards. A strand whose sequence doesn't match its
-  drawn length shows the difference at its 3′ end (*+5 nt*), and **Grid → Fit
-  Strands to Sequence** moves its 3′ end to fix it.
+  drawn length shows the difference at its 3′ end (*+5 nt*), and **Grid → Resize
+  Strands to Grid** moves its 3′ end to fix it (the selected strands, or every
+  strand with a sequence when nothing is selected).
 - **Grid menu.** It holds the scale (*N bases per square*; 1 or 2 make
   letters readable at 100%), the base ticks (one per base along the grid
-  lines, shown once zoomed in), and **Snap Strands to Whole Bases**, which
+  lines, shown once zoomed in), and **Draw Strands in Whole Bases**, which
   makes the Strand tool draw whole-base legs and shows the count as you draw.
 - **Global switch.** **DNA** in the status bar (or View → DNA Molecules) draws
   every DNA strand as its plain line, and every duplex as base-pair rungs,

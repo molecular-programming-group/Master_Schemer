@@ -603,7 +603,7 @@ function toggleGrid() {
   try { localStorage.setItem(GRID_HIDDEN_KEY, hidden ? '1' : ''); } catch { /* full */ }
 }
 try { document.body.classList.toggle('hide-grid', localStorage.getItem(GRID_HIDDEN_KEY) === '1'); } catch { /* shown */ }
-// Grid → Show Base Ticks / Snap Strands to Whole Bases: UI prefs too
+// Grid → Show Base Ticks / Draw Strands in Whole Bases: UI prefs too
 const TICKS_HIDDEN_KEY = 'master-schemer-ticks-hidden', BASE_SNAP_KEY = 'master-schemer-base-snap';
 function toggleTicks() {
   const hidden = document.body.classList.toggle('hide-ticks');
@@ -2127,7 +2127,7 @@ function sequenceField(el) {
     const bad = (el.seq || '').trim() && !seqLetters(el.seq);
     note.textContent = bad ? 'Not a sequence (A C G T U N only) — kept as text.'
       : n === fit ? `${n} nt — fits the drawn length.`
-        : `${n} nt — the drawn length holds ${fit}. Grid → Fit Strands to Sequence.`;
+        : `${n} nt — the drawn length holds ${fit}. Grid → Resize Strands to Grid.`;
   };
   frag.appendChild(fieldRow('Sequence', boundInput(() => el.seq || '', v => {
     if (v.trim()) el.seq = v; else delete el.seq;
@@ -2138,11 +2138,16 @@ function sequenceField(el) {
   return frag;
 }
 
-// Grid → Fit Strands to Sequence: lengthen or shorten each strand at its 3′
-// end so its bases sit at the grid's natural spacing. The 5′ end and corners stay.
+// Grid → Resize Strands to Grid: lengthen or shorten each selected strand (or,
+// with nothing selected, every strand with a sequence) at its 3′ end so its
+// bases sit at the grid's spacing: n bases = n / (bases per square) squares.
+// The 5′ end and corners stay.
 // ponytail: fits the whole strand; a domain with its own count stays as squeezed as it was.
 function fitToSequence() {
-  const els = selectedElements().filter(el => el.type === 'path');
+  const sel = selectedElements();
+  const els = sel.length ? sel.filter(el => el.type === 'path')
+    : state.doc.elements.filter(el => el.type === 'path' && dnaLayout(el).n !== naturalBases(polylineLength(el.pts), gridPitch(dnaBpg()))
+      && (seqLetters(el.seq) || (el.segments || []).some(s => seqLetters(s.string))));
   if (!els.length) return;
   beginChange();
   for (const el of els) {

@@ -895,7 +895,7 @@ function drawSeqStrand(g, el) {
     if (deg > 90.5 || deg <= -89.5) deg += 180; // upright: leftward and upward runs read flipped
     const ch = seqAt(el, lay, i);
     const fill = el.dnaColor === 'sequence' && BASE_COLORS[ch.replace('U', 'T')] || strandColor(el, t);
-    svgEl('text', { x: 0, y: 0, 'font-size': +(Math.min(t1 - t0, pitch) * 1.45).toFixed(2), fill,
+    svgEl('text', { x: 0, y: 0, 'font-size': +(Math.min(t1 - t0, pitch) * 1.6).toFixed(2), fill,
       transform: `translate(${+x.toFixed(2)} ${+y.toFixed(2)}) rotate(${+deg.toFixed(1)})` }, near)
       .textContent = ch || '·';
   }
@@ -1192,7 +1192,7 @@ export function renderNow(cull = true) {
   for (const k of ['x', 'y', 'width', 'height']) ticks.setAttribute(k, grid.getAttribute(k));
   ticks.setAttribute('opacity', Math.max(0, Math.min(1, (pitch * s - 4) / 4)));
   // sequence letters: drawn only once they're legible (about 6px)
-  $('world').dataset.seq = pitch * s * 1.45 >= 6 ? 'near' : 'far';
+  $('world').dataset.seq = pitch * s * 1.6 >= 6 ? 'near' : 'far';
 
   // Viewport culling: only elements whose bbox meets the visible world rect
   // (plus a margin, so labels/caps just off-screen don't pop) are keyed, built,
