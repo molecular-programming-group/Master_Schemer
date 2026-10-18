@@ -97,7 +97,10 @@ constituent subgroups rather than scattering everything.
 **Links** join two selected objects (or segments, or two whole groups) into a
 filled area spanning between them — select exactly two things and press
 **Link** in the panel. The fill colour and opacity are yours to set, and the
-shape re-flows automatically as either end moves.
+shape re-flows automatically as either end moves. Between two lines or two
+segments, set the link's **Style** to **Base pairs** to draw a hybridized
+domain explicitly: enter how many **Bases** the domain has and that many
+evenly spaced rungs are drawn across, pairing antiparallel strands end to end.
 
 ## Annotation tools (not tracked)
 

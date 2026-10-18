@@ -8,6 +8,7 @@ import {
 import { GRID, mergePaths, rot90, flipPt, snapHalf } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView,
+  linkStrand, defaultBases,
 } from './render.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
 
@@ -1690,7 +1691,7 @@ function labelFields(target, placeholder) {
 }
 
 // Fill toggle + colour for closed shapes (rect/ellipse) and links.
-function fillControl(el, { label = 'Fill', optional = true } = {}) {
+function fillControl(el, { label = 'Fill', optional = true, pattern = true } = {}) {
   const frag = document.createDocumentFragment();
   if (optional) {
     frag.appendChild(checkboxRow(label, () => !!el.fill, v => {
@@ -1704,7 +1705,7 @@ function fillControl(el, { label = 'Fill', optional = true } = {}) {
       Object.assign(hex => { el.fill = hex; render(); }, { begin: beginChange }),
       changed);
     frag.appendChild(fieldRow(`${label} colour`, pick));
-    frag.appendChild(patternControls(el, `fill:${el.id}`));
+    if (pattern) frag.appendChild(patternControls(el, `fill:${el.id}`));
   }
   return frag;
 }
@@ -1896,8 +1897,39 @@ function renderPanel() {
     sec.appendChild(sectionTitle('Link'));
     const info = document.createElement('p');
     info.className = 'muted';
-    info.textContent = 'A filled area spanning two objects — it follows them as they move.';
+    info.textContent = el.style === 'bases'
+      ? 'Base pairs drawn between two strands — they follow them as they move.'
+      : 'A filled area spanning two objects — it follows them as they move.';
     sec.appendChild(info);
+    // Base pairs need a strand on both ends: two lines or two segments.
+    const A = linkStrand(el.a), B = A && linkStrand(el.b);
+    const bases = el.style === 'bases' && B;
+    sec.appendChild(fieldRow('Style', mappedSelect({ fill: 'Fill', bases: 'Base pairs' },
+      () => el.style || 'fill',
+      v => {
+        el.style = v;
+        if (v === 'bases' && B && !el.bases) el.bases = defaultBases(A, B);
+      })));
+    if (el.style === 'bases' && !B) {
+      const warn = document.createElement('p');
+      warn.className = 'muted';
+      warn.textContent = 'Base pairs need two lines or segments at the ends — drawn as a fill meanwhile.';
+      sec.appendChild(warn);
+    }
+    if (bases) {
+      const n = document.createElement('input');
+      n.type = 'number'; n.min = 1; n.max = 1000; n.step = 1;
+      n.value = el.bases || defaultBases(A, B);
+      n.addEventListener('change', () => {
+        const v = clamp(Math.round(+n.value) || 1, 1, 1000); n.value = v;
+        beginChange(); el.bases = v; changed();
+      });
+      sec.appendChild(fieldRow('Bases', n));
+      sec.appendChild(fillControl(el, { optional: false, label: 'Base pair', pattern: false }));
+      sec.appendChild(deleteButton());
+      panel.appendChild(sec);
+      return;
+    }
     sec.appendChild(fillControl(el, { optional: false, label: 'Fill' }));
     const orow = document.createElement('div');
     orow.className = 'width-row';

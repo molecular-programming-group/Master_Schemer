@@ -284,3 +284,21 @@ export function rectEdgePoint(cx, cy, w, h, tx, ty) {
   const s = Math.min(sx, sy, 1);
   return [cx + dx * s, cy + dy * s];
 }
+
+// One base per ~6 px of the shorter strand: the count a fresh base-pair link starts with.
+export const defaultBases = (A, B) =>
+  Math.max(1, Math.round(Math.min(polylineLength(A), polylineLength(B)) / 6));
+
+// n rungs: base i sits at the centre of the i-th of n equal slices of each
+// strand. B is read in whichever direction gives the shorter rungs, so
+// antiparallel strands (drawn running opposite ways) pair end to end correctly.
+export function basePairRungs(A, B, n) {
+  const at = (P, len, i) => pointAt(P, (i + 0.5) / n * len);
+  const la = polylineLength(A), lb = polylineLength(B);
+  const pa = [], pb = [];
+  for (let i = 0; i < n; i++) { pa.push(at(A, la, i)); pb.push(at(B, lb, i)); }
+  const total = q => pa.reduce((s, p, i) => s + Math.hypot(p[0] - q[i][0], p[1] - q[i][1]), 0);
+  const rb = [...pb].reverse();
+  const qb = total(rb) < total(pb) ? rb : pb;
+  return pa.map((p, i) => [p, qb[i]]);
+}

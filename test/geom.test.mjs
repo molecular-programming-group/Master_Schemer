@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   GRID, snap, snapHalf, snap8, simplify, polylineLength, pointAt, nearestOnPath,
   subPath, rectEdgePoint, mergePaths, rot90, flipPt, insertIndex,
-  convexHull, ellipsePoints, roundedPathD, resizeEndSegments,
+  convexHull, ellipsePoints, roundedPathD, resizeEndSegments, basePairRungs, defaultBases,
 } from '../app/js/geom.js';
 
 test('resizeEndSegments keeps segments put, growing/consuming only the touched end', () => {
@@ -171,4 +171,19 @@ test('mergePaths fuses at a shared endpoint and re-bases segments', () => {
 
   // inputs are not mutated
   assert.deepEqual(segB, [{ t0: 5, t1: 25, color: '#222', label: 'b' }]);
+});
+
+test('basePairRungs: n evenly spaced rungs, paired across antiparallel strands', () => {
+  // two vertical strands 30 apart, drawn running opposite ways (as in a hairpin stem)
+  const up = [[0, 100], [0, 0]], down = [[30, 0], [30, 100]];
+  const rungs = basePairRungs(up, down, 4);
+  assert.equal(rungs.length, 4);
+  for (const [p, q] of rungs) {
+    assert.equal(p[1], q[1]);           // horizontal: base i meets its partner
+    assert.equal(q[0] - p[0], 30);
+  }
+  assert.deepEqual(rungs.map(([p]) => p[1]), [87.5, 62.5, 37.5, 12.5]); // slice centres
+  // same-direction strands pair straight across too
+  assert.deepEqual(basePairRungs(down, [[60, 0], [60, 100]], 2).map(([p, q]) => [p[1], q[1]]), [[25, 25], [75, 75]]);
+  assert.equal(defaultBases(up, [[0, 0], [0, 60]]), 10);
 });

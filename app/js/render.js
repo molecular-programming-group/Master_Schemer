@@ -3,7 +3,7 @@
 // in document order (which is what gives us z-order for free).
 import { state, byId, resolveColor, resolveLabel, groupElementMembers } from './model.js';
 import {
-  GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint,
+  GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint, basePairRungs, defaultBases,
   convexHull, ellipsePoints, roundedPathD,
 } from './geom.js';
 
@@ -575,10 +575,38 @@ const subPathD = h => (h.length >= 3 ? ` M${h.map(p => p.join(' ')).join(' L')} 
 // is the "webbing" visible between the two objects — never the area behind
 // them. ponytail: overlapping endpoints double-punch (parity 3 → fills the
 // overlap); acceptable for a visual link, revisit if it looks wrong in use.
+// The polyline a link end runs along — a path segment or a whole line — or
+// null for ends (groups, shapes) that have no strand to space base pairs on.
+export { defaultBases };
+export function linkStrand(ref) {
+  const el = ref && !ref.group && byId(ref.id);
+  if (!el || !['path', 'aline', 'ink'].includes(el.type)) return null;
+  if (ref.seg !== undefined && el.segments?.[ref.seg]) {
+    const s = el.segments[ref.seg];
+    return subPath(el.pts, s.t0, s.t1);
+  }
+  return el.pts;
+}
+
 function renderLink(el) {
   const g = svgEl('g', { 'data-id': el.id });
   const ptsA = linkTargetPoints(el.a), ptsB = linkTargetPoints(el.b);
   const merged = convexHull([...ptsA, ...ptsB]);
+  const A = el.style === 'bases' && linkStrand(el.a), B = A && linkStrand(el.b);
+  if (B) {
+    // invisible hull keeps the gaps between rungs clickable (data-hit: dropped from exports)
+    if (merged.length >= 3) {
+      svgEl('path', { d: `M${merged.map(p => p.join(' ')).join(' L')} Z`, fill: 'transparent', 'data-hit': '1' }, g);
+    }
+    const color = resolveColor(el.fill) || '#2b2622';
+    for (const [p, q] of basePairRungs(A, B, el.bases || defaultBases(A, B))) {
+      svgEl('line', {
+        x1: p[0], y1: p[1], x2: q[0], y2: q[1],
+        stroke: color, 'stroke-width': 1.5, 'stroke-linecap': 'butt',
+      }, g);
+    }
+    return { node: g };
+  }
   if (merged.length >= 3) {
     const color = resolveColor(el.fill) || '#8a857c';
     const fill = paintOf(el, color);
