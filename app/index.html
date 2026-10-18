@@ -83,8 +83,21 @@
         <button role="menuitemcheckbox" data-click="snapToggle">Snap to Half-Grid</button>
         <button role="menuitemcheckbox" data-click="dataToggle">Show Data Boxes</button>
         <button role="menuitemcheckbox" data-click="hoverToggle">Data on Hover</button>
-        <button role="menuitemcheckbox" data-click="notesToggle">Notes Panel</button>
         <button role="menuitemcheckbox" data-click="themeToggle">Dark Theme</button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="menu-title" aria-haspopup="true" aria-expanded="false">Window</button>
+      <div class="menu-list" role="menu">
+        <button role="menuitemcheckbox" data-panel="tools">Tools</button>
+        <button role="menuitemcheckbox" data-panel="objects">Objects</button>
+        <button role="menuitemcheckbox" data-panel="library">Library</button>
+        <button role="menuitemcheckbox" data-panel="color">Color</button>
+        <button role="menuitemcheckbox" data-panel="props">Properties</button>
+        <button role="menuitemcheckbox" data-panel="notes">Notes</button>
+        <hr>
+        <button role="menuitem" data-act="showPanels">Show All Panels</button>
+        <button role="menuitem" data-act="hidePanels">Hide All Panels<kbd>Shift+Tab</kbd></button>
       </div>
     </div>
   </nav>
@@ -121,7 +134,7 @@
 </aside>
 
 <aside id="sidebar" aria-label="Objects">
-  <div class="side-head">Objects</div>
+  <div class="side-head side-head-obj">Objects</div>
   <div id="sidebarBody"></div>
   <div class="side-head side-head-lib">Library</div>
   <div id="libraryBody"></div>

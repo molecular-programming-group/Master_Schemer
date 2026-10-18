@@ -56,12 +56,24 @@ body {
     "topbar topbar  topbar topbar topbar" 48px
     "rail   sidebar canvas panel  notes"  1fr
     "status status  status status status" 28px
-    / 48px 200px 1fr 264px 300px;
+    / var(--rail-w, 48px) var(--side-w, 200px) 1fr var(--panel-w, 264px) var(--notes-w, 300px);
 }
 
-/* collapse the notes column when hidden (canvas reclaims the space) */
-body.notes-hidden { grid-template-columns: 48px 200px 1fr 264px 0; }
-body.notes-hidden #notesPanel { display: none; }
+/* Window menu: a hidden panel collapses its column and the canvas reclaims
+   the space. The sidebar and properties columns hold two panels each and
+   only collapse once both are hidden. */
+body.hide-tools { --rail-w: 0px; }
+body.hide-tools #toolrail,
+body.hide-objects .side-head-obj, body.hide-objects #sidebarBody,
+body.hide-library .side-head-lib, body.hide-library #libraryBody,
+body.hide-color .sec-color, body.hide-props .sec-prop,
+body.hide-notes #notesPanel { display: none; }
+body.hide-objects .side-head-lib { border-top: none; margin-top: 0; }
+body.hide-objects.hide-library { --side-w: 0px; }
+body.hide-objects.hide-library #sidebar,
+body.hide-color.hide-props #panel { display: none; }
+body.hide-color.hide-props { --panel-w: 0px; }
+body.hide-notes { --notes-w: 0px; }
 
 button { font: inherit; color: inherit; }
 
