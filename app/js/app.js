@@ -37,6 +37,7 @@ function refresh() {
     if (slotModal) renderSlotModal(); // popup lives outside the panel; keep it live too
   }
   $('undoBtn').disabled = !state.history.length;
+  updateCtrlbar();
   $('redoBtn').disabled = !state.future.length;
   $('zoomLabel').textContent = `${Math.round(state.view.s * 100)}%`;
   syncNoteRefs(); // a renamed object updates its live chips in the notes
@@ -260,6 +261,40 @@ function alignSelection(mode) {
     shiftEl(el, dx, dy);
   }
   changed();
+}
+
+// Space the selection evenly along an axis: the outermost two stay put and the
+// gaps between neighbouring bounding boxes become equal.
+function distributeSelection(axis) { // 'h' | 'v'
+  const els = selectedElements();
+  if (els.length < 3) return;
+  const [lo, hi] = axis === 'h' ? [0, 2] : [1, 3];
+  const items = els.map(el => ({ el, b: elementBBox(el) }))
+    .sort((p, q) => (p.b[lo] + p.b[hi]) - (q.b[lo] + q.b[hi]));
+  const span = items.at(-1).b[hi] - items[0].b[lo];
+  const gap = (span - items.reduce((s, { b }) => s + b[hi] - b[lo], 0)) / (items.length - 1);
+  beginChange();
+  let at = items[0].b[hi] + gap;
+  for (const { el, b } of items.slice(1, -1)) {
+    let d = at - b[lo];
+    if (el.type === 'path') d = snapHalf(d); // same lattice rule as alignSelection
+    if (axis === 'h') shiftEl(el, d, 0); else shiftEl(el, 0, d);
+    at += b[hi] - b[lo] + gap;
+  }
+  changed();
+}
+
+$('ctrlbar').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.xf) transformSelection(b.dataset.xf);
+  else if (b.dataset.align) alignSelection(b.dataset.align);
+  else if (b.dataset.dist) distributeSelection(b.dataset.dist);
+});
+function updateCtrlbar() {
+  const n = selectedElements().length;
+  for (const b of $('ctrlbar').querySelectorAll('button'))
+    b.disabled = n < (b.dataset.dist ? 3 : b.dataset.align ? 2 : 1);
 }
 
 // ---- groups (hierarchical: a group can contain groups) ----
@@ -1198,7 +1233,7 @@ function paintSwatch(b, slot) {
 
 function paletteSection() {
   const sec = document.createElement('div');
-  sec.className = 'panel-section';
+  sec.className = 'panel-section sec-color';
   sec.appendChild(sectionTitle('Color'));
 
   // fixed swatches + free color picker
@@ -1684,7 +1719,7 @@ function renderPanel() {
   panel.appendChild(paletteSection());
 
   const styleSec = document.createElement('div');
-  styleSec.className = 'panel-section';
+  styleSec.className = 'panel-section sec-prop';
   let styled = false;
   if (!single || single.el.width !== undefined) {
     styleSec.appendChild(fieldRow('Width', widthControl(
@@ -1735,7 +1770,7 @@ function renderPanel() {
   }
 
   const sec = document.createElement('div');
-  sec.className = 'panel-section';
+  sec.className = 'panel-section sec-prop';
 
   if (n === 0) {
     sec.appendChild(sectionTitle('Canvas'));
@@ -1923,7 +1958,7 @@ function renderPanel() {
   }
   panel.appendChild(sec);
 
-  // arrange: z-order, transforms, alignment
+  // arrange: z-order (transforms and alignment live in the toolbar)
   if (n && state.selection.some(s => s.seg === undefined)) {
     const arr = document.createElement('div');
     arr.className = 'panel-section';
@@ -1937,28 +1972,6 @@ function renderPanel() {
       smallButton('Back', () => reorder('back')),
     );
     arr.appendChild(zRow);
-    const tRow = document.createElement('div');
-    tRow.className = 'btn-row';
-    tRow.append(
-      smallButton('⟲ 90°', () => transformSelection('ccw'), 'Rotate counter-clockwise'),
-      smallButton('⟳ 90°', () => transformSelection('cw'), 'Rotate clockwise'),
-      smallButton('Flip H', () => transformSelection('h'), 'Mirror left-right'),
-      smallButton('Flip V', () => transformSelection('v'), 'Mirror top-bottom'),
-    );
-    arr.appendChild(tRow);
-    if (selectedElements().length >= 2) {
-      const aRow = document.createElement('div');
-      aRow.className = 'btn-row';
-      aRow.append(
-        smallButton('⇤ Left', () => alignSelection('left')),
-        smallButton('⇹ Center', () => alignSelection('hcenter')),
-        smallButton('⇥ Right', () => alignSelection('right')),
-        smallButton('⤒ Top', () => alignSelection('top')),
-        smallButton('⇳ Middle', () => alignSelection('vcenter')),
-        smallButton('⤓ Bottom', () => alignSelection('bottom')),
-      );
-      arr.appendChild(aRow);
-    }
     panel.appendChild(arr);
   }
 }
@@ -2281,7 +2294,10 @@ $('redoBtn').addEventListener('click', redo);
 // Menu bar: click a title to open; while one is open, hovering another title
 // switches to it. Items either carry the action's own id, proxy a click to an
 // existing control (data-click), or name an action (data-act).
-const MENU_ACTS = { recent: () => showRecent(), delete: deleteSelection, selectAll, group: groupSelection, ungroup: ungroupSelection };
+const MENU_ACTS = {
+  recent: () => showRecent(), delete: deleteSelection, selectAll, group: groupSelection, ungroup: ungroupSelection,
+  showPanels: () => setHiddenPanels([]), hidePanels: () => setHiddenPanels(PANELS),
+};
 const menubar = $('menubar');
 let openMenu = null;
 function setMenu(m) {
@@ -2297,6 +2313,8 @@ function setMenu(m) {
     it.disabled = target.disabled;
     if (it.getAttribute('role') === 'menuitemcheckbox') it.setAttribute('aria-checked', target.getAttribute('aria-pressed'));
   }
+  for (const it of m.querySelectorAll('[data-panel]'))
+    it.setAttribute('aria-checked', String(!hiddenPanels.includes(it.dataset.panel)));
 }
 menubar.addEventListener('click', e => {
   const title = e.target.closest('.menu-title');
@@ -2306,6 +2324,7 @@ menubar.addEventListener('click', e => {
   setMenu(null);
   if (item.dataset.click) $(item.dataset.click).click();
   else if (item.dataset.act) MENU_ACTS[item.dataset.act]();
+  else if (item.dataset.panel) togglePanel(item.dataset.panel);
 });
 menubar.addEventListener('pointerover', e => {
   const title = e.target.closest('.menu-title');
@@ -2500,24 +2519,64 @@ function addSelectionToNotes(x, y) {
   else for (const el of els) insertChipAtPoint(x, y, 'el', el.id);
 }
 
-// ---- notes panel visibility (a UI pref, kept in localStorage not the file) ----
+// ---- panel visibility (Window menu; a UI pref, kept in localStorage not the file) ----
 
-const NOTES_HIDDEN_KEY = 'master-schemer-notes-hidden';
-function setNotesHidden(hidden) {
-  document.body.classList.toggle('notes-hidden', hidden);
-  $('notesToggle').setAttribute('aria-pressed', String(!hidden));
-  try { localStorage.setItem(NOTES_HIDDEN_KEY, hidden ? '1' : ''); } catch { /* full */ }
+const PANELS = ['toolbar', 'tools', 'objects', 'library', 'color', 'props', 'notes'];
+const PANELS_HIDDEN_KEY = 'master-schemer-hidden-panels';
+let hiddenPanels = [];
+function setHiddenPanels(list) {
+  hiddenPanels = PANELS.filter(p => list.includes(p));
+  for (const p of PANELS) document.body.classList.toggle(`hide-${p}`, hiddenPanels.includes(p));
+  $('notesToggle').setAttribute('aria-pressed', String(!hiddenPanels.includes('notes')));
+  try { localStorage.setItem(PANELS_HIDDEN_KEY, JSON.stringify(hiddenPanels)); } catch { /* full */ }
   render(); // canvas width changed → refit the grid rect on the next frame
 }
-$('notesHide').addEventListener('click', () => setNotesHidden(true));
-$('notesToggle').addEventListener('click', () =>
-  setNotesHidden(!document.body.classList.contains('notes-hidden')));
+function togglePanel(p) {
+  setHiddenPanels(hiddenPanels.includes(p) ? hiddenPanels.filter(q => q !== p) : [...hiddenPanels, p]);
+}
+$('notesHide').addEventListener('click', () => setHiddenPanels([...hiddenPanels, 'notes']));
+$('notesToggle').addEventListener('click', () => togglePanel('notes'));
+// Shift+Tab: hide every panel for a clean canvas, press again to restore the layout
+let layoutBeforeHide = [];
+window.addEventListener('keydown', e => {
+  if (e.key !== 'Tab' || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+  // only from the canvas/body, so Shift+Tab still steps focus back through the UI
+  if (e.target !== document.body && !$('canvasWrap').contains(e.target)) return;
+  e.preventDefault();
+  if (hiddenPanels.length === PANELS.length) setHiddenPanels(layoutBeforeHide);
+  else { layoutBeforeHide = hiddenPanels; setHiddenPanels(PANELS); }
+});
+
+// ---- appearance (a UI pref, like the notes panel) ----
+// Unset follows the OS; once toggled, the choice sticks.
+
+const THEME_KEY = 'master-schemer-theme';
+function setTheme(dark, remember) {
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  $('themeToggle').setAttribute('aria-pressed', String(dark));
+  if (remember) try { localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light'); } catch { /* full */ }
+}
+$('themeToggle').addEventListener('click', () =>
+  setTheme(document.documentElement.dataset.theme !== 'dark', true));
+{
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch { /* blocked */ }
+  setTheme(saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches, false);
+}
 
 // ---- boot ----
 
 // Start every session on a fresh blank canvas (autosave still writes, so a
 // future "recover last" could read it, but we no longer reopen it on launch).
-try { setNotesHidden(localStorage.getItem(NOTES_HIDDEN_KEY) === '1'); } catch { /* default: shown */ }
+{
+  let saved = [];
+  try {
+    saved = JSON.parse(localStorage.getItem(PANELS_HIDDEN_KEY) || 'null')
+      // ponytail: one-time carry-over of the old notes-only pref; drop after a release or two
+      ?? (localStorage.getItem('master-schemer-notes-hidden') === '1' ? ['notes'] : []);
+  } catch { /* default: all shown */ }
+  setHiddenPanels(saved);
+}
 renderNotes();
 setTool('select');
 refresh();
