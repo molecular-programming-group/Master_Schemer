@@ -292,18 +292,46 @@ export function rectEdgePoint(cx, cy, w, h, tx, ty) {
 export const defaultBases = (A, B) =>
   Math.max(1, Math.round(Math.min(polylineLength(A), polylineLength(B)) / 6));
 
-// n rungs: base i sits at the centre of the i-th of n equal slices of each
-// strand. B is read in whichever direction gives the shorter rungs, so
-// antiparallel strands (drawn running opposite ways) pair end to end correctly.
-export function basePairRungs(A, B, n) {
-  const at = (P, len, i) => pointAt(P, (i + 0.5) / n * len);
+// n rungs, each [pA, pB, tA, tB] (the two points and their arc lengths along A
+// and B); out.rev = B read back to front (rung i is B's base n-1-i).
+// 'spread': base i sits at the centre of the i-th of n equal slices of each
+// strand, B read in whichever direction gives the shorter rungs, so antiparallel
+// strands (drawn running opposite ways) pair end to end correctly.
+// 'straight': the bases sit evenly along the shorter strand and each pairs with
+// the nearest point of the longer, so rungs stay square where one strand runs on
+// past the other (an arrow tail, a partial domain).
+// Unset (auto): straight when the strands differ in length, lie side by side
+// (every rung lands inside the longer one, all about as long), else spread.
+export function basePairRungs(A, B, n, align) {
   const la = polylineLength(A), lb = polylineLength(B);
+  if (align !== 'spread' && (align === 'straight' || Math.abs(la - lb) > 1)) {
+    const out = straightRungs(A, B, la, lb, n);
+    if (align === 'straight' || out.fits) return out;
+  }
+  const at = (P, len, i) => (i + 0.5) / n * len;
   const pa = [], pb = [];
   for (let i = 0; i < n; i++) { pa.push(at(A, la, i)); pb.push(at(B, lb, i)); }
-  const total = q => pa.reduce((s, p, i) => s + Math.hypot(p[0] - q[i][0], p[1] - q[i][1]), 0);
+  const total = q => pa.reduce((s, t, i) => s + dist(pointAt(A, t), pointAt(B, q[i])), 0);
   const rb = [...pb].reverse();
   const qb = total(rb) < total(pb) ? rb : pb;
-  const out = pa.map((p, i) => [p, qb[i]]);
-  out.rev = qb === rb; // B read back to front: rung i is B's base n-1-i
+  const out = pa.map((t, i) => [pointAt(A, t), pointAt(B, qb[i]), t, qb[i]]);
+  out.rev = qb === rb;
   return out;
+}
+
+function straightRungs(A, B, la, lb, n) {
+  const flip = lb < la; // place on the shorter strand, project onto the longer
+  const [S, Lg, ls, ll] = flip ? [B, A, lb, la] : [A, B, la, lb];
+  let rungs = Array.from({ length: n }, (_, i) => {
+    const t = (i + 0.5) / n * ls, p = pointAt(S, t), q = nearestOnPath(Lg, p).t;
+    return flip ? [pointAt(Lg, q), p, q, t] : [p, pointAt(Lg, q), t, q];
+  });
+  const k = flip ? 2 : 3; // the longer strand's arc length
+  const rev = n > 1 && rungs[n - 1][k] < rungs[0][k];
+  if (flip && rev) rungs = rungs.reverse(); // rungs run in A's order
+  const lens = rungs.map(([p, q]) => dist(p, q));
+  rungs.fits = rungs.every(r => r[k] > 0.01 && r[k] < ll - 0.01) &&
+    Math.max(...lens) - Math.min(...lens) <= Math.max(2, 0.2 * Math.max(...lens));
+  rungs.rev = rev;
+  return rungs;
 }

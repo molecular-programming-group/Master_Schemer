@@ -246,7 +246,7 @@ function moveExtend(wp) {
   clearPreview();
   svgEl('polyline', {
     points: ptsAttr(pts), fill: 'none', stroke: resolveColor(drag.el.color),
-    'stroke-width': drag.el.width || 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+    'stroke-width': drag.el.width ?? 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
   }, preview());
   baseCount(pts, polylineLength(drag.el.pts));
 }
@@ -646,7 +646,7 @@ export const tools = {
       const sp = subPath(drag.el.pts, Math.min(drag.t0, drag.t1), Math.max(drag.t0, drag.t1));
       svgEl('polyline', {
         points: ptsAttr(sp), fill: 'none', stroke: resolveColor(state.color),
-        'stroke-width': (drag.el.width || 2) + 2.5, opacity: 0.85,
+        'stroke-width': (drag.el.width ?? 2) + 2.5, opacity: 0.85,
         'stroke-linejoin': 'round', 'stroke-linecap': 'round',
       }, preview());
     },

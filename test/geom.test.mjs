@@ -194,3 +194,21 @@ test('basePairRungs: flags B read back to front for antiparallel strands', async
   assert.equal(basePairRungs(A, [[100, 10], [0, 10]], 4).rev, true);
   assert.equal(basePairRungs(A, [[0, 10], [100, 10]], 4).rev, false);
 });
+
+test('basePairRungs: straight rungs when one strand runs on past the other', () => {
+  const A = [[0, 0], [100, 0]], B = [[40, 10], [0, 10]]; // B pairs the first 40 of A, antiparallel
+  const r = basePairRungs(A, B, 4);
+  for (const [p, q] of r) assert.equal(p[0], q[0]); // square, not splayed over A's 100
+  assert.deepEqual(r.map(([p]) => p[0]), [5, 15, 25, 35]);
+  assert.equal(r.rev, true);
+  assert.deepEqual(r.map(x => x[3]), [35, 25, 15, 5]); // B's arc lengths, in A's order
+  // forced spread keeps the old look; equal lengths spread as before
+  assert.deepEqual(basePairRungs(A, B, 4, 'spread').map(([p]) => p[0]), [12.5, 37.5, 62.5, 87.5]);
+  // the longer one as B, same direction
+  const s = basePairRungs([[20, 0], [60, 0]], [[0, 10], [100, 10]], 2);
+  assert.deepEqual(s.map(([p, q]) => [p[0], q[0]]), [[30, 30], [50, 50]]);
+  assert.equal(s.rev, false);
+  // not side by side (the short one overhangs the long one's end): auto spreads
+  const o = basePairRungs([[0, 0], [100, 0]], [[90, 10], [130, 10]], 2);
+  assert.deepEqual(o.map(([, q]) => q[0]), [100, 120]);
+});

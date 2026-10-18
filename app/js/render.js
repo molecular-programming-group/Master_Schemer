@@ -140,16 +140,16 @@ export function elementBBox(el) {
   switch (el.type) {
     case 'card': return [el.x, el.y, el.x + el.w, el.y + el.h];
     case 'rect': {
-      const m = (el.width || 2) + 2;
+      const m = (el.width ?? 2) + 2;
       return [el.x - m, el.y - m, el.x + el.w + m, el.y + el.h + m];
     }
     case 'path': case 'ink': case 'aline': {
       const b = bboxOfPts(el.type === 'aline' ? alinePts(el.pts) : el.pts);
-      const m = shownDNA(el) ? diam(el) * 0.75 + 4 : (el.width || 2) + 4;
+      const m = shownDNA(el) ? diam(el) * 0.75 + 4 : (el.width ?? 2) + 4 + (el.comb ? el.combLen ?? 6 : 0);
       return [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
     }
     case 'ellipse': {
-      const m = (el.width || 2) + 2;
+      const m = (el.width ?? 2) + 2;
       return [el.cx - el.rx - m, el.cy - el.ry - m, el.cx + el.rx + m, el.cy + el.ry + m];
     }
     case 'text': {
@@ -258,10 +258,10 @@ function strokeAttrs(el) {
   // dotted strokes need round caps or the dots vanish
   const cap = el.dash === 'dotted' ? 'round' : (el.linecap || 'round');
   const attrs = {
-    fill: 'none', stroke: resolveColor(el.color), 'stroke-width': el.width || 2,
+    fill: 'none', stroke: resolveColor(el.color), 'stroke-width': el.width ?? 2,
     'stroke-linejoin': cap === 'round' ? 'round' : 'miter', 'stroke-linecap': cap,
   };
-  const da = dashArray(el.dash, el.width || 2);
+  const da = dashArray(el.dash, el.width ?? 2);
   if (da) attrs['stroke-dasharray'] = da;
   return attrs;
 }
@@ -460,7 +460,7 @@ function renderPath(el) {
   const g = svgEl('g', { 'data-id': el.id });
   const divs = [], measures = [];
   const pts = ptsAttr(el.pts);
-  const w = el.width || 2;
+  const w = el.width ?? 2;
   const color = resolveColor(el.color);
   const dna = shownDNA(el), seq = seqStrand(el), plain = !dna && !seq;
   const hitW = dna ? Math.max(12, diam(el)) : Math.max(12, w + 8);
@@ -476,7 +476,10 @@ function renderPath(el) {
   }
   const under = dna ? drawDNAStrand(g, el) : null;
   if (seq) drawSeqStrand(g, el);
-  if (plain) svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color) }, g);
+  // a segment thinner than its strand would show the strand as an outline round it
+  const thin = plain ? (el.segments || []).filter(sg => segWidth(sg, w) < w) : [];
+  if (plain) svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color),
+    ...(thin.length ? { mask: underMask(g, el, thin, w) } : {}) }, g);
   const len = polylineLength(el.pts);
   const labelOff = dna ? diam(el) / 2 + 9 : 16;
   (el.segments || []).forEach((seg, i) => {
@@ -507,6 +510,7 @@ function renderPath(el) {
       svgEl('line', { x1: x - nx, y1: y - ny, x2: x + nx, y2: y + ny, stroke: '#8f8f8f', 'stroke-width': Math.max(1, w * 0.45) }, g);
     }
   }
+  if (plain && el.comb) drawComb(g, el, w, len);
   // a cap at an endpoint covered by a segment takes that segment's width (so it
   // aligns with the thicker segment edge, no tip discontinuity) AND its paint —
   // an end-reaching coloured or patterned segment carries into its arrowhead/harpoon
@@ -528,6 +532,68 @@ function renderPath(el) {
   drawLabel(g, divs, measures, el, labelPos(el.pts, len / 2, dna ? labelOff - 2 : 14, -1),
     { size: 12.5, color, id: el.id, follow: el.labelsFollow && el.pts });
   return { node: g, divs, measures, under };
+}
+
+// A mask hiding a strand's line under the segments thinner than it. Past a
+// strand end it runs on a little, so the line's own end cap goes too.
+function underMask(g, el, segs, w) {
+  const id = `under-${el.id}`, b = bboxOfPts(el.pts), m = 2 * w + 20, L = polylineLength(el.pts);
+  const box = { x: b[0] - m, y: b[1] - m, width: b[2] - b[0] + 2 * m, height: b[3] - b[1] + 2 * m };
+  const mask = svgEl('mask', { id, maskUnits: 'userSpaceOnUse', ...box }, g);
+  svgEl('rect', { ...box, fill: '#fff' }, mask);
+  for (const sg of segs) {
+    const sp = subPath(el.pts, sg.t0, sg.t1);
+    const past = (end, q) => { const d = endDir(el.pts, end); return [q[0] + d[0] * w, q[1] + d[1] * w]; };
+    if (sg.t0 <= 0.5) sp.unshift(past(0, sp[0]));
+    if (sg.t1 >= L - 0.5) sp.push(past(1, sp[sp.length - 1]));
+    svgEl('path', { d: roundedPathD(sp, el.corner || 0), fill: 'none', stroke: '#000', 'stroke-width': w + 1,
+      'stroke-linecap': 'butt', 'stroke-linejoin': 'round' }, mask);
+  }
+  return `url(#${id})`;
+}
+
+// Spans of a strand that base-pair links pair: [[t0, t1]…], as far as their
+// rungs reach (a straight-rung link pairs only part of the longer strand).
+// ponytail: scans every element per combed strand; index links by strand if docs get big.
+function pairedSpans(el) {
+  const out = [];
+  for (const l of state.doc.elements) {
+    const A = l.type === 'link' && l.style === 'bases' && linkStrand(l.a), B = A && linkStrand(l.b);
+    if (!B || (l.a.id !== el.id && l.b.id !== el.id)) continue;
+    const { n } = rungSeqs(l), rungs = basePairRungs(A, B, n, l.rungAlign);
+    for (const [ref, k] of [[l.a, 2], [l.b, 3]]) {
+      if (ref.id !== el.id) continue;
+      const sp = linkSpan(ref), ts = rungs.map(r => r[k]), h = n > 1 ? (Math.max(...ts) - Math.min(...ts)) / (n - 1) / 2 : (sp.t1 - sp.t0) / 2;
+      out.push([sp.t0 + Math.max(0, Math.min(...ts) - h), sp.t0 + Math.min(sp.t1 - sp.t0, Math.max(...ts) + h)]);
+    }
+  }
+  return out.sort((a, b) => a[0] - b[0]);
+}
+
+// Base ticks (a comb) along a plain strand's single-stranded stretches, el.comb
+// = 'left', 'right' or 'both' sides of its 5′→3′ run: el.combLen long, about one
+// per el.combStep (default 6, a base-pair link's default spacing), centred in
+// their stretch like rungs, in the colour of the domain under them. Stretches a
+// base-pair link pairs are skipped: they have rungs.
+function drawComb(g, el, w, L) {
+  const step = el.combStep || 6, tl = el.combLen ?? 6, sides = { left: [1], right: [-1], both: [1, -1] }[el.comb] || [1];
+  const runs = [];
+  let at = 0;
+  for (const [t0, t1] of pairedSpans(el)) { if (t0 > at) runs.push([at, t0]); at = Math.max(at, t1); }
+  if (L > at) runs.push([at, L]);
+  const ticks = svgEl('g', { 'stroke-width': Math.max(1, w * 0.6), 'stroke-linecap': 'butt' }, g);
+  for (const [r0, r1] of runs) {
+    const n = Math.round((r1 - r0) / step);
+    for (let i = 0; i < n; i++) {
+      const t = r0 + (i + 0.5) * (r1 - r0) / n;
+      const [x, y] = pointAt(el.pts, t), a = pointAt(el.pts, Math.max(0, t - 1)), b = pointAt(el.pts, Math.min(L, t + 1));
+      const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, nx = (b[1] - a[1]) / l, ny = -(b[0] - a[0]) / l; // left of the run
+      for (const s of sides) {
+        const o = s * w / 2, e = s * (w / 2 + tl);
+        svgEl('line', { x1: x + nx * o, y1: y + ny * o, x2: x + nx * e, y2: y + ny * e, stroke: strandColor(el, t) }, ticks);
+      }
+    }
+  }
 }
 
 // Freehand ink: quadratic smoothing through midpoints.
@@ -555,7 +621,7 @@ function renderInk(el) {
   const d = inkD(el.pts);
   svgEl('path', {
     d, fill: 'none', stroke: 'transparent',
-    'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
+    'stroke-width': Math.max(12, (el.width ?? 2) + 8), 'data-hit': '1',
   }, g);
   svgEl('path', { d, ...strokeAttrs(el) }, g);
   drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
@@ -587,7 +653,7 @@ function renderEllipse(el) {
   const base = { cx: el.cx, cy: el.cy, rx: el.rx, ry: el.ry };
   svgEl('ellipse', {
     ...base, fill: 'none', stroke: 'transparent',
-    'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
+    'stroke-width': Math.max(12, (el.width ?? 2) + 8), 'data-hit': '1',
   }, g);
   if (el.glow) {
     // a blurred oversized halo, then a bright-cored gradient body on top
@@ -658,7 +724,7 @@ function renderRect(el) {
   const base = { x: el.x, y: el.y, width: el.w, height: el.h, rx: el.r || 0 };
   svgEl('rect', {
     ...base, fill: 'none', stroke: 'transparent',
-    'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
+    'stroke-width': Math.max(12, (el.width ?? 2) + 8), 'data-hit': '1',
   }, g);
   svgEl('rect', { ...base, ...strokeAttrs(el), fill: fillOf(el) }, g);
   drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
@@ -685,12 +751,12 @@ function renderALine(el) {
   const color = resolveColor(el.color);
   const d = alineD(el.pts);
   svgEl('path', {
-    d, fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
+    d, fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(12, (el.width ?? 2) + 8), 'data-hit': '1',
   }, g);
   svgEl('path', { d, fill: 'none', ...strokeAttrs(el) }, g);
   // a quadratic's end tangents point at its control point, so endDir works unchanged
-  capGlyph(g, a, endDir(el.pts, 0), el.cap0, color, el.width || 2, el.cap0flip);
-  capGlyph(g, b, endDir(el.pts, 1), el.cap1, color, el.width || 2, el.cap1flip);
+  capGlyph(g, a, endDir(el.pts, 0), el.cap0, color, el.width ?? 2, el.cap0flip);
+  capGlyph(g, b, endDir(el.pts, 1), el.cap1, color, el.width ?? 2, el.cap1flip);
   drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color, id: el.id });
   return { node: g, divs, measures };
 }
@@ -766,10 +832,7 @@ export function linkTargetPoints(ref) {
   if (ref.group) return groupElementMembers(ref.group).flatMap(elOutline);
   const el = byId(ref.id);
   if (!el) return [];
-  if (ref.seg !== undefined && el.segments?.[ref.seg]) {
-    const s = el.segments[ref.seg];
-    return subPath(el.pts, s.t0, s.t1);
-  }
+  if ((ref.seg !== undefined && el.segments?.[ref.seg]) || hasRange(ref)) return linkStrand(ref) || elOutline(el);
   return elOutline(el);
 }
 
@@ -784,13 +847,21 @@ const subPathD = h => (h.length >= 3 ? ` M${h.map(p => p.join(' ')).join(' L')} 
 // null for ends (groups, shapes) that have no strand to space base pairs on.
 export { defaultBases };
 export function linkStrand(ref) {
+  const sp = linkSpan(ref);
+  if (!sp) return null;
+  return sp.whole ? sp.el.pts : subPath(sp.el.pts, sp.t0, sp.t1);
+}
+// A link end may pair only part of its domain (or line): ref.f0..ref.f1, as
+// fractions of it from its start (unset = 0..1).
+export const hasRange = ref => ref?.f0 !== undefined || ref?.f1 !== undefined;
+const narrow = (ref, t0, t1) => [t0 + (ref.f0 ?? 0) * (t1 - t0), t0 + (ref.f1 ?? 1) * (t1 - t0)];
+// The stretch of its strand a link end runs along: { el, t0, t1, whole }, or null.
+export function linkSpan(ref) {
   const el = ref && !ref.group && byId(ref.id);
   if (!el || !['path', 'aline', 'ink'].includes(el.type)) return null;
-  if (ref.seg !== undefined && el.segments?.[ref.seg]) {
-    const s = el.segments[ref.seg];
-    return subPath(el.pts, s.t0, s.t1);
-  }
-  return el.pts;
+  const s = ref.seg !== undefined && el.segments?.[ref.seg];
+  const [t0, t1] = narrow(ref, s ? s.t0 : 0, s ? s.t1 : polylineLength(el.pts));
+  return { el, t0, t1, whole: !s && !hasRange(ref) };
 }
 
 // ---- DNA strands (lines with .dna set, drawn by the DNA brush) ----
@@ -830,7 +901,8 @@ export const duplexLink = l => l.type === 'link' && l.style === 'bases' && !!dna
 export function refSeq(ref, e) {
   if (!e) return '';
   const q = ref.seg !== undefined ? seqOf(e.segments?.[ref.seg]?.string) : lineSeq(e) || seqLetters(e.seq);
-  return q.replace(/U/g, 'T');
+  const [i, j] = narrow(ref, 0, q.length).map(Math.round);
+  return q.slice(i, j).replace(/U/g, 'T');
 }
 function lineSeq(e) {
   const segs = (e.segments || []).slice().sort((a, b) => a.t0 - b.t0);
@@ -844,7 +916,7 @@ function lineSeq(e) {
 }
 const refSpan = (ref, e) => {
   const s = ref.seg !== undefined && e.segments?.[ref.seg];
-  return s ? [s.t0, s.t1] : [0, polylineLength(e.pts)];
+  return narrow(ref, ...(s ? [s.t0, s.t1] : [0, polylineLength(e.pts)]));
 };
 // The duplex's base pairs: a paired domain's sequence length, else the link's
 // own count, else the grid's count.
@@ -1016,14 +1088,15 @@ function drawDNAStrand(g, el) {
 }
 
 // A strand in sequence view: one letter per base at its place along the line,
-// turned to the line but kept upright. Letters keep their natural size on a
+// turned to the line but kept upright (on a run steeper than 60° they stand
+// unturned, stacked). Letters keep their natural size (times el.seqScale) on a
 // stretched strand and shrink on a compressed one; a strand whose sequence
 // doesn't match its drawn length says by how many bases at its 3′ end.
 // The plain line stands in when zoomed out too far to read (renderNow's data-seq).
 function drawSeqStrand(g, el) {
-  const lay = dnaLayout(el), pitch = gridPitch(dnaBpg()), L = polylineLength(el.pts);
+  const lay = dnaLayout(el), pitch = gridPitch(dnaBpg()), L = polylineLength(el.pts), k = el.seqScale || 1; // letter size
   svgEl('polyline', { class: 'seq-far', points: ptsAttr(el.pts), fill: 'none', stroke: resolveColor(el.color),
-    'stroke-width': el.width || 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, g);
+    'stroke-width': el.width ?? 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, g);
   const near = svgEl('g', { class: 'seq-near', 'font-family': 'ui-monospace, Menlo, Consolas, monospace',
     'font-weight': 600, 'text-anchor': 'middle', 'dominant-baseline': 'central' }, g);
   // the ghost trace: a faint band behind the letters, broken at every base boundary
@@ -1031,16 +1104,17 @@ function drawSeqStrand(g, el) {
   for (let i = 0; i < lay.n; i++) {
     const t0 = tAt(lay.knots, i), t1 = tAt(lay.knots, i + 1), gap = Math.min((t1 - t0) * 0.1, pitch * 0.12);
     svgEl('polyline', { points: ptsAttr(subPath(el.pts, t0 + gap, t1 - gap)), stroke: strandColor(el, (t0 + t1) / 2),
-      'stroke-width': +(Math.min(t1 - t0, pitch) * 1.3).toFixed(2) }, trace); // as tall as its letter
+      'stroke-width': +(Math.min(t1 - t0, pitch) * 1.3 * k).toFixed(2) }, trace); // as tall as its letter
   }
   for (let i = 0; i < lay.n; i++) {
     const t0 = tAt(lay.knots, i), t1 = tAt(lay.knots, i + 1), t = (t0 + t1) / 2;
     const [x, y] = pointAt(el.pts, t), a = pointAt(el.pts, t - 0.01), b = pointAt(el.pts, t + 0.01);
     let deg = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
     if (deg > 90.5 || deg <= -89.5) deg += 180; // upright: leftward and upward runs read flipped
+    if (Math.abs(deg) > 60) deg = 0; // a steep run stacks its letters upright
     const ch = seqAt(el, lay, i);
     const fill = el.dnaColor === 'sequence' && BASE_COLORS[ch.replace('U', 'T')] || strandColor(el, t);
-    svgEl('text', { x: 0, y: 0, 'font-size': +(Math.min(t1 - t0, pitch) * 1.6).toFixed(2), fill,
+    svgEl('text', { x: 0, y: 0, 'font-size': +(Math.min(t1 - t0, pitch) * 1.6 * k).toFixed(2), fill,
       transform: `translate(${+x.toFixed(2)} ${+y.toFixed(2)}) rotate(${+deg.toFixed(1)})` }, near)
       .textContent = ch || '·';
   }
@@ -1116,27 +1190,37 @@ function renderLink(el) {
     if (duplexLink(el)) return { node: g, under: drawDuplex(g, el) };
     const color = resolveColor(el.fill) || '#2b2622';
     const { n, sa, sb } = rungSeqs(el);
-    const rungs = basePairRungs(A, B, n);
+    const rungs = basePairRungs(A, B, n, el.rungAlign);
     // by sequence: each half of a rung is its strand's base (or the partner's
-    // complement); bases known on neither side keep the link's colour
-    const byseq = el.rungColor === 'sequence';
+    // complement); bases known on neither side keep the link's colour.
+    // by strands: each half takes the colour of the strand (domain) it meets.
+    const byseq = el.rungColor === 'sequence', bystrand = el.rungColor === 'strands';
+    const spA = linkSpan(el.a), spB = linkSpan(el.b);
     const half = (mine, other) => BASE_COLORS[mine || COMPLEMENT[other]] || color;
-    rungs.forEach(([p, q], i) => {
+    // a strand drawn as letters keeps its rungs clear of them
+    const clear = sp => (seqStrand(sp.el) ? gridPitch(dnaBpg()) * 0.8 * (sp.el.seqScale || 1) : 0);
+    const clearA = clear(spA), clearB = clear(spB);
+    rungs.forEach(([p, q, ta, tb], i) => {
       const x = sa[i], y = sb[rungs.rev ? n - 1 - i : i];
-      const ca = byseq ? half(x, y) : color, cb = byseq ? half(y, x) : color;
+      const ca = byseq ? half(x, y) : bystrand ? strandColor(spA.el, spA.t0 + ta) : color;
+      const cb = byseq ? half(y, x) : bystrand ? strandColor(spB.el, spB.t0 + tb) : color;
       if (el.rung === 'dot') { // one dot midway: a base pair in dotted duplex notation
         svgEl('circle', { cx: (p[0] + q[0]) / 2, cy: (p[1] + q[1]) / 2, r: el.rungSize || 1.6, fill: ca }, g);
         return;
       }
       // 'tick': alignment-style dash, a quarter of the gap clear of each strand
       const k = el.rung === 'tick' ? 0.25 : 0;
+      const len = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
+      const k0 = Math.max(k, clearA / len), k1 = Math.min(1 - k, 1 - clearB / len);
+      if (k0 >= k1) return;
       const at = f => [p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f];
       const seg = (f0, f1, stroke) => {
         const [x1, y1] = at(f0), [x2, y2] = at(f1);
-        svgEl('line', { x1, y1, x2, y2, stroke, 'stroke-width': 1.5, 'stroke-linecap': 'butt' }, g);
+        svgEl('line', { x1, y1, x2, y2, stroke, 'stroke-width': el.rungWidth ?? 1.5, 'stroke-linecap': 'butt' }, g);
       };
-      if (ca === cb) seg(k, 1 - k, ca);
-      else { seg(k, 0.5, ca); seg(0.5, 1 - k, cb); }
+      const m = Math.min(k1, Math.max(k0, 0.5));
+      if (ca === cb) seg(k0, k1, ca);
+      else { seg(k0, m, ca); seg(m, k1, cb); }
     });
     return { node: g };
   }
@@ -1186,9 +1270,15 @@ function elKey(el, salt) {
   if (el.type === 'link') key += '|' + ptsAttr([...linkTargetPoints(el.a), ...linkTargetPoints(el.b)]);
   // base-pair rungs also count and colour by the strands' sequences
   if (el.type === 'link' && el.style === 'bases') key += `|${refSeq(el.a, byId(el.a.id))}|${refSeq(el.b, byId(el.b.id))}`;
+  // …and may take the strands' colours, and keep clear of their letters
+  if (el.type === 'link' && el.style === 'bases') {
+    const ends = [byId(el.a.id), byId(el.b.id)];
+    if (el.rungColor === 'strands' || ends.some(e => e && seqStrand(e))) key += JSON.stringify(ends) + dnaBpg();
+  }
   // DNA strands and duplexes depend on each other (shape, counts, colours) and the DNA grid
   if (shownDNA(el) || (el.type === 'link' && duplexLink(el))) key += dnaKey(el);
   if (seqStrand(el)) key += '|seq' + dnaBpg();
+  if (el.comb && lookOf(el) === 'line') key += JSON.stringify(pairedSpans(el));
   if (MOLS[el.mol]) key += molThreaded(el, MOLS[el.mol]);
   return key;
 }
@@ -1246,7 +1336,7 @@ function renderSelection(overlay) {
       if (!seg) continue;
       svgEl('polyline', {
         points: ptsAttr(subPath(el.pts, seg.t0, seg.t1)), fill: 'none',
-        stroke: SEL, 'stroke-width': segWidth(seg, el.width || 2) + 9 / s, opacity: 0.35,
+        stroke: SEL, 'stroke-width': segWidth(seg, el.width ?? 2) + 9 / s, opacity: 0.35,
         'stroke-linecap': 'round', 'stroke-linejoin': 'round',
       }, overlay);
       // draggable segment boundaries
@@ -1270,7 +1360,7 @@ function renderSelection(overlay) {
     }
     if (el.type === 'path' || el.type === 'ink') {
       const attrs = {
-        fill: 'none', stroke: SEL, 'stroke-width': (el.width || 2) + 10 / s,
+        fill: 'none', stroke: SEL, 'stroke-width': (el.width ?? 2) + 10 / s,
         opacity: 0.3, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
       };
       if (el.type === 'ink') svgEl('path', { d: inkD(el.pts), ...attrs }, overlay);
@@ -1417,11 +1507,18 @@ export function renderNow(cull = true) {
   };
   const selected = id => state.selection.some(sel => sel.id === id);
 
-  // cards sit below everything; all other elements paint in doc order (z-order)
+  // cards sit below everything; all other elements paint in doc order (z-order),
+  // except that a link paints just beneath the lower of its two ends when it comes
+  // after them: the strands still cover its rung ends, but a shape behind them no
+  // longer hides it. Sent further back (Object menu), it stays there.
   const salt = JSON.stringify(state.doc.palette) + JSON.stringify(state.doc.labelSlots || []);
-  const cardNodes = [], backNodes = [], underNodes = [], linkNodes = [], drawNodes = [], divs = [], measures = [];
+  const cardNodes = [], backNodes = [], underNodes = [], drawNodes = [], divs = [], measures = [];
   const seen = new Set();
-  for (const el of state.doc.elements) {
+  const order = new Map(state.doc.elements.map((el, i) => [el.id, i]));
+  const endZ = ref => (ref?.group ? Math.min(...groupElementMembers(ref.group).map(m => order.get(m.id)))
+    : order.get(ref?.id) ?? Infinity);
+  const zOf = (el, i) => (el.type === 'link' ? Math.min(i, endZ(el.a), endZ(el.b)) - 0.5 : i);
+  for (const [i, el] of state.doc.elements.entries()) {
     const renderer = RENDERERS[el.type];
     if (!renderer) continue;
     seen.add(el.id); // keep every live element's cache entry; only cull from the DOM
@@ -1436,8 +1533,8 @@ export function renderNow(cull = true) {
       if (entry.measure) measures.push(entry.measure);
       if (entry.measures) measures.push(...entry.measures);
     }
-    const bucket = el.type === 'card' ? cardNodes : el.type === 'link' ? linkNodes : drawNodes;
-    bucket.push(entry.node);
+    if (el.type === 'card') cardNodes.push(entry.node);
+    else drawNodes.push({ z: zOf(el, i), node: entry.node });
     if (entry.back) backNodes.push(entry.back); // threaded proteins' far side, beneath all DNA
     if (entry.under) underNodes.push(entry.under); // molecule outlines, beneath every molecule
     if (entry.divs) divs.push(...entry.divs);
@@ -1448,8 +1545,7 @@ export function renderNow(cull = true) {
   $('layer-cards').replaceChildren(...cardNodes);
   $('layer-back').replaceChildren(...backNodes);
   $('layer-under').replaceChildren(...underNodes);
-  $('layer-links').replaceChildren(...linkNodes);
-  $('layer-draw').replaceChildren(...drawNodes);
+  $('layer-draw').replaceChildren(...drawNodes.sort((a, b) => a.z - b.z).map(d => d.node));
   mathLayer.replaceChildren(...divs);
   for (const m of measures) m(); // rich text sizes its hit rect post-layout
   renderDataBoxes(dataLayer);
@@ -1579,7 +1675,7 @@ export async function exportSVGString({ plain = false, only = null, grid = false
   if (!transparent) svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: state.doc.bg || '#ffffff' }, out);
   out.appendChild(document.querySelector('#canvas defs').cloneNode(true));
   if (grid) svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: 'url(#gridDots)' }, out);
-  for (const id of ['layer-cards', 'layer-back', 'layer-under', 'layer-links', 'layer-draw']) {
+  for (const id of ['layer-cards', 'layer-back', 'layer-under', 'layer-draw']) {
     out.appendChild($(id).cloneNode(true));
   }
   for (const el of plain ? [] : state.doc.elements) {
