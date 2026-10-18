@@ -1066,6 +1066,7 @@ function colorTargets() {
     const el = byId(s.id);
     if (!el) continue;
     if (s.seg !== undefined) { const seg = el.segments?.[s.seg]; if (seg) out.push(seg); }
+    else if (duplexLink(el)) out.push(...new Set([backbone(el.a), backbone(el.b)])); // a duplex wears its strands' colours
     else if (el.color !== undefined) out.push(el);
   }
   return out;
@@ -1743,6 +1744,13 @@ function labelDisplayFields(target) {
 }
 
 // ---- DNA strands ----
+
+// What a duplex backbone takes its colour from: the paired segment, or the
+// whole line when the link is to the line.
+const backbone = ref => {
+  const st = byId(ref.id);
+  return ref.seg !== undefined && st.segments?.[ref.seg] ? st.segments[ref.seg] : st;
+};
 // A DNA line's size is its diameter (world units); its bases are counted per
 // span: paired domains take the duplex's count, segments may carry their own,
 // and the rest of the strand shares el.bases (unset = natural B-DNA spacing).
@@ -2129,13 +2137,26 @@ function renderPanel() {
     }
     if (bases && duplexLink(el)) {
       sec.appendChild(duplexBasesControls(el));
+      // the duplex has no colour of its own: each backbone is its strand's paired
+      // segment (or line), hidden inside it — so edit them from here
+      const nameOf = ref => resolveLabel(backbone(ref).label || '') || resolveLabel(byId(ref.id).label || '')
+        || (ref === el.a ? 'Strand A' : 'Strand B');
+      for (const ref of [el.a, el.b]) {
+        const t = backbone(ref);
+        sec.appendChild(fieldRow(`${nameOf(ref)} backbone`, colorPicker(`bb:${el.id}:${ref === el.a ? 'a' : 'b'}`,
+          () => (/^#[0-9a-f]{6}$/i.test(resolveColor(t.color) || '') ? resolveColor(t.color) : '#8a857c'),
+          Object.assign(hex => { t.color = hex; render(); }, { begin: beginChange }), changed)));
+      }
+      const look = [byId(el.a.id), byId(el.b.id)].filter((x, i, a) => a.indexOf(x) === i);
+      sec.appendChild(sectionTitle(look.length > 1 ? 'Look (both strands)' : 'Look'));
+      sec.appendChild(dnaStyleControls(look));
       const pick = ids => () => { state.selection = ids.map(id => ({ id })); refresh(); };
       const row = document.createElement('div');
       row.className = 'btn-row';
-      const nameOf = ref => resolveLabel(byId(ref.id).label || '') || (ref === el.a ? 'Strand A' : 'Strand B');
       row.append(
         smallButton('Both strands', pick([el.a.id, el.b.id]), 'Select the two strands this duplex joins (or click the duplex again)'),
-        smallButton(nameOf(el.a), pick([el.a.id])), smallButton(nameOf(el.b), pick([el.b.id])));
+        smallButton(resolveLabel(byId(el.a.id).label || '') || 'Strand A', pick([el.a.id])),
+        smallButton(resolveLabel(byId(el.b.id).label || '') || 'Strand B', pick([el.b.id])));
       sec.appendChild(sectionTitle('Strands'));
       sec.appendChild(row);
       sec.appendChild(deleteButton());
