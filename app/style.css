@@ -518,6 +518,8 @@ body.panning #canvas { cursor: grabbing !important; }
   box-shadow: 0 0 0 2px var(--primary-soft);
 }
 .field input::placeholder, .field textarea::placeholder { color: oklch(0.60 0.015 75); }
+/* a derived value the user hasn't pinned (e.g. auto base count) */
+.field input.auto { color: var(--muted); font-style: italic; }
 
 .field input[type="range"] { accent-color: var(--primary); }
 

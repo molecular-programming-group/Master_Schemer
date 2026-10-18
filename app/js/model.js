@@ -241,6 +241,7 @@ export function cutPath(el, tc) {
   const [segsA, segsB] = splitSegments(el.segments, tc, total);
   const mk = (pts, segments) => {
     const c = JSON.parse(JSON.stringify(el)); // deep-copy so children never share refs
+    delete c.bases; // a DNA strand's free base count doesn't split meaningfully: back to auto
     return Object.assign(c, { id: newId(), pts, segments });
   };
   const a = mk(subPath(el.pts, 0, tc), segsA);

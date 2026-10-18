@@ -6,6 +6,7 @@ import {
   GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint, basePairRungs, defaultBases,
   convexHull, ellipsePoints, roundedPathD,
 } from './geom.js';
+import { drawBrush, brushPath, strandLayout, midline, naturalBases, uAt } from './dna.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 export const SEL = '#b57f1d'; // honey selection accent (matches --primary)
@@ -74,7 +75,7 @@ export function elementBBox(el) {
       return [el.x - m, el.y - m, el.x + el.w + m, el.y + el.h + m];
     }
     case 'path': case 'ink': case 'aline': {
-      const b = bboxOfPts(el.pts), m = (el.width || 2) + 4;
+      const b = bboxOfPts(el.pts), m = el.dna ? el.dna * 0.75 + 4 : (el.width || 2) + 4;
       return [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
     }
     case 'ellipse': {
@@ -356,27 +357,28 @@ function renderPath(el) {
   const pts = ptsAttr(el.pts);
   const w = el.width || 2;
   const color = resolveColor(el.color);
+  const hitW = el.dna ? Math.max(12, el.dna) : Math.max(12, w + 8);
   svgEl('polyline', {
-    points: pts, fill: 'none', stroke: 'transparent',
-    'stroke-width': Math.max(12, w + 8), 'data-hit': '1',
+    points: pts, fill: 'none', stroke: 'transparent', 'stroke-width': hitW, 'data-hit': '1',
   }, g);
-  svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color) }, g);
+  if (el.dna) drawDNAStrand(g, el);
+  else svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color) }, g);
   const len = polylineLength(el.pts);
+  const labelOff = el.dna ? el.dna / 2 + 9 : 16;
   (el.segments || []).forEach((seg, i) => {
     const sp = subPath(el.pts, seg.t0, seg.t1);
     const sa = ptsAttr(sp);
     const segColor = resolveColor(seg.color);
     const scap = seg.linecap || 'round';
     svgEl('polyline', {
-      points: sa, fill: 'none', stroke: 'transparent',
-      'stroke-width': Math.max(12, w + 8), 'data-hit': '1', 'data-seg': i,
+      points: sa, fill: 'none', stroke: 'transparent', 'stroke-width': hitW, 'data-hit': '1', 'data-seg': i,
     }, g);
-    svgEl('path', {
+    if (!el.dna) svgEl('path', {
       d: roundedPathD(sp, el.corner || 0), fill: 'none', stroke: paintOf(seg, segColor),
       'stroke-width': segWidth(seg, w),
       'stroke-linejoin': scap === 'round' ? 'round' : 'miter', 'stroke-linecap': scap, 'data-seg': i,
     }, g);
-    drawLabel(g, divs, measures, seg, labelPos(el.pts, (seg.t0 + seg.t1) / 2, 16, 1),
+    drawLabel(g, divs, measures, seg, labelPos(el.pts, (seg.t0 + seg.t1) / 2, labelOff, 1),
       { size: 12, color: segColor, id: el.id, segi: i });
   });
   // a cap at an endpoint covered by a segment takes that segment's width (so it
@@ -389,9 +391,11 @@ function renderPath(el) {
       : { w, paint: color };
   };
   const c0 = capStyle(0), c1 = capStyle(1);
-  capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, c0.paint, c0.w, el.cap0flip);
-  capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, c1.paint, c1.w, el.cap1flip);
-  drawLabel(g, divs, measures, el, labelPos(el.pts, len / 2, 14, -1),
+  if (!el.dna) { // a DNA strand ends in its own molecular caps
+    capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, c0.paint, c0.w, el.cap0flip);
+    capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, c1.paint, c1.w, el.cap1flip);
+  }
+  drawLabel(g, divs, measures, el, labelPos(el.pts, len / 2, el.dna ? labelOff - 2 : 14, -1),
     { size: 12.5, color, id: el.id });
   return { node: g, divs, measures };
 }
@@ -588,6 +592,103 @@ export function linkStrand(ref) {
   return el.pts;
 }
 
+// ---- DNA strands (lines with .dna = diameter, drawn by the DNA brush) ----
+
+const dnaEnd = ref => {
+  const e = ref && !ref.group && byId(ref.id);
+  return e?.type === 'path' && e.dna ? e : null;
+};
+// A base-pair link between two DNA strands draws as one double helix.
+export const duplexLink = l => l.type === 'link' && l.style === 'bases' && !!dnaEnd(l.a) && !!dnaEnd(l.b);
+const refSpan = (ref, e) => {
+  const s = ref.seg !== undefined && e.segments?.[ref.seg];
+  return s ? [s.t0, s.t1] : [0, polylineLength(e.pts)];
+};
+// The duplex's base pairs: the link's own count, else natural spacing.
+export function duplexBases(l) {
+  if (l.bases) return l.bases;
+  const A = dnaEnd(l.a), B = dnaEnd(l.b);
+  const [a0, a1] = refSpan(l.a, A), [b0, b1] = refSpan(l.b, B);
+  return naturalBases(Math.min(a1 - a0, b1 - b0), (A.dna + B.dna) / 2);
+}
+// Spans of a strand with a fixed base count: paired domains (from duplex links,
+// listed first so they win over a segment's own count) and counted segments.
+// ponytail: scans every element per DNA strand; index links by strand if docs get big.
+function dnaFixed(el) {
+  const fixed = [];
+  for (const l of state.doc.elements) {
+    if (!duplexLink(l)) continue;
+    for (const ref of [l.a, l.b]) {
+      if (ref.id !== el.id) continue;
+      const [t0, t1] = refSpan(ref, el);
+      fixed.push({ t0, t1, count: duplexBases(l), paired: true });
+    }
+  }
+  for (const s of el.segments || []) if (s.bases) fixed.push({ t0: s.t0, t1: s.t1, count: s.bases });
+  return fixed;
+}
+export const dnaLayout = el => strandLayout(polylineLength(el.pts), el.dna, dnaFixed(el), el.bases);
+
+const strandColor = (e, t) =>
+  resolveColor((e.segments || []).find(s => t >= s.t0 && t <= s.t1)?.color ?? e.color);
+const fillet = D => D * 1.5; // tightest turn a strand takes without its texture visibly smearing
+
+// Each single-stranded run between duplexes is its own capped stroke: where a
+// strand leaves a duplex it gets a rounded end, not a flat cut.
+function drawDNAStrand(g, el) {
+  const D = el.dna, L = polylineLength(el.pts);
+  const lay = dnaLayout(el);
+  const path = brushPath(el.pts, Math.max(el.corner || 0, fillet(D)));
+  const runs = [];
+  let at = 0;
+  for (const [a, b] of lay.skips) { if (a - at >= 0.5) runs.push([at, a]); at = b; }
+  if (L - at >= 0.5) runs.push([at, L]);
+  for (const [t0, t1] of runs) {
+    const u0 = uAt(lay.knots, t0), n = Math.round(uAt(lay.knots, t1) - u0);
+    const sub = path.filter(v => v.t > t0 && v.t < t1);
+    const ends = [t0, t1].map(t => ({ p: pointAt(el.pts, t), t }));
+    drawBrush(g, {
+      path: [ends[0], ...sub, ends[1]].map(v => ({ ...v, t: v.t - t0 })),
+      knots: [[0, 0], ...lay.knots.filter(([t]) => t > t0 && t < t1).map(([t, u]) => [t - t0, u - u0]), [t1 - t0, n]],
+      n, D,
+      layers: [{ tex: 'ss', colorAt: t => strandColor(el, t + t0) }],
+      breaks: (el.segments || []).flatMap(s => [s.t0 - t0, s.t1 - t0]),
+      caps: { head: true, tail: true },
+    });
+  }
+}
+
+// The double helix of a duplex link, laid along the midline between its two
+// strands. Strand A is the texture's strand 1 (5'→3' along A), B the other
+// backbone; each backbone takes its own strand's (segment) colour.
+function drawDuplex(g, l) {
+  const A = dnaEnd(l.a), B = dnaEnd(l.b);
+  const [a0, a1] = refSpan(l.a, A), [b0, b1] = refSpan(l.b, B);
+  const mid = midline(subPath(A.pts, a0, a1), subPath(B.pts, b0, b1), a1 - a0, b1 - b0, pointAt);
+  const D = (A.dna + B.dna) / 2, n = duplexBases(l);
+  let acc = 0;
+  const fk = mid.pts.map((p, i) => [acc += i ? Math.hypot(p[0] - mid.pts[i - 1][0], p[1] - mid.pts[i - 1][1]) : 0, mid.f[i]]);
+  const Lm = acc;
+  const lerp = (k, x, i, j) => { // knot lookup, f ↔ t along the midline
+    let q = 1;
+    while (q < k.length - 1 && k[q][i] < x) q++;
+    const a = k[q - 1], b = k[q], d = b[i] - a[i];
+    return d ? a[j] + (b[j] - a[j]) * (x - a[i]) / d : a[j];
+  };
+  const tA = t => a0 + lerp(fk, t, 0, 1) * (a1 - a0);
+  const tB = t => { const f = lerp(fk, t, 0, 1); return mid.rev ? b1 - f * (b1 - b0) : b0 + f * (b1 - b0); };
+  const breaks = [
+    ...(A.segments || []).flatMap(s => [s.t0, s.t1]).map(t => (t - a0) / (a1 - a0)),
+    ...(B.segments || []).flatMap(s => [s.t0, s.t1]).map(t => (t - b0) / (b1 - b0)).map(f => (mid.rev ? 1 - f : f)),
+  ].filter(f => f > 0 && f < 1).map(f => lerp(fk, f, 1, 0));
+  drawBrush(g, {
+    path: brushPath(mid.pts, fillet(D)), knots: [[0, 0], [Lm, n]], n, D,
+    layers: [{ tex: 'ds', colorAt: t => strandColor(B, tB(t)) }, { tex: 'ds1', colorAt: t => strandColor(A, tA(t)) }],
+    breaks,
+    caps: { head: true, tail: true },
+  });
+}
+
 function renderLink(el) {
   const g = svgEl('g', { 'data-id': el.id });
   const ptsA = linkTargetPoints(el.a), ptsB = linkTargetPoints(el.b);
@@ -598,6 +699,7 @@ function renderLink(el) {
     if (merged.length >= 3) {
       svgEl('path', { d: `M${merged.map(p => p.join(' ')).join(' L')} Z`, fill: 'transparent', 'data-hit': '1' }, g);
     }
+    if (duplexLink(el)) { drawDuplex(g, el); return { node: g }; }
     const color = resolveColor(el.fill) || '#2b2622';
     for (const [p, q] of basePairRungs(A, B, el.bases || defaultBases(A, B))) {
       svgEl('line', {
@@ -641,6 +743,10 @@ function elKey(el, salt) {
   }
   // links trace live geometry: rekey when either endpoint's outline moves
   if (el.type === 'link') key += '|' + ptsAttr([...linkTargetPoints(el.a), ...linkTargetPoints(el.b)]);
+  // a duplex wears both strands' colours, segments and diameters
+  if (el.type === 'link' && duplexLink(el)) key += JSON.stringify([byId(el.a.id), byId(el.b.id)]);
+  // a DNA strand's base layout depends on the duplexes it is part of
+  if (el.dna) key += JSON.stringify(dnaFixed(el));
   return key;
 }
 

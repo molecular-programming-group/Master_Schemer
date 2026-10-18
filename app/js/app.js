@@ -5,11 +5,12 @@ import {
   isSemantic, resolveColor, resolveLabel, reorder, pruneGroups,
   byGroup, childGroups, topLevelGroups, groupElementMembers,
 } from './model.js';
-import { GRID, mergePaths, rot90, flipPt, snapHalf } from './geom.js';
+import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView,
-  linkStrand, defaultBases,
+  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout,
 } from './render.js';
+import { DEFAULT_DIAMETER, spacing, uAt } from './dna.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
 
 const $ = id => document.getElementById(id);
@@ -1741,6 +1742,117 @@ function labelDisplayFields(target) {
   return frag;
 }
 
+// ---- DNA strands ----
+// A DNA line's size is its diameter (world units); its bases are counted per
+// span: paired domains take the duplex's count, segments may carry their own,
+// and the rest of the strand shares el.bases (unset = natural B-DNA spacing).
+
+// Turn lines into DNA strands (or back). A new strand takes its base-pair
+// partner's diameter, so the duplex between them comes out round.
+function setDNA(els, on) {
+  for (const el of els) {
+    if (!on) { delete el.dna; continue; }
+    if (el.dna) continue;
+    const l = state.doc.elements.find(x => x.type === 'link' && x.style === 'bases' &&
+      (x.a?.id === el.id || x.b?.id === el.id));
+    const other = l && byId(l.a.id === el.id ? l.b.id : l.a.id);
+    el.dna = other?.dna || state.dnaD || DEFAULT_DIAMETER;
+  }
+}
+
+// Base-count field; clearing it returns to auto (natural spacing).
+function basesInput(get, set, { auto = false, readOnly = false } = {}) {
+  const n = document.createElement('input');
+  n.type = 'number'; n.min = 1; n.max = 10000; n.step = 1;
+  n.value = get();
+  n.readOnly = readOnly;
+  if (auto) n.classList.add('auto');
+  n.title = readOnly ? 'Set by the strand’s domains' : 'Number of bases — clear to go back to natural spacing';
+  n.addEventListener('change', () => {
+    beginChange();
+    set(n.value === '' ? null : clamp(Math.round(+n.value) || 1, 1, 10000));
+    changed();
+  });
+  return n;
+}
+
+// How far a span's texture is stretched from natural B-DNA proportions, plus
+// a one-click way back to natural spacing.
+function spacingNote(len, n, D, auto, reset) {
+  const frag = document.createDocumentFragment();
+  const p = document.createElement('p');
+  p.className = 'muted';
+  const s = spacing(len, n, D);
+  p.textContent = auto ? 'Auto: natural B-DNA spacing for this length and diameter.'
+    : Math.abs(s - 1) < 0.03 ? 'Natural B-DNA spacing.'
+      : `${s.toFixed(2)}× natural spacing — ${s > 1 ? 'stretched' : 'compressed'} to fit ${n} bases.`;
+  frag.appendChild(p);
+  if (!auto) frag.appendChild(smallButton('Natural spacing', () => { beginChange(); reset(); changed(); },
+    'Let the length decide the base count again'));
+  return frag;
+}
+
+function dnaControls(el) {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(fieldRow('Diameter', sliderNum(() => el.dna,
+    v => { el.dna = v; state.dnaD = v; }, { min: 4, max: 80, step: 1 })));
+  const lay = dnaLayout(el);
+  const fixedN = lay.n - lay.free;
+  frag.appendChild(fieldRow('Bases', basesInput(() => lay.n,
+    v => { if (v === null) delete el.bases; else el.bases = Math.max(0, v - fixedN); },
+    { auto: el.bases === undefined, readOnly: !lay.freeLen })));
+  if (!lay.freeLen) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = `All ${lay.n} bases are set by its domains and base pairing.`;
+    frag.appendChild(p);
+  } else {
+    frag.appendChild(spacingNote(lay.freeLen, lay.free, el.dna, el.bases === undefined, () => delete el.bases));
+    if (fixedN) {
+      const p = document.createElement('p');
+      p.className = 'muted';
+      p.textContent = `${fixedN} of them set by domains and base pairing.`;
+      frag.appendChild(p);
+    }
+  }
+  return frag;
+}
+
+// A segment of a DNA strand is a domain: paired, it shows (and edits) the
+// duplex's base pairs; otherwise it may carry its own count.
+function segmentBases(el, i) {
+  const seg = el.segments[i];
+  const frag = document.createDocumentFragment();
+  const link = state.doc.elements.find(l => duplexLink(l) &&
+    [l.a, l.b].some(r => r.id === el.id && (r.seg === i || r.seg === undefined)));
+  if (link) {
+    frag.appendChild(fieldRow('Base pairs', basesInput(() => duplexBases(link),
+      v => { if (v === null) delete link.bases; else link.bases = v; }, { auto: !link.bases })));
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'Paired: the count is shared with the partner strand (edit it here or on the link).';
+    frag.appendChild(p);
+    return frag;
+  }
+  const lay = dnaLayout(el);
+  const n = Math.round(uAt(lay.knots, seg.t1) - uAt(lay.knots, seg.t0));
+  frag.appendChild(fieldRow('Bases', basesInput(() => seg.bases ?? n,
+    v => { if (v === null) delete seg.bases; else seg.bases = v; }, { auto: !seg.bases })));
+  if (seg.bases) frag.appendChild(spacingNote(seg.t1 - seg.t0, seg.bases, el.dna, false, () => delete seg.bases));
+  return frag;
+}
+
+function duplexBasesControls(l) {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(fieldRow('Base pairs', basesInput(() => duplexBases(l),
+    v => { if (v === null) delete l.bases; else l.bases = v; }, { auto: !l.bases })));
+  const A = linkStrand(l.a), B = linkStrand(l.b);
+  const D = (byId(l.a.id).dna + byId(l.b.id).dna) / 2;
+  frag.appendChild(spacingNote(Math.min(polylineLength(A), polylineLength(B)), duplexBases(l), D,
+    !l.bases, () => delete l.bases));
+  return frag;
+}
+
 function joinSelectedPaths() {
   const els = state.selection.filter(s => s.seg === undefined).map(s => byId(s.id));
   if (els.length !== 2 || els.some(el => el?.type !== 'path')) return null;
@@ -1767,7 +1879,7 @@ function renderPanel() {
   const styleSec = document.createElement('div');
   styleSec.className = 'panel-section sec-prop';
   let styled = false;
-  if (!single || single.el.width !== undefined) {
+  if (!single || (single.el.width !== undefined && !single.el.dna)) {
     styleSec.appendChild(fieldRow('Width', widthControl(
       () => (single?.el.width) ?? state.width,
       v => {
@@ -1779,15 +1891,20 @@ function renderPanel() {
   }
   if (single && ['path', 'aline', 'ellipse', 'ink', 'rect'].includes(single.el.type) && single.seg === undefined) {
     const el = single.el;
-    styleSec.appendChild(fieldRow('Line style', selectControl(
+    if (el.type === 'path') {
+      styleSec.appendChild(fieldRow('Draw as', mappedSelect({ line: 'Line', dna: 'DNA molecule' },
+        () => (el.dna ? 'dna' : 'line'), v => setDNA([el], v === 'dna'))));
+    }
+    if (el.dna) styleSec.appendChild(dnaControls(el));
+    else styleSec.appendChild(fieldRow('Line style', selectControl(
       ['solid', 'dashed', 'dotted'], () => el.dash || 'solid', v => { el.dash = v; })));
-    if (['path', 'aline', 'ink'].includes(el.type)) {
+    if (el.dna) { /* caps, ends and patterns don't apply to a molecule */ } else if (['path', 'aline', 'ink'].includes(el.type)) {
       styleSec.appendChild(fieldRow('Line ends', selectControl(
         ['rounded', 'flat', 'square'],
         () => LINECAP_NAMES[el.linecap || 'round'],
         v => { el.linecap = LINECAP_VALUES[v]; })));
     }
-    if (el.type === 'path' || el.type === 'aline') {
+    if ((el.type === 'path' && !el.dna) || el.type === 'aline') {
       styleSec.appendChild(fieldRow('Start cap', selectControl(
         CAPS, () => el.cap0 || 'none', v => { el.cap0 = v; })));
       styleSec.appendChild(fieldRow('End cap', selectControl(
@@ -1795,7 +1912,7 @@ function renderPanel() {
       styleSec.appendChild(harpoonFlips(el));
     }
     if (el.type === 'path') {
-      styleSec.appendChild(patternControls(el, `line:${el.id}`));
+      if (!el.dna) styleSec.appendChild(patternControls(el, `line:${el.id}`));
       styleSec.appendChild(fieldRow('Corner radius', sliderNum(
         () => el.corner || 0,
         v => { if (v) el.corner = v; else delete el.corner; },
@@ -1858,6 +1975,15 @@ function renderPanel() {
           'Fill the area spanning the two selected items'));
       }
     }
+    const paths = state.selection.filter(s => s.seg === undefined).map(s => byId(s.id));
+    if (paths.length && paths.every(p => p?.type === 'path')) {
+      sec.appendChild(checkboxRow('Draw as DNA molecules', () => paths.every(p => p.dna),
+        v => setDNA(paths, v)));
+      if (paths.every(p => p.dna)) {
+        sec.appendChild(fieldRow('Diameter', sliderNum(() => paths[0].dna,
+          v => { for (const p of paths) p.dna = v; state.dnaD = v; }, { min: 4, max: 80, step: 1 })));
+      }
+    }
     const join = joinSelectedPaths();
     if (join) {
       row.append(smallButton('Join lines', () => {
@@ -1875,15 +2001,18 @@ function renderPanel() {
   } else if (single.seg !== undefined) {
     const el = single.el, seg = el.segments[single.seg];
     sec.appendChild(sectionTitle('Segment'));
-    sec.appendChild(fieldRow('Thickness', widthControl(
-      () => seg.width ?? ((el.width || 2) + 2.5),
-      v => { seg.width = v; },
-      true)));
-    sec.appendChild(fieldRow('Line ends', selectControl(
-      ['rounded', 'flat', 'square'],
-      () => LINECAP_NAMES[seg.linecap || 'round'],
-      v => { seg.linecap = LINECAP_VALUES[v]; })));
-    sec.appendChild(patternControls(seg, `seg:${el.id}.${single.seg}`));
+    if (el.dna) sec.appendChild(segmentBases(el, single.seg));
+    else {
+      sec.appendChild(fieldRow('Thickness', widthControl(
+        () => seg.width ?? ((el.width || 2) + 2.5),
+        v => { seg.width = v; },
+        true)));
+      sec.appendChild(fieldRow('Line ends', selectControl(
+        ['rounded', 'flat', 'square'],
+        () => LINECAP_NAMES[seg.linecap || 'round'],
+        v => { seg.linecap = LINECAP_VALUES[v]; })));
+      sec.appendChild(patternControls(seg, `seg:${el.id}.${single.seg}`));
+    }
     sec.appendChild(labelFields(seg, 'e.g. domain a'));
     sec.appendChild(labelDisplayFields(seg));
     sec.appendChild(fieldRow('String', boundInput(
@@ -1897,9 +2026,11 @@ function renderPanel() {
     sec.appendChild(sectionTitle('Link'));
     const info = document.createElement('p');
     info.className = 'muted';
-    info.textContent = el.style === 'bases'
-      ? 'Base pairs drawn between two strands — they follow them as they move.'
-      : 'A filled area spanning two objects — it follows them as they move.';
+    info.textContent = duplexLink(el)
+      ? 'A double helix between two DNA strands, coloured by each strand. It follows them as they move.'
+      : el.style === 'bases'
+        ? 'Base pairs drawn between two strands — they follow them as they move.'
+        : 'A filled area spanning two objects — it follows them as they move.';
     sec.appendChild(info);
     // Base pairs need a strand on both ends: two lines or two segments.
     const A = linkStrand(el.a), B = A && linkStrand(el.b);
@@ -1915,6 +2046,12 @@ function renderPanel() {
       warn.className = 'muted';
       warn.textContent = 'Base pairs need two lines or segments at the ends — drawn as a fill meanwhile.';
       sec.appendChild(warn);
+    }
+    if (bases && duplexLink(el)) {
+      sec.appendChild(duplexBasesControls(el));
+      sec.appendChild(deleteButton());
+      panel.appendChild(sec);
+      return;
     }
     if (bases) {
       const n = document.createElement('input');
