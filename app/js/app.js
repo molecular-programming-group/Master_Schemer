@@ -8,6 +8,7 @@ import {
 import { GRID, mergePaths, rot90, flipPt, snapHalf } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView,
+  FONTS, LINE_H, INLINE_TAGS,
 } from './render.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
 
@@ -38,6 +39,7 @@ function refresh() {
   }
   $('undoBtn').disabled = !state.history.length;
   updateCtrlbar();
+  updateTextbar();
   $('redoBtn').disabled = !state.future.length;
   $('zoomLabel').textContent = `${Math.round(state.view.s * 100)}%`;
   syncNoteRefs(); // a renamed object updates its live chips in the notes
@@ -292,9 +294,160 @@ $('ctrlbar').addEventListener('click', e => {
 });
 function updateCtrlbar() {
   const n = selectedElements().length;
-  for (const b of $('ctrlbar').querySelectorAll('button'))
+  for (const b of $('ctrlbar').querySelectorAll('button[data-xf], button[data-align], button[data-dist]'))
     b.disabled = n < (b.dataset.dist ? 3 : b.dataset.align ? 2 : 1);
 }
+$('textbarToggle').addEventListener('click', () => togglePanel('textbar'));
+
+// ---- text formatting (text toolbar + Text menu) ----
+// Whole-note formatting lives on the element (font, size, bold, italic,
+// underline, strike, align, lh). Superscript/subscript — and bold etc. on part
+// of a note — are inline tags wrapped around the selection in the note editor.
+// With no note selected, the toolbar sets the formatting for new notes.
+
+const FLAG = { b: 'bold', i: 'italic', u: 'underline', s: 'strike' };
+const SIZES = [6, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 96, 120, 144];
+const FMT_KEYS = ['font', 'size', 'bold', 'italic', 'underline', 'strike', 'align', 'lh'];
+const textTargets = () => selectedElements().filter(el => el.type === 'text');
+const noteEditor = () => {
+  const ed = document.querySelector('textarea.inline-edit');
+  return ed && document.activeElement === ed ? ed : null;
+};
+
+// Wrap the editor's selection in <tag>…</tag>, or unwrap it if it already is.
+// execCommand keeps the change on the textarea's own undo stack.
+function wrapInEditor(ed, tag) {
+  const o = `<${tag}>`, c = `</${tag}>`, v = ed.value;
+  let a = ed.selectionStart, z = ed.selectionEnd, inner;
+  if (v.slice(a - o.length, a) === o && v.slice(z, z + c.length) === c) {
+    inner = v.slice(a, z); a -= o.length; z += c.length;
+  } else if (z - a >= o.length + c.length && v.slice(a, a + o.length) === o && v.slice(z - c.length, z) === c) {
+    inner = v.slice(a + o.length, z - c.length);
+  }
+  const text = inner ?? o + v.slice(a, z) + c;
+  ed.setSelectionRange(a, z);
+  if (!document.execCommand('insertText', false, text)) ed.setRangeText(text, a, z, 'end');
+  const start = inner === undefined ? a + o.length : a;
+  ed.setSelectionRange(start, start + (inner ?? v.slice(a, z)).length);
+  ed.rows = Math.max(ed.rows, (ed.value.match(/\n/g)?.length ?? 0) + 1);
+}
+
+function textHint(msg) {
+  $('textbarHint').textContent = msg;
+  $('hint').textContent = msg;
+}
+
+function applyFormat(f) {
+  const [cmd, arg] = f.split(':');
+  const ed = noteEditor();
+  if (ed && (cmd === 'sup' || cmd === 'sub' || (FLAG[cmd] && ed.selectionStart !== ed.selectionEnd))) {
+    wrapInEditor(ed, cmd);
+    return;
+  }
+  if (cmd === 'sup' || cmd === 'sub') {
+    textHint('Double-click a note and select the text to raise or lower.');
+    return;
+  }
+  ed?.blur(); // commits the edit, so its note is selected below
+  const els = textTargets();
+  const first = els[0] || state.textDefaults;
+  const set = (o, k, v, dflt) => { if (v === dflt || v === undefined) delete o[k]; else o[k] = v; };
+  const update = o => {
+    if (FLAG[cmd]) set(o, FLAG[cmd], !first[FLAG[cmd]] || undefined);
+    else if (cmd === 'align') set(o, 'align', arg, 'left');
+    else if (cmd === 'font') set(o, 'font', arg, 'sans');
+    else if (cmd === 'lh') set(o, 'lh', +arg, LINE_H);
+    else if (cmd === 'size') o.size = clamp(+arg || 14, 6, 144);
+    else if (cmd === 'bigger' || cmd === 'smaller') {
+      const cur = o.size || 14;
+      o.size = cmd === 'bigger' ? SIZES.find(n => n > cur) ?? 144 : SIZES.findLast(n => n < cur) ?? 6;
+    } else if (cmd === 'clear') {
+      for (const k of FMT_KEYS) if (k !== 'size') delete o[k];
+      if (typeof o.text === 'string') o.text = o.text.replace(new RegExp(`</?(${INLINE_TAGS.join('|')})>`, 'g'), '');
+    }
+  };
+  if (!els.length) {
+    update(state.textDefaults);
+    if (state.textDefaults.size === 14) delete state.textDefaults.size;
+    textHint('No note selected — new notes will use this formatting.');
+    updateTextbar();
+    return;
+  }
+  beginChange();
+  els.forEach(update);
+  textHint('');
+  changed();
+}
+
+{
+  const opts = Object.entries(FONTS).map(([k, [name, css]]) => {
+    const o = new Option(name, k);
+    o.style.fontFamily = css;
+    return o;
+  });
+  $('tbFont').append(...opts);
+  // Text menu: one radio item per font, before Clear Formatting
+  $('fontsAfter').before(document.createElement('hr'));
+  for (const [k, [name, css]] of Object.entries(FONTS)) {
+    const b = document.createElement('button');
+    b.setAttribute('role', 'menuitemradio');
+    b.dataset.fmt = `font:${k}`;
+    b.style.fontFamily = css;
+    b.textContent = name;
+    $('fontsAfter').before(b);
+  }
+}
+// mousedown would move focus off the note editor and commit it mid-format
+$('textbar').addEventListener('mousedown', e => { if (e.target.closest('button')) e.preventDefault(); });
+$('textbar').addEventListener('click', e => {
+  const b = e.target.closest('button[data-fmt]');
+  if (b) applyFormat(b.dataset.fmt);
+});
+$('tbFont').addEventListener('change', e => applyFormat(`font:${e.target.value}`));
+$('tbLh').addEventListener('change', e => applyFormat(`lh:${e.target.value}`));
+$('tbSize').addEventListener('change', e => applyFormat(`size:${e.target.value}`));
+$('tbSize').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
+
+// Pressed states mirror the first selected note (or the new-note defaults).
+function fmtState(f) {
+  const [cmd, arg] = f.split(':');
+  const o = textTargets()[0] || state.textDefaults;
+  if (FLAG[cmd]) return !!o[FLAG[cmd]];
+  if (cmd === 'align') return (o.align || 'left') === arg;
+  if (cmd === 'font') return (o.font || 'sans') === arg;
+  return null;
+}
+function updateTextbar() {
+  const o = textTargets()[0] || state.textDefaults;
+  for (const b of $('textbar').querySelectorAll('button[data-fmt]')) {
+    const on = fmtState(b.dataset.fmt);
+    if (on !== null) b.setAttribute('aria-pressed', String(on));
+  }
+  $('tbFont').value = o.font || 'sans';
+  $('tbLh').value = String(o.lh || LINE_H);
+  if (document.activeElement !== $('tbSize')) $('tbSize').value = o.size || 14;
+  if (textTargets().length) $('textbarHint').textContent = '';
+}
+
+// Shortcuts work on selected notes and inside the note editor (whose own
+// keydown stops propagation, hence the capture phase).
+window.addEventListener('keydown', e => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const t = e.target, ed = noteEditor();
+  if (!ed && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement ||
+    t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable))) return;
+  if (!ed && !textTargets().length) return;
+  const k = e.key.toLowerCase();
+  let f = null;
+  if (!e.shiftKey && FLAG[k] && k !== 's') f = k; // Ctrl+S stays Save
+  else if (e.code === 'Equal') f = e.shiftKey ? 'sup' : 'sub';
+  else if (e.shiftKey && e.code === 'Period') f = 'bigger';
+  else if (e.shiftKey && e.code === 'Comma') f = 'smaller';
+  if (!f) return;
+  e.preventDefault();
+  e.stopPropagation();
+  applyFormat(f);
+}, true);
 
 // ---- groups (hierarchical: a group can contain groups) ----
 
@@ -1950,11 +2103,11 @@ function renderPanel() {
         () => el.text, v => { el.text = v; }, { textarea: true })));
       const sizeInput = document.createElement('input');
       sizeInput.type = 'number';
-      sizeInput.min = 8; sizeInput.max = 72;
+      sizeInput.min = 6; sizeInput.max = 144;
       sizeInput.value = el.size;
       sizeInput.addEventListener('change', () => {
         beginChange();
-        el.size = clamp(+sizeInput.value || 14, 8, 72);
+        el.size = clamp(+sizeInput.value || 14, 6, 144);
         changed();
       });
       sec.appendChild(fieldRow('Size', sizeInput));
@@ -2433,7 +2586,13 @@ function setMenu(m) {
     it.setAttribute('aria-checked', String(state.tool === it.dataset.pickTool));
   for (const it of m.querySelectorAll('[data-panel]'))
     it.setAttribute('aria-checked', String(!hiddenPanels.includes(it.dataset.panel)));
+  for (const it of m.querySelectorAll('[data-fmt]')) {
+    const on = fmtState(it.dataset.fmt);
+    if (on !== null) it.setAttribute('aria-checked', String(on));
+  }
 }
+// clicking a menu must not steal focus from the note editor (Text menu acts on its selection)
+menubar.addEventListener('mousedown', e => { if (document.querySelector('.inline-edit')) e.preventDefault(); });
 menubar.addEventListener('click', e => {
   const title = e.target.closest('.menu-title');
   if (title) { setMenu(openMenu === title.parentElement ? null : title.parentElement); return; }
@@ -2444,6 +2603,7 @@ menubar.addEventListener('click', e => {
   else if (item.dataset.act) MENU_ACTS[item.dataset.act]();
   else if (item.dataset.panel) togglePanel(item.dataset.panel);
   else if (item.dataset.pickTool) setTool(item.dataset.pickTool);
+  else if (item.dataset.fmt) applyFormat(item.dataset.fmt);
 });
 menubar.addEventListener('pointerover', e => {
   const title = e.target.closest('.menu-title');
@@ -2641,13 +2801,14 @@ function addSelectionToNotes(x, y) {
 
 // ---- panel visibility (Window menu; a UI pref, kept in localStorage not the file) ----
 
-const PANELS = ['toolbar', 'tools', 'objects', 'library', 'color', 'props', 'notes'];
+const PANELS = ['toolbar', 'textbar', 'tools', 'objects', 'library', 'color', 'props', 'notes'];
 const PANELS_HIDDEN_KEY = 'master-schemer-hidden-panels';
 let hiddenPanels = [];
 function setHiddenPanels(list) {
   hiddenPanels = PANELS.filter(p => list.includes(p));
   for (const p of PANELS) document.body.classList.toggle(`hide-${p}`, hiddenPanels.includes(p));
   $('notesToggle').setAttribute('aria-pressed', String(!hiddenPanels.includes('notes')));
+  $('textbarToggle').setAttribute('aria-pressed', String(!hiddenPanels.includes('textbar')));
   try { localStorage.setItem(PANELS_HIDDEN_KEY, JSON.stringify(hiddenPanels)); } catch { /* full */ }
   render(); // canvas width changed → refit the grid rect on the next frame
 }

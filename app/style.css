@@ -55,6 +55,7 @@ body {
   grid-template:
     "topbar topbar  topbar topbar topbar" 48px
     "ctrl   ctrl    ctrl   ctrl   ctrl"   var(--ctrl-h, 38px)
+    "text   text    text   text   text"   var(--text-h, 38px)
     "rail   sidebar canvas panel  notes"  1fr
     "status status  status status status" 28px
     / var(--rail-w, 48px) var(--side-w, 200px) 1fr var(--panel-w, 264px) var(--notes-w, 300px);
@@ -65,7 +66,8 @@ body {
    only collapse once both are hidden. */
 body.hide-tools { --rail-w: 0px; }
 body.hide-toolbar { --ctrl-h: 0px; }
-body.hide-toolbar #ctrlbar,
+body.hide-textbar { --text-h: 0px; }
+body.hide-toolbar #ctrlbar, body.hide-textbar #textbar,
 body.hide-tools #toolrail,
 body.hide-objects .side-head-obj, body.hide-objects #sidebarBody,
 body.hide-library .side-head-lib, body.hide-library #libraryBody,
@@ -122,8 +124,31 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
-#ctrlbar .icon-btn { width: 30px; height: 30px; }
-#ctrlbar .icon-btn svg { width: 18px; height: 18px; }
+#ctrlbar .icon-btn, #textbar .icon-btn { width: 30px; height: 30px; }
+#ctrlbar .icon-btn svg, #textbar .icon-btn svg { width: 18px; height: 18px; }
+#ctrlbar .ctrl-end { margin-left: auto; }
+
+/* text toolbar: font, size, style, alignment for the selected notes */
+#textbar {
+  grid-area: text;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+#textbar select, #textbar input {
+  font: inherit; color: inherit; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: var(--radius); height: 26px; padding: 0 4px;
+}
+#textbar #tbFont { width: 150px; }
+#textbar #tbSize { width: 54px; }
+#textbar .glyph { font: 15px/1 Georgia, serif; }
+#textbar .glyph small { font-size: 10px; }
+#textbar .glyph sup, #textbar .glyph sub { font-size: 9px; }
+#textbar .icon-btn[aria-pressed="true"] { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--primary); }
+.textbar-hint { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
 .btn {
   border: none;
@@ -835,7 +860,7 @@ body.panning #canvas { cursor: grabbing !important; }
   top: 50%;
   translate: 0 -50%;
 }
-#topbar [data-tip]::after, #ctrlbar [data-tip]::after {
+#topbar [data-tip]::after, #ctrlbar [data-tip]::after, #textbar [data-tip]::after {
   top: calc(100% + 6px);
   left: 50%;
   translate: -50% 0;
