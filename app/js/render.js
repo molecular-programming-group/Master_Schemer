@@ -107,10 +107,19 @@ function appendRuns(parent, line, size) {
 
 // ponytail: tags are per line (each line is its own <div>), so a tag left open
 // at a line end closes there; reopen it on the next line to carry it over.
-export function richHTML(text) {
+// el (a note) carries its whole-note formatting into the math too, since
+// KaTeX uses its own fonts: bold → \boldsymbol, Helvetica → \mathsf,
+// Monospace → \mathtt. The default font keeps classic math type.
+function noteTex(tex, el) {
+  if (el?.font === 'helvetica') tex = `\\mathsf{${tex}}`;
+  else if (el?.font === 'mono') tex = `\\mathtt{${tex}}`;
+  return el?.bold ? `\\boldsymbol{${tex}}` : tex;
+}
+
+export function richHTML(text, el) {
   return text.split('\n').map(line =>
     line.split(/\$([^$]+)\$/)
-      .map((part, i) => i % 2 ? katexHTML(part)
+      .map((part, i) => i % 2 ? katexHTML(noteTex(part, el))
         : esc(part).replace(/&lt;(\/?)(b|i|u|s|sup|sub)&gt;/g, '<$1$2>'))
       .join('') || '&nbsp;'
   ).map(h => `<div>${h}</div>`).join('');
@@ -567,7 +576,7 @@ function renderText(el) {
     Object.assign(div.style, textStyle(el));
     div.style.color = color;
     div.style.width = el.w ? `${el.w}px` : 'max-content';
-    div.innerHTML = richHTML(el.text);
+    div.innerHTML = richHTML(el.text, el);
     // invisible SVG twin so clicks and marquees still find the note
     const hit = svgEl('rect', {
       x: el.x, y: top, width: el.w || el.size, height: el.size * 1.3,
@@ -916,7 +925,7 @@ function exportRichText(el) {
   div.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
   div.style.cssText = `${cssText(textStyle(el))};color:${resolveColor(el.color)};` +
     `${el.w ? '' : 'width:max-content;'}`;
-  div.innerHTML = richHTML(el.text);
+  div.innerHTML = richHTML(el.text, el);
   fo.appendChild(div);
   return g;
 }

@@ -309,16 +309,34 @@ const FLAG = { b: 'bold', i: 'italic', u: 'underline', s: 'strike' };
 const SIZES = [6, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 96, 120, 144];
 const FMT_KEYS = ['font', 'size', 'bold', 'italic', 'underline', 'strike', 'align', 'lh'];
 const textTargets = () => selectedElements().filter(el => el.type === 'text');
+// A field holding a note's or label's source: the canvas editor, or the
+// panel's Text / Label fields (marked .fmt-src).
 const noteEditor = () => {
-  const ed = document.querySelector('textarea.inline-edit');
-  return ed && document.activeElement === ed ? ed : null;
+  const ae = document.activeElement;
+  return ae?.matches?.('textarea.inline-edit, .fmt-src') ? ae : null;
 };
 
-// Wrap the editor's selection in <tag>…</tag>, or unwrap it if it already is.
-// execCommand keeps the change on the textarea's own undo stack.
+// Inside $…$ the toolbar writes LaTeX; tags there would render literally.
+const TEX_WRAP = {
+  sup: ['^{', '}'], sub: ['_{', '}'], b: ['\\mathbf{', '}'], i: ['\\mathit{', '}'],
+  u: ['\\underline{', '}'], s: ['\\sout{', '}'],
+};
+// $…$ spans (dollars included), paired left to right like richHTML's split
+const mathSpans = v => [...v.matchAll(/\$([^$]+)\$/g)].map(m => [m.index, m.index + m[0].length]);
+
+// Wrap the editor's selection in <tag>…</tag> (LaTeX inside math), or unwrap
+// it if it already is. A selection that cuts into a $…$ grows to take the
+// whole math, so the dollars stay paired. execCommand keeps the change on the
+// field's own undo stack.
 function wrapInEditor(ed, tag) {
-  const o = `<${tag}>`, c = `</${tag}>`, v = ed.value;
+  const v = ed.value;
   let a = ed.selectionStart, z = ed.selectionEnd, inner;
+  const spans = mathSpans(v);
+  const inMath = spans.some(([s, e]) => a > s && z < e);
+  if (!inMath) {
+    for (const [s, e] of spans) if (a < e && z > s) { a = Math.min(a, s); z = Math.max(z, e); }
+  }
+  const [o, c] = inMath ? TEX_WRAP[tag] : [`<${tag}>`, `</${tag}>`];
   if (v.slice(a - o.length, a) === o && v.slice(z, z + c.length) === c) {
     inner = v.slice(a, z); a -= o.length; z += c.length;
   } else if (z - a >= o.length + c.length && v.slice(a, a + o.length) === o && v.slice(z - c.length, z) === c) {
@@ -340,7 +358,9 @@ function textHint(msg) {
 function applyFormat(f) {
   const [cmd, arg] = f.split(':');
   const ed = noteEditor();
-  if (ed && (cmd === 'sup' || cmd === 'sub' || (FLAG[cmd] && ed.selectionStart !== ed.selectionEnd))) {
+  // in the canvas editor an empty selection means the whole note; panel fields always wrap
+  const partial = ed && (ed.selectionStart !== ed.selectionEnd || !ed.matches('.inline-edit'));
+  if (ed && (cmd === 'sup' || cmd === 'sub' || (FLAG[cmd] && partial))) {
     wrapInEditor(ed, cmd);
     return;
   }
@@ -1786,10 +1806,9 @@ function sectionTitle(text) {
 // edit renames every element pointing at it.
 function labelFields(target, placeholder) {
   const frag = document.createDocumentFragment();
-  frag.appendChild(fieldRow('Label', boundInput(
-    () => resolveLabel(target.label || ''),
-    v => setLabel(target, v),
-    { placeholder })));
+  const src = boundInput(() => resolveLabel(target.label || ''), v => setLabel(target, v), { placeholder });
+  src.classList.add('fmt-src'); // the text toolbar formats its selection
+  frag.appendChild(fieldRow('Label', src));
   const sel = document.createElement('select');
   const options = [
     ['', '— not shared —'],
@@ -2099,8 +2118,9 @@ function renderPanel() {
       if (el.type !== 'text') sec.appendChild(labelDisplayFields(el));
     }
     if (el.type === 'text') {
-      sec.appendChild(fieldRow('Text', boundInput(
-        () => el.text, v => { el.text = v; }, { textarea: true })));
+      const src = boundInput(() => el.text, v => { el.text = v; }, { textarea: true });
+      src.classList.add('fmt-src'); // the text toolbar formats its selection
+      sec.appendChild(fieldRow('Text', src));
       const sizeInput = document.createElement('input');
       sizeInput.type = 'number';
       sizeInput.min = 6; sizeInput.max = 144;
