@@ -332,6 +332,9 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 
 .lib-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 6px 0; }
 .lib-actions .btn { font-size: 11.5px; padding: 4px 8px; }
+.side-item.lib-cat { font-weight: 600; font-size: 12px; margin-top: 2px; }
+.side-item.lib-drop { background: var(--primary-soft); outline: 1px dashed var(--primary); }
+.lib-count { margin-left: auto; font-size: 10.5px; font-weight: 500; color: var(--muted); }
 
 /* ---------- canvas ---------- */
 
@@ -933,6 +936,12 @@ body.panning #canvas { cursor: grabbing !important; }
 .menu-list button[aria-checked="true"]::before { content: "✓"; position: absolute; left: 9px; }
 .menu-list kbd { margin-left: auto; font: inherit; font-size: 12px; color: var(--muted); }
 .menu-list hr { border: none; border-top: 1px solid var(--line); margin: 4px 6px; }
+.ctx-menu { display: block; position: fixed; top: 0; left: 0; z-index: 300; }
+.ctx-sub { position: relative; }
+.ctx-sub > .menu-list { top: -6px; left: calc(100% + 2px); }
+.ctx-menu.flip .ctx-sub > .menu-list { left: auto; right: calc(100% + 2px); }
+.ctx-sub:hover > .menu-list, .ctx-sub:focus-within > .menu-list { display: block; }
+.ctx-sub:hover > button, .ctx-sub:focus-within > button { background: var(--primary-soft); }
 
 /* ---- open recent gallery ---- */
 .modal-card.recent-card { width: min(860px, calc(100vw - 32px)); gap: 12px; }

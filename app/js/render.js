@@ -8,8 +8,9 @@ import {
 } from './geom.js';
 import {
   drawBrush, brushPath, strandLayout, midline, naturalBases, uAt, outlineOf, DEFAULT_BPG, naturalD,
-  gridPitch, randomBase, BASE_COLORS, COMPLEMENT,
+  gridPitch, randomBase, BASE_COLORS, COMPLEMENT, seqOf, tintRef, DIAMETER_A,
 } from './dna.js';
+import MOLS from './mol-tex.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 export const SEL = '#b57f1d'; // honey selection accent (matches --primary)
@@ -552,7 +553,54 @@ function renderEllipse(el) {
   return { node: g, divs, measures };
 }
 
+// A stock protein (el.mol, baked by tools/bake_molecules.py): a grayscale
+// surface render, tinted, toon-banded and outlined with the DNA brush's filters.
+// A DNA-binding protein with a DNA strand across its binding axis is drawn in two
+// layers: the whole protein beneath all DNA (layer-back), and only what lies in
+// front of the DNA over it — so the strand threads through.
+const molFit = (el, m) => {
+  const sc = Math.min(el.w / m.w, el.h / m.h); // preserveAspectRatio meet
+  return { sc, ox: el.x + (el.w - m.w * sc) / 2, oy: el.y + (el.h - m.h * sc) / 2 };
+};
+// ponytail: bbox test of every DNA strand against the binding band; a strand
+// crossing the protein at an angle also counts — fine for straddling schematics
+function molThreaded(el, m) {
+  if (!m.front) return false;
+  const { sc, ox, oy } = molFit(el, m);
+  const y = oy + m.axis * sc, r = DIAMETER_A / 2 * sc;
+  return state.doc.elements.some(d => {
+    if (d.type !== 'path' || !d.dna) return false;
+    const b = elementBBox(d);
+    return b[0] < ox + m.w * sc && b[2] > ox && b[1] < y + r && b[3] > y - r;
+  });
+}
+
+function renderMol(el, m) {
+  const g = svgEl('g', { 'data-id': el.id });
+  const divs = [], measures = [];
+  const filter = tintRef(resolveColor(el.color) || '#8a857c', !!el.dnaToon);
+  // outline as thick as a DNA strand's drawn at this molecule's Å scale
+  const D = DIAMETER_A * molFit(el, m).sc;
+  const layer = (parent, href) => {
+    const body = svgEl('g', { filter });
+    svgEl('image', { href, x: el.x, y: el.y, width: el.w, height: el.h, preserveAspectRatio: 'xMidYMid meet' }, body);
+    if (el.dnaOutline) parent.appendChild(outlineOf(body, D));
+    parent.appendChild(body);
+  };
+  // outlines ride with each layer, not beneath every molecule as DNA's do: a
+  // protein sits in front of what it overlaps, and a part (sgRNA) in front of its protein
+  let back = null;
+  if (molThreaded(el, m)) {
+    back = svgEl('g', { 'data-id': el.id });
+    layer(back, el.molIcon ? m.icon : m.src);
+    layer(g, el.molIcon ? m.iconFront : m.front);
+  } else layer(g, el.molIcon ? m.icon : m.src);
+  drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color: resolveColor(el.color), id: el.id });
+  return { node: g, divs, measures, back };
+}
+
 function renderRect(el) {
+  if (MOLS[el.mol]) return renderMol(el, MOLS[el.mol]);
   const g = svgEl('g', { 'data-id': el.id });
   const divs = [], measures = [];
   const base = { x: el.x, y: el.y, width: el.w, height: el.h, rx: el.r || 0 };
@@ -712,14 +760,34 @@ const dnaEnd = ref => {
 };
 // A base-pair link between two DNA strands draws as one double helix.
 export const duplexLink = l => l.type === 'link' && l.style === 'bases' && !!dnaEnd(l.a) && !!dnaEnd(l.b);
+// The sequence a link end carries: its segment's, or for a whole line, all its
+// segments' joined when they tile it end to end.
+export function refSeq(ref, e) {
+  if (!e) return '';
+  if (ref.seg !== undefined) return seqOf(e.segments?.[ref.seg]?.string);
+  return lineSeq(e);
+}
+function lineSeq(e) {
+  const segs = (e.segments || []).slice().sort((a, b) => a.t0 - b.t0);
+  let at = 0, seq = '';
+  for (const s of segs) {
+    const q = seqOf(s.string);
+    if (!q || s.t0 - at > 0.5) return '';
+    seq += q; at = s.t1;
+  }
+  return segs.length && polylineLength(e.pts) - at <= 0.5 ? seq : '';
+}
 const refSpan = (ref, e) => {
   const s = ref.seg !== undefined && e.segments?.[ref.seg];
   return s ? [s.t0, s.t1] : [0, polylineLength(e.pts)];
 };
-// The duplex's base pairs: the link's own count, else the grid's count.
+// The duplex's base pairs: a paired domain's sequence length, else the link's
+// own count, else the grid's count.
 export function duplexBases(l) {
-  if (l.bases) return l.bases;
   const A = dnaEnd(l.a), B = dnaEnd(l.b);
+  const seq = refSeq(l.a, A) || refSeq(l.b, B);
+  if (seq) return seq.length;
+  if (l.bases) return l.bases;
   const [a0, a1] = refSpan(l.a, A), [b0, b1] = refSpan(l.b, B);
   return naturalBases(Math.min(a1 - a0, b1 - b0), gridPitch(dnaBpg()));
 }
@@ -736,7 +804,10 @@ function dnaFixed(el) {
       fixed.push({ t0, t1, count: duplexBases(l), paired: true, link: l, role });
     }
   }
-  for (const s of el.segments || []) if (s.bases) fixed.push({ t0: s.t0, t1: s.t1, count: s.bases });
+  for (const s of el.segments || []) { // a sequence fixes its segment's count
+    const count = seqOf(s.string).length || s.bases;
+    if (count) fixed.push({ t0: s.t0, t1: s.t1, count });
+  }
   return fixed;
 }
 export const dnaLayout = el =>
@@ -759,26 +830,34 @@ const strandColor = (e, t) =>
   resolveColor((e.segments || []).find(s => t >= s.t0 && t <= s.t1)?.color ?? e.color);
 const fillet = D => D * 1.5; // tightest turn a strand takes without its texture visibly smearing
 
-// Base letter of strand e at base index i: its segment's sequence (the string
-// field, when it is one) or a fixed random base.
+// Base letter of strand e at base index i, from its segments' sequences, or
+// null where none is known. A whole-line sequence (segments tiling the line) is
+// read straight through when the strand has exactly that many bases — a duplex
+// over the whole line spaces its bases evenly, not per segment.
 function baseLetter(e, lay, i) {
+  const line = lineSeq(e);
+  if (line.length === lay.n) return line[i] === 'N' ? null : line[i] ?? null;
   for (const s of e.segments || []) {
-    const seq = (s.string || '').toUpperCase().replace(/U/g, 'T').replace(/[^ACGT]/g, '');
+    const seq = seqOf(s.string);
     if (!seq) continue;
     const j = i - Math.round(uAt(lay.knots, s.t0));
-    if (j >= 0 && j < Math.round(uAt(lay.knots, s.t1) - uAt(lay.knots, s.t0))) return seq[j % seq.length];
+    if (j >= 0 && j < Math.round(uAt(lay.knots, s.t1) - uAt(lay.knots, s.t0))) return seq[j] === 'N' ? null : seq[j] ?? null;
   }
-  return randomBase(e.id, i);
+  return null;
 }
 const baseColor = e => resolveColor(e.baseColor) || '#f1ece2';
+// Colour of a base whose letter is unknown: the strand's base colour, or a fixed
+// random base (placeholder / UMI look). `rand` is the letter to use for that.
+const unknownBase = (e, rand) => (e.seqUnknown === 'random' ? BASE_COLORS[rand] : baseColor(e));
+const letterColor = (letter, e, rand) => (letter ? BASE_COLORS[letter] : unknownBase(e, rand));
 
 // A strand's paint layers on texture `tex` ('ss', 'ssB', 'ds1'…): the whole
-// strand in its colour, then its bases per its colour mode. letterAt(i) maps
-// the brush's base slot i to the base letter shown there.
-function strandLayers(e, tex, btex, tOf, letterAt) {
+// strand in its colour, then its bases per its colour mode. seqColor(i) is the
+// colour of the base in the brush's base slot i, in sequence mode.
+function strandLayers(e, tex, btex, tOf, seqColor) {
   const layers = tex ? [{ tex, colorAt: t => strandColor(e, tOf(t)) }] : [];
   if (e.dnaColor === 'bases') layers.push({ tex: btex, colorAt: () => baseColor(e) });
-  if (e.dnaColor === 'sequence') layers.push({ tex: btex, base: true, colorAt: (t, i) => BASE_COLORS[letterAt(i)] });
+  if (e.dnaColor === 'sequence') layers.push({ tex: btex, base: true, colorAt: (t, i) => seqColor(i) });
   return layers;
 }
 
@@ -845,8 +924,11 @@ function drawDNAStrand(g, el) {
     const strandIndex = i => Math.round(dir > 0 ? i - c : c - i - 1); // brush base slot → strand base
     drawBrush(target, {
       path: brushPath(verts.map(v => v.p), fillet(D), verts.map(v => v.t * sgn)),
-      knots: knots.map(([t, u]) => [t * sgn, u]), D, caps, toon: el.dnaToon,
-      layers: strandLayers(el, tex, `${tex}b`, tOf, i => baseLetter(el, lay, strandIndex(i))),
+      knots: knots.map(([t, u]) => [t * sgn, u]), D, caps, toon: el.dnaToon, skin: el.dnaSkin,
+      layers: strandLayers(el, tex, `${tex}b`, tOf, i => {
+        const j = strandIndex(i);
+        return letterColor(baseLetter(el, lay, j), el, randomBase(el.id, j));
+      }),
       breaks: (el.segments || []).flatMap(s => [s.t0 * sgn, s.t1 * sgn]),
     });
   }
@@ -874,25 +956,31 @@ function drawDuplex(g, l) {
     ...(A.segments || []).flatMap(s => [s.t0, s.t1]).map(t => (t - a0) / (a1 - a0)),
     ...(B.segments || []).flatMap(s => [s.t0, s.t1]).map(t => (t - b0) / (b1 - b0)).map(f => (mid.rev ? 1 - f : f)),
   ].filter(f => f > 0 && f < 1).map(f => lerp(fk, f, 1, 0));
+  // pair slot i: A's base uA0 + i, and B's partner (B read back to front when
+  // drawn antiparallel). Each side shows its own letter, else its partner's
+  // complement; unknown pairs share one random pair so they still match.
   const layA = dnaLayout(A), uA0 = Math.round(uAt(layA.knots, a0));
-  const letterA = i => baseLetter(A, layA, uA0 + i);
+  const layB = dnaLayout(B), uB0 = Math.round(uAt(layB.knots, b0)), uB1 = Math.round(uAt(layB.knots, b1));
+  const la = i => baseLetter(A, layA, uA0 + i);
+  const lb = i => baseLetter(B, layB, mid.rev ? uB1 - 1 - i : uB0 + i);
+  const rand = i => randomBase(A.id, uA0 + i);
   const layers = [
     { tex: 'ds', colorAt: t => strandColor(B, tB(t)) },
     { tex: 'ds1', colorAt: t => strandColor(A, tA(t)) },
-    ...strandLayers(A, null, 'dsbA', tA, letterA),
-    ...strandLayers(B, null, 'dsbB', tB, i => COMPLEMENT[letterA(i)]),
+    ...strandLayers(A, null, 'dsbA', tA, i => letterColor(la(i) || COMPLEMENT[lb(i)], A, rand(i))),
+    ...strandLayers(B, null, 'dsbB', tB, i => letterColor(lb(i) || COMPLEMENT[la(i)], B, COMPLEMENT[rand(i)])),
   ];
   const body = svgEl('g', {}, g);
   drawBrush(body, {
     path: brushPath(mid.pts, fillet(D)), knots: [[0, 0], [Lm, n]], D, layers, breaks,
-    caps: { head: true, tail: true }, toon: A.dnaToon || B.dnaToon,
+    caps: { head: true, tail: true }, toon: A.dnaToon || B.dnaToon, skin: A.dnaSkin || B.dnaSkin,
   });
   return A.dnaOutline || B.dnaOutline ? outlineOf(body, D) : null;
 }
 
 // Everything a DNA strand's or duplex's pixels depend on beyond its own JSON.
 function dnaKey(el) {
-  const links = el.type === 'link' ? [el] : dnaFixed(el).map(f => f.link);
+  const links = el.type === 'link' ? [el] : dnaFixed(el).filter(f => f.link).map(f => f.link);
   return dnaBpg() + JSON.stringify(links.map(l => [l, byId(l.a.id), byId(l.b.id)]));
 }
 
@@ -908,19 +996,29 @@ function renderLink(el) {
     }
     if (duplexLink(el)) return { node: g, under: drawDuplex(g, el) };
     const color = resolveColor(el.fill) || '#2b2622';
-    for (const [p, q] of basePairRungs(A, B, el.bases || defaultBases(A, B))) {
+    const { n, sa, sb } = rungSeqs(el);
+    const rungs = basePairRungs(A, B, n);
+    // by sequence: each half of a rung is its strand's base (or the partner's
+    // complement); bases known on neither side keep the link's colour
+    const byseq = el.rungColor === 'sequence';
+    const half = (mine, other) => BASE_COLORS[mine || COMPLEMENT[other]] || color;
+    rungs.forEach(([p, q], i) => {
+      const x = sa[i], y = sb[rungs.rev ? n - 1 - i : i];
+      const ca = byseq ? half(x, y) : color, cb = byseq ? half(y, x) : color;
       if (el.rung === 'dot') { // one dot midway: a base pair in dotted duplex notation
-        svgEl('circle', { cx: (p[0] + q[0]) / 2, cy: (p[1] + q[1]) / 2, r: 1.6, fill: color }, g);
-        continue;
+        svgEl('circle', { cx: (p[0] + q[0]) / 2, cy: (p[1] + q[1]) / 2, r: 1.6, fill: ca }, g);
+        return;
       }
       // 'tick': alignment-style dash, a quarter of the gap clear of each strand
       const k = el.rung === 'tick' ? 0.25 : 0;
-      svgEl('line', {
-        x1: p[0] + (q[0] - p[0]) * k, y1: p[1] + (q[1] - p[1]) * k,
-        x2: q[0] - (q[0] - p[0]) * k, y2: q[1] - (q[1] - p[1]) * k,
-        stroke: color, 'stroke-width': 1.5, 'stroke-linecap': 'butt',
-      }, g);
-    }
+      const at = f => [p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f];
+      const seg = (f0, f1, stroke) => {
+        const [x1, y1] = at(f0), [x2, y2] = at(f1);
+        svgEl('line', { x1, y1, x2, y2, stroke, 'stroke-width': 1.5, 'stroke-linecap': 'butt' }, g);
+      };
+      if (ca === cb) seg(k, 1 - k, ca);
+      else { seg(k, 0.5, ca); seg(0.5, 1 - k, cb); }
+    });
     return { node: g };
   }
   if (merged.length >= 3) {
@@ -934,6 +1032,16 @@ function renderLink(el) {
     }, g);
   }
   return { node: g };
+}
+
+// A base-pair link's rung count and its two strands' letters (null = unknown):
+// a sequence on either end sets the count, else the link's own, else ~6 px each.
+export function rungSeqs(l) {
+  const ea = byId(l.a.id), eb = byId(l.b.id);
+  const qa = refSeq(l.a, ea), qb = refSeq(l.b, eb);
+  const n = qa.length || qb.length || l.bases || defaultBases(linkStrand(l.a), linkStrand(l.b));
+  const letters = q => Array.from({ length: n }, (_, i) => (q[i] && q[i] !== 'N' ? q[i] : null));
+  return { n, sa: letters(qa), sb: letters(qb), fromSeq: !!(qa || qb) };
 }
 
 const RENDERERS = {
@@ -957,8 +1065,11 @@ function elKey(el, salt) {
   }
   // links trace live geometry: rekey when either endpoint's outline moves
   if (el.type === 'link') key += '|' + ptsAttr([...linkTargetPoints(el.a), ...linkTargetPoints(el.b)]);
+  // base-pair rungs also count and colour by the strands' sequences
+  if (el.type === 'link' && el.style === 'bases') key += `|${refSeq(el.a, byId(el.a.id))}|${refSeq(el.b, byId(el.b.id))}`;
   // DNA strands and duplexes depend on each other (shape, counts, colours) and the DNA grid
   if (el.dna || (el.type === 'link' && duplexLink(el))) key += dnaKey(el);
+  if (MOLS[el.mol]) key += molThreaded(el, MOLS[el.mol]);
   return key;
 }
 
@@ -1135,7 +1246,7 @@ export function renderNow(cull = true) {
 
   // cards sit below everything; all other elements paint in doc order (z-order)
   const salt = JSON.stringify(state.doc.palette) + JSON.stringify(state.doc.labelSlots || []);
-  const cardNodes = [], underNodes = [], linkNodes = [], drawNodes = [], divs = [], measures = [];
+  const cardNodes = [], backNodes = [], underNodes = [], linkNodes = [], drawNodes = [], divs = [], measures = [];
   const seen = new Set();
   for (const el of state.doc.elements) {
     const renderer = RENDERERS[el.type];
@@ -1154,6 +1265,7 @@ export function renderNow(cull = true) {
     }
     const bucket = el.type === 'card' ? cardNodes : el.type === 'link' ? linkNodes : drawNodes;
     bucket.push(entry.node);
+    if (entry.back) backNodes.push(entry.back); // threaded proteins' far side, beneath all DNA
     if (entry.under) underNodes.push(entry.under); // molecule outlines, beneath every molecule
     if (entry.divs) divs.push(...entry.divs);
   }
@@ -1161,6 +1273,7 @@ export function renderNow(cull = true) {
     if (!seen.has(id)) { nodeCache.delete(id); richBoxes.delete(id); }
   }
   $('layer-cards').replaceChildren(...cardNodes);
+  $('layer-back').replaceChildren(...backNodes);
   $('layer-under').replaceChildren(...underNodes);
   $('layer-links').replaceChildren(...linkNodes);
   $('layer-draw').replaceChildren(...drawNodes);
@@ -1293,7 +1406,7 @@ export async function exportSVGString({ plain = false, only = null, grid = false
   if (!transparent) svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: state.doc.bg || '#ffffff' }, out);
   out.appendChild(document.querySelector('#canvas defs').cloneNode(true));
   if (grid) svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: 'url(#gridDots)' }, out);
-  for (const id of ['layer-cards', 'layer-under', 'layer-links', 'layer-draw']) {
+  for (const id of ['layer-cards', 'layer-back', 'layer-under', 'layer-links', 'layer-draw']) {
     out.appendChild($(id).cloneNode(true));
   }
   for (const el of plain ? [] : state.doc.elements) {

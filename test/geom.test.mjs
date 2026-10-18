@@ -187,3 +187,10 @@ test('basePairRungs: n evenly spaced rungs, paired across antiparallel strands',
   assert.deepEqual(basePairRungs(down, [[60, 0], [60, 100]], 2).map(([p, q]) => [p[1], q[1]]), [[25, 25], [75, 75]]);
   assert.equal(defaultBases(up, [[0, 0], [0, 60]]), 10);
 });
+
+test('basePairRungs: flags B read back to front for antiparallel strands', async () => {
+  const { basePairRungs } = await import('../app/js/geom.js');
+  const A = [[0, 0], [100, 0]];
+  assert.equal(basePairRungs(A, [[100, 10], [0, 10]], 4).rev, true);
+  assert.equal(basePairRungs(A, [[0, 10], [100, 10]], 4).rev, false);
+});

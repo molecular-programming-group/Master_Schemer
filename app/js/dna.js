@@ -10,6 +10,7 @@
 // frame, so a strand can run out of a duplex in phase (caps exist for all 10
 // helical phases).
 import TEX from './dna-tex.js';
+import RIBBON from './dna-tex-ribbon.js';
 import { GRID } from './geom.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -30,6 +31,9 @@ export const gridPitch = bpg => GRID / (bpg || DEFAULT_BPG);
 export const naturalD = bpg => gridPitch(bpg) / PITCH;
 export const naturalBases = (len, pitch) => Math.max(1, Math.round(len / pitch));
 // Spacing relative to natural B-DNA: >1 stretched, <1 compressed.
+// World units per Å at the DNA grid's natural diameter — sizes stock proteins to scale.
+export const DIAMETER_A = TEX.diameter; // Å, the duplex's full drawn height
+export const worldPerA = bpg => naturalD(bpg) / DIAMETER_A;
 export const spacing = (len, n, D) => len / Math.max(n, 1e-9) / (D * PITCH);
 
 // A strand's base layout along arc length [0, L].
@@ -141,6 +145,13 @@ export function midline(A, B, LA, LB, at, m = 64) {
 
 export const BASE_COLORS = { A: '#3a8a3e', C: '#2f6fd0', G: '#d59c12', T: '#c8352e' };
 export const COMPLEMENT = { A: 'T', T: 'A', C: 'G', G: 'C' };
+// A segment String read as a sequence: '' unless the whole string is bases
+// (whitespace and dashes ignored, U read as T, N an unknown base). At least 4
+// letters, so a domain named "a" or "tag" isn't mistaken for one.
+export function seqOf(str) {
+  const s = (str || '').replace(/[\s-]/g, '').toUpperCase().replace(/U/g, 'T');
+  return s.length >= 4 && /^[ACGTN]+$/.test(s) ? s : '';
+}
 // Deterministic "random" base for strand `id` at base index i — a UMI look
 // that doesn't reshuffle on every repaint.
 export function randomBase(id, i) {
@@ -161,14 +172,17 @@ function ensureDefs(id, build) {
 }
 
 const HH = TEX.halfH / TEX.ppb; // texture half-height in base units
+// Skins: texture sets baked in one frame (same rise, caps and height), so any
+// strand can wear any of them. Metrics above all come from the space-filling set.
+const SKINS = { space: TEX, ribbon: RIBBON };
 
 // One <pattern> per texture piece, in base units: the body repeats every 10
 // bases; a cap pattern is exactly its image, and pieces never reach outside it.
-function texRef(layer, part, k) {
-  const id = `dna-${layer}-${part}${part === 'body' ? '' : k}`;
+function texRef(skin, layer, part, k) {
+  const id = `dna-${skin === 'space' ? '' : skin + '-'}${layer}-${part}${part === 'body' ? '' : k}`;
   ensureDefs(id, () => {
-    const L = TEX.layers[layer];
-    const img = part === 'body' ? { src: L.tile, x: 0, w: 10 } : part === 'head' ? L.head[k] : { ...L.tail[k], x: -TEX.cap };
+    const S = SKINS[skin], L = S.layers[layer];
+    const img = part === 'body' ? { src: L.tile, x: 0, w: 10 } : part === 'head' ? L.head[k] : { ...L.tail[k], x: -S.cap };
     const p = el('pattern', { id, patternUnits: 'userSpaceOnUse', x: img.x, y: -HH, width: img.w, height: 2 * HH });
     // pattern content is laid out from the tile's own origin, not user-space 0
     el('image', { href: img.src, x: 0, y: 0, width: img.w, height: 2 * HH, preserveAspectRatio: 'none' }, p);
@@ -180,7 +194,7 @@ function texRef(layer, part, k) {
 // Grayscale → colour: 85% multiply by the colour, 15% the plain shading, so
 // even near-black strands keep visible form. Toon posterizes the shading into
 // flat bands first.
-function tintRef(hex, toon) {
+export function tintRef(hex, toon) {
   const id = `dna-tint-${hex.replace('#', '')}${toon ? '-toon' : ''}`;
   ensureDefs(id, () => {
     const f = el('filter', { id, 'color-interpolation-filters': 'sRGB', x: '-5%', y: '-5%', width: '110%', height: '110%' });
@@ -233,12 +247,15 @@ export function outlineOf(body, D) {
 //   caps:   { head, tail } — molecular end caps; an uncapped end is open: it
 //           tucks a little way into the duplex it runs on from
 //   toon:   flat-banded shading
-export function drawBrush(g, { path, knots, D, layers, breaks = [], caps, toon = false }) {
+//   skin:   texture set, 'space' (space-filling) or 'ribbon'
+export function drawBrush(g, { path, knots, D, layers, breaks = [], caps, toon = false, skin = 'space' }) {
+  if (!SKINS[skin]) skin = 'space';
+  const S = SKINS[skin];
   const u0 = Math.round(knots[0][1]), u1 = Math.round(knots[knots.length - 1][1]);
   const n = u1 - u0;
   if (path.length < 2 || n < 1) return;
   const sy = D * PITCH; // world units per base unit across the strand
-  const ov = TEX.layers[layers[0].tex].overhang;
+  const ov = S.layers[layers[0].tex].overhang;
   // extend the path straight out past each end, u running on at the end spacing
   const P = path.map(v => ({ ...v })), K = knots.map(k => [...k]);
   const extend = (end, bases) => {
@@ -300,9 +317,9 @@ export function drawBrush(g, { path, knots, D, layers, breaks = [], caps, toon =
     // image (the pattern wraps, and its edge would bleed in as a hairline)
     const rect = (li, L, a, b, color) => {
       let x0 = a - shift, x1 = b - shift;
-      if (part === 'head') { const h = TEX.layers[L.tex].head[k]; x0 = Math.max(x0, h.x + 0.05); x1 = Math.min(x1, h.x + h.w - 0.05); }
-      if (part === 'tail') { x0 = Math.max(x0, -TEX.cap + 0.05); x1 = Math.min(x1, -TEX.cap + TEX.layers[L.tex].tail[k].w - 0.05); }
-      if (x1 > x0) put(li, color, { x: x0, y: -HH, width: x1 - x0, height: 2 * HH, transform, fill: texRef(L.tex, part, k) });
+      if (part === 'head') { const h = S.layers[L.tex].head[k]; x0 = Math.max(x0, h.x + 0.05); x1 = Math.min(x1, h.x + h.w - 0.05); }
+      if (part === 'tail') { x0 = Math.max(x0, -TEX.cap + 0.05); x1 = Math.min(x1, -TEX.cap + S.layers[L.tex].tail[k].w - 0.05); }
+      if (x1 > x0) put(li, color, { x: x0, y: -HH, width: x1 - x0, height: 2 * HH, transform, fill: texRef(skin, L.tex, part, k) });
     };
     layers.forEach((L, li) => {
       if (!L.base) {
@@ -310,7 +327,7 @@ export function drawBrush(g, { path, knots, D, layers, breaks = [], caps, toon =
         if (color) rect(li, L, ua - eps, ub + eps, color);
         return;
       }
-      const bs = TEX.layers[L.tex].bshift;
+      const bs = S.layers[L.tex].bshift;
       for (let j = Math.floor(ua - bs); j < ub - bs; j++) {
         const a = Math.max(ua, j + bs), b = Math.min(ub, j + 1 + bs);
         const color = b > a && L.colorAt(tAt(K, (a + b) / 2), j);

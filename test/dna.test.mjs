@@ -51,3 +51,13 @@ test('midline pairs antiparallel strands end to end and merges straight runs', (
   assert.deepEqual(m.pts, [[0, 10], [100, 10]]);
   assert.deepEqual(m.f, [0, 1]);
 });
+
+test('seqOf: only whole sequences of 4+ bases count', async () => {
+  const { seqOf } = await import('../app/js/dna.js');
+  assert.equal(seqOf('gatt aca'), 'GATTACA');
+  assert.equal(seqOf('ACGU-NNA'), 'ACGTNNA');
+  assert.equal(seqOf('a'), '');        // a domain name, not a base
+  assert.equal(seqOf('tag'), '');
+  assert.equal(seqOf("domain a*"), '');
+  assert.equal(seqOf(undefined), '');
+});

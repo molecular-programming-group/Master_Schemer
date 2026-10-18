@@ -8,10 +8,11 @@ import {
 import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
-  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, dnaView, invalidateRenderCache,
+  linkStrand, rungSeqs, refSeq, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, dnaView, invalidateRenderCache,
   FONTS, LINE_H, INLINE_TAGS,
 } from './render.js';
-import { DEFAULT_BPG, spacing, uAt } from './dna.js';
+import { DEFAULT_BPG, seqOf, spacing, tintRef, uAt, worldPerA } from './dna.js';
+import MOLS from './mol-tex.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
 import { THEMES } from './themes.js';
 
@@ -147,7 +148,6 @@ svg.addEventListener('drop', e => {
   if (asset) placeAsset(asset, screenToWorld(eventScreen(e)));
 });
 
-svg.addEventListener('contextmenu', e => e.preventDefault());
 
 // ---- zoom ----
 
@@ -564,7 +564,7 @@ function findLink(a, b) {
      (linkKey(el.a) === kb && linkKey(el.b) === ka)));
 }
 
-function createLink(targets) {
+function createLink(targets, style) {
   if (findLink(targets[0], targets[1])) return; // never stack a second link on the same pair
   beginChange();
   const el = addElement({
@@ -572,7 +572,8 @@ function createLink(targets) {
     fill: resolveColor(currentColor()) || '#8a857c', opacity: 0.45,
   });
   // two DNA strands pair up as a duplex rather than a filled area
-  if (targets.every(t => byId(t.id)?.dna) && linkStrand(el.a) && linkStrand(el.b)) el.style = 'bases';
+  if (style) el.style = style;
+  else if (targets.every(t => byId(t.id)?.dna) && linkStrand(el.a) && linkStrand(el.b)) el.style = 'bases';
   state.selection = [{ id: el.id }];
   changed();
 }
@@ -696,6 +697,7 @@ function displayName(el, i) {
     path: 'line', ink: 'freehand', ellipse: 'ellipse', rect: 'rectangle',
     aline: 'line note', aarrow: 'arrow',
   };
+  if (MOLS[el.mol]) return label || MOLS[el.mol].name;
   const kind = el.type === 'aline' && (el.cap0 !== 'none' || el.cap1 !== 'none') ? 'arrow' : names[el.type];
   return label || `${kind || el.type} ${i + 1}`;
 }
@@ -706,7 +708,7 @@ const domainString = el => (el.segments || [])
   .slice().sort((a, b) => a.t0 - b.t0).map(s => s.string || '').join('');
 
 // Inline rename on double-click; single click selects.
-function sideItem({ depth, name, color, selected, onSelect, onRename, collapsible, collapsed, onToggle, dragRef }) {
+function sideItem({ depth, name, color, selected, onSelect, onRename, collapsible, collapsed, onToggle, dragRef, ctx }) {
   const row = document.createElement('div');
   row.className = 'side-item';
   row.style.paddingLeft = `${8 + depth * 14}px`;
@@ -734,6 +736,13 @@ function sideItem({ depth, name, color, selected, onSelect, onRename, collapsibl
     dot.className = 'seg-dot';
     dot.style.background = color;
     row.appendChild(dot);
+  }
+  if (ctx) { // object, segment and group rows: the canvas's right-click menu
+    row.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      if (!selected) onSelect();
+      openCtx(e.clientX, e.clientY);
+    });
   }
   const label = document.createElement('span');
   label.className = 'side-name';
@@ -826,7 +835,7 @@ function segItems(el, depth, into) {
       depth, name: resolveLabel(seg.label || '') || `segment ${i + 1}`, color: resolveColor(seg.color),
       selected: state.selection.some(s => s.id === el.id && s.seg === i),
       onSelect: () => { state.selection = [{ id: el.id, seg: i }]; refresh(); },
-      onRename: v => { setLabel(seg, v); },
+      onRename: v => { setLabel(seg, v); }, ctx: true,
     }));
   });
 }
@@ -840,7 +849,7 @@ function objectItems(els, depth, into) {
       selected: state.selection.some(s => s.id === el.id && s.seg === undefined),
       onSelect: () => { state.selection = [{ id: el.id }]; refresh(); },
       onRename: v => { setLabel(el, v); },
-      dragRef: { kind: 'el', id: el.id },
+      dragRef: { kind: 'el', id: el.id }, ctx: true,
     };
     const segs = el.type === 'path' && (el.segments || []).length;
     const { box } = parentNode(into, `p:${el.id}`, opts, segs);
@@ -861,7 +870,7 @@ function renderGroupTree(gid, depth, into, placed) {
       members.every(m => state.selection.some(s => s.id === m.id && s.seg === undefined)),
     onSelect: () => { state.selection = members.map(m => ({ id: m.id })); refresh(); },
     onRename: v => { g.name = v; },
-    dragRef: { kind: 'grp', id: gid },
+    dragRef: { kind: 'grp', id: gid }, ctx: true,
   }, childGroups(gid).length || direct.length);
   row.classList.add('side-card');
   if (!box) return;
@@ -957,6 +966,63 @@ try {
   }
 } catch { /* storage blocked — skip seeding */ }
 
+// Stock proteins (tools/bake_molecules.py), to scale with DNA drawn on the
+// default grid. A DNA-binding protein comes threaded on a strand (a duplex, or
+// one strand for SSB), grouped with it; the DNA is a subgroup, so a second
+// click selects all of it, to delete. The protein goes last so its near side
+// paints over the strands; a bound part (Cas9's sgRNA: m.part) is its own
+// object on the same box, after the protein, so it stacks over it.
+const MOL_COLORS = { taq: '#e0701f', phi29: '#1f8fa0', ecori: '#c8352e', ligase: '#3a8a3e', igg: '#2f6fd0', ssb: '#d59c12', cas9: '#7a4fd0', sgrna: '#e0701f' };
+const DNA_GRAY = '#8a857c';
+const molAsset = key => {
+  const m = MOLS[key], s = worldPerA(DEFAULT_BPG);
+  const w = Math.round(m.w * s), h = Math.round(m.h * s);
+  const mol = k => ({
+    type: 'rect', id: newId(), x: 0, y: 0, w, h,
+    mol: k, color: MOL_COLORS[k] || '#8a857c', width: 0, dnaToon: true, dnaOutline: true,
+  });
+  const parts = Object.keys(MOLS).filter(k => MOLS[k].part === key);
+  const protein = [mol(key), ...parts.map(mol)];
+  const name = [m.name, ...parts.map(k => MOLS[k].name)].join(' + ');
+  if (!m.front) return { id: newId(), stock: true, name: `${name} (${m.pdb})`, elements: protein, groups: [] };
+  const gid = newId(), did = newId(), y = m.axis * w / m.w;
+  const L = Math.ceil(w / GRID + 4) * GRID, x0 = (w - L) / 2, x1 = x0 + L; // whole turns, centred
+  const strand = pts => ({
+    type: 'path', id: newId(), pts, color: DNA_GRAY, width: 2, segments: [], linecap: 'butt',
+    dna: true, dnaToon: true, dnaOutline: true, group: did,
+  });
+  const dna = m.strand === 'ss' ? [strand([[x0, y], [x1, y]])] : [
+    strand([[x0, y - 5], [x1, y - 5]]),
+    strand([[x1, y + 5], [x0, y + 5]]),
+  ];
+  if (dna.length === 2) dna.push({ type: 'link', id: newId(), a: { id: dna[0].id }, b: { id: dna[1].id }, style: 'bases', fill: '#2b2622', group: did });
+  return {
+    id: newId(), stock: true, name: `${name} on DNA (${m.pdb})`,
+    elements: [...dna, ...protein.map(el => ({ ...el, group: gid }))],
+    groups: [{ id: gid, name: m.name }, { id: did, name: 'DNA', parent: gid }],
+  };
+};
+try {
+  const SEED_KEY = 'master-schemer-lib-seeded-mol4'; // bump to reissue the stock set
+  if (!localStorage.getItem(SEED_KEY)) {
+    // ponytail: replaces the previous stock set wholesale (user edits to it included);
+    // sets before `stock` tags are recognised by a protein named "… (PDB)"
+    library = library.filter(a => !(a.stock || (a.elements.some(e => e.mol) && /\([0-9A-Z]{4}\)$/.test(a.name))));
+    for (const a of library) if (!a.category && /^fluorophore/.test(a.name)) a.category = 'Fluorophores';
+    const keys = Object.keys(MOLS).filter(k => !MOLS[k].part);
+    library.push(
+      ...keys.map(k => ({ ...molAsset(k), category: 'Proteins' })),
+      ...keys.map(k => {
+        const a = molAsset(k);
+        for (const el of a.elements) if (el.mol) { el.molIcon = true; delete el.dnaToon; }
+        return { ...a, name: a.name.replace(/ \(\w{4}\)$/, ''), category: 'Protein icons' };
+      }),
+    );
+    localStorage.setItem(SEED_KEY, '1');
+    saveLibrary();
+  }
+} catch { /* storage blocked — skip seeding */ }
+
 function assetFromSelection() {
   const ids = new Set();
   for (const s of state.selection) {
@@ -999,11 +1065,13 @@ function insertElements(srcElements, srcGroups, positioner) {
   const idMap = new Map();
   for (const el of els) { const nid = newId(); idMap.set(el.id, nid); el.id = nid; }
   const groupMap = new Map();
-  for (const g of srcGroups || []) {
+  const added = (srcGroups || []).map(g => {
     const ng = { id: newId(), name: g.name };
     state.doc.groups.push(ng);
     groupMap.set(g.id, ng.id);
-  }
+    return [g, ng];
+  });
+  for (const [g, ng] of added) if (groupMap.has(g.parent)) ng.parent = groupMap.get(g.parent); // nesting
   const placed = els.filter(el => {
     if (el.group) el.group = groupMap.get(el.group);
     if (!el.group) delete el.group;
@@ -1156,6 +1224,10 @@ function assetThumbnail(asset) {
       acc(el.cx - el.rx, el.cy - el.ry); acc(el.cx + el.rx, el.cy + el.ry);
       mk({ tag: 'ellipse', cx: el.cx, cy: el.cy, rx: el.rx, ry: el.ry,
         fill: el.glow ? (el.fill || stroke) : (el.fill || 'none'), stroke: el.glow ? 'none' : stroke, 'stroke-width': sw });
+    } else if (MOLS[el.mol]) {
+      acc(el.x, el.y); acc(el.x + el.w, el.y + el.h);
+      mk({ tag: 'image', href: MOLS[el.mol][el.molIcon ? 'icon' : 'src'], x: el.x, y: el.y, width: el.w, height: el.h,
+        filter: tintRef(resolveColor(el.color) || '#8a857c', !!el.dnaToon) });
     } else if (el.type === 'rect' || el.type === 'card') {
       acc(el.x, el.y); acc(el.x + el.w, el.y + el.h);
       mk({ tag: 'rect', x: el.x, y: el.y, width: el.w, height: el.h, rx: el.r || 0,
@@ -1172,32 +1244,84 @@ function assetThumbnail(asset) {
   return svgt;
 }
 
+// Library categories, collapsible; an asset without one is the user's own.
+// Drag an entry onto a heading to move it there; double-click a heading to rename it.
+const MY_ASSETS = 'My assets';
+const catOf = a => a.category || MY_ASSETS;
+let libOpen = new Set([MY_ASSETS]);
+try { libOpen = new Set(JSON.parse(localStorage.getItem('master-schemer-lib-open')) || [MY_ASSETS]); } catch { /* defaults */ }
+function toggleLibCat(cat) {
+  if (libOpen.has(cat)) libOpen.delete(cat); else libOpen.add(cat);
+  try { localStorage.setItem('master-schemer-lib-open', JSON.stringify([...libOpen])); } catch { /* full */ }
+  renderLibrary();
+}
+
 function renderLibrary() {
   const body = $('libraryBody');
   if (body.contains(document.activeElement)) return; // mid-rename
   body.replaceChildren();
-  for (const asset of library) {
-    const row = sideItem({
-      depth: 0, name: asset.name || 'asset', color: null, selected: false,
-      onSelect: () => placeAsset(asset),
-      onRename: v => { asset.name = v; saveLibrary(); },
+  const cats = [...new Set([MY_ASSETS, ...library.map(catOf)])];
+  for (const cat of cats) {
+    const assets = library.filter(a => catOf(a) === cat);
+    const head = sideItem({
+      depth: 0, name: cat, color: null, selected: false,
+      collapsible: true, collapsed: !libOpen.has(cat), onToggle: () => toggleLibCat(cat),
+      onSelect: () => toggleLibCat(cat),
+      onRename: v => {
+        for (const a of assets) { if (v.trim() && v !== MY_ASSETS) a.category = v.trim(); else delete a.category; }
+        if (libOpen.delete(cat)) libOpen.add(v.trim() || MY_ASSETS);
+        saveLibrary();
+      },
     });
-    row.insertBefore(assetThumbnail(asset), row.querySelector('.side-name'));
-    row.draggable = true;
-    row.addEventListener('dragstart', e => e.dataTransfer.setData('text/asset-id', asset.id));
-    row.title = 'Click or drag onto the canvas to place · double-click to rename';
-    const del = document.createElement('button');
-    del.className = 'side-del';
-    del.textContent = '×';
-    del.title = 'Remove from library';
-    del.addEventListener('click', e => {
-      e.stopPropagation();
-      library = library.filter(a => a !== asset);
+    head.classList.add('lib-cat');
+    const count = document.createElement('span');
+    count.className = 'lib-count';
+    count.textContent = assets.length;
+    head.appendChild(count);
+    head.title = 'Click to open or close · double-click to rename · drop an entry here to move it';
+    head.addEventListener('dragover', e => {
+      if (e.dataTransfer.types.includes('text/asset-id')) { e.preventDefault(); head.classList.add('lib-drop'); }
+    });
+    head.addEventListener('dragleave', () => head.classList.remove('lib-drop'));
+    head.addEventListener('drop', e => {
+      e.preventDefault();
+      const a = library.find(x => x.id === e.dataTransfer.getData('text/asset-id'));
+      if (!a) return;
+      if (cat === MY_ASSETS) delete a.category; else a.category = cat;
       saveLibrary();
-      refresh();
+      renderLibrary();
     });
-    row.appendChild(del);
-    body.appendChild(row);
+    body.appendChild(head);
+    if (!libOpen.has(cat)) continue;
+    if (!assets.length) {
+      const p = document.createElement('p');
+      p.className = 'muted side-empty';
+      p.textContent = 'Save a selection to keep it here.';
+      body.appendChild(p);
+    }
+    for (const asset of assets) {
+      const row = sideItem({
+        depth: 1, name: asset.name || 'asset', color: null, selected: false,
+        onSelect: () => placeAsset(asset),
+        onRename: v => { asset.name = v; saveLibrary(); },
+      });
+      row.insertBefore(assetThumbnail(asset), row.querySelector('.side-name'));
+      row.draggable = true;
+      row.addEventListener('dragstart', e => e.dataTransfer.setData('text/asset-id', asset.id));
+      row.title = 'Click or drag onto the canvas to place · double-click to rename';
+      const del = document.createElement('button');
+      del.className = 'side-del';
+      del.textContent = '×';
+      del.title = 'Remove from library';
+      del.addEventListener('click', e => {
+        e.stopPropagation();
+        library = library.filter(a => a !== asset);
+        saveLibrary();
+        refresh();
+      });
+      row.appendChild(del);
+      body.appendChild(row);
+    }
   }
   const actions = document.createElement('div');
   actions.className = 'lib-actions';
@@ -1897,7 +2021,7 @@ const KIND = {
   link: ['structure', 'Link'], text: ['annotation', 'Text note'], ellipse: ['annotation', 'Ellipse'],
   rect: ['annotation', 'Rectangle'], ink: ['annotation', 'Freehand'],
 };
-const kindOf = el => el.type === 'aline'
+const kindOf = el => MOLS[el.mol] ? ['annotation', `${MOLS[el.mol].name} · PDB ${MOLS[el.mol].pdb}`] : el.type === 'aline'
   ? ['annotation', el.cap0 !== 'none' || el.cap1 !== 'none' ? 'Arrow' : 'Line']
   : KIND[el.type] || ['annotation', el.type];
 const CLASS_NAME = { primary: 'Primary object', structure: 'Structure', annotation: 'Annotation', group: 'Group' };
@@ -2117,6 +2241,8 @@ function dnaStyleControls(els) {
   const frag = document.createDocumentFragment();
   const first = els[0];
   const setAll = (k, v) => { for (const el of els) { if (v) el[k] = v; else delete el[k]; } };
+  frag.appendChild(fieldRow('Model', mappedSelect({ space: 'Space-filling', ribbon: 'Ribbon + bases' },
+    () => first.dnaSkin || 'space', v => setAll('dnaSkin', v === 'space' ? null : v))));
   frag.appendChild(fieldRow('Shading', mappedSelect({ soft: 'Soft (rendered)', toon: 'Toon (flat bands)' },
     () => (first.dnaToon ? 'toon' : 'soft'), v => setAll('dnaToon', v === 'toon'))));
   frag.appendChild(checkboxRow('Black outline', () => !!first.dnaOutline, v => setAll('dnaOutline', v)));
@@ -2130,10 +2256,19 @@ function dnaStyleControls(els) {
       changed)));
   }
   if (first.dnaColor === 'sequence') {
+    frag.appendChild(fieldRow('Unsequenced', mappedSelect({ plain: 'Base colour', random: 'Random bases' },
+      () => first.seqUnknown || 'plain', v => setAll('seqUnknown', v === 'random' ? v : null))));
+    if (first.seqUnknown !== 'random') {
+      frag.appendChild(fieldRow('Base colour', colorPicker(`bases:${first.id}`,
+        () => (/^#[0-9a-f]{6}$/i.test(first.baseColor || '') ? first.baseColor : '#f1ece2'),
+        Object.assign(hex => { for (const el of els) el.baseColor = hex; render(); }, { begin: beginChange }),
+        changed)));
+    }
     const p = document.createElement('p');
     p.className = 'muted';
-    p.textContent = 'A green · C blue · G amber · T red. A segment whose String is a sequence shows it; '
-      + 'other bases are random. Paired bases show their partner’s complement.';
+    p.textContent = 'A green · C blue · G amber · T red. A segment whose String is a sequence (ACGT/U, '
+      + '4+ letters; N = unknown) shows it and gets exactly that many bases. Paired bases without '
+      + 'their own sequence show their partner’s complement.';
     frag.appendChild(p);
   }
   return frag;
@@ -2228,6 +2363,11 @@ function segmentBases(el, i) {
   const link = state.doc.elements.find(l => duplexLink(l) &&
     [l.a, l.b].some(r => r.id === el.id && (r.seg === i || r.seg === undefined)));
   if (link) {
+    if (linkSeq(link)) {
+      frag.appendChild(fieldRow('Base pairs', basesInput(() => duplexBases(link), () => {}, { readOnly: true })));
+      frag.appendChild(seqNote());
+      return frag;
+    }
     frag.appendChild(fieldRow('Base pairs', basesInput(() => duplexBases(link),
       v => { if (v === null) delete link.bases; else link.bases = v; }, { auto: !link.bases })));
     const p = document.createElement('p');
@@ -2238,14 +2378,33 @@ function segmentBases(el, i) {
   }
   const lay = dnaLayout(el);
   const n = Math.round(uAt(lay.knots, seg.t1) - uAt(lay.knots, seg.t0));
+  if (seqOf(seg.string)) {
+    frag.appendChild(fieldRow('Bases', basesInput(() => n, () => {}, { readOnly: true })));
+    frag.appendChild(seqNote());
+    return frag;
+  }
   frag.appendChild(fieldRow('Bases', basesInput(() => seg.bases ?? n,
     v => { if (v === null) delete seg.bases; else seg.bases = v; }, { auto: !seg.bases })));
   if (seg.bases) frag.appendChild(spacingNote(seg.t1 - seg.t0, seg.bases, diam(el), false, () => delete seg.bases));
   return frag;
 }
 
+// Shown where a sequence, not the user, sets the base count.
+function seqNote() {
+  const p = document.createElement('p');
+  p.className = 'muted';
+  p.textContent = 'Set by the sequence in the String field — edit or clear it to change the count.';
+  return p;
+}
+const linkSeq = l => refSeq(l.a, byId(l.a.id)) || refSeq(l.b, byId(l.b.id));
+
 function duplexBasesControls(l) {
   const frag = document.createDocumentFragment();
+  if (linkSeq(l)) {
+    frag.appendChild(fieldRow('Base pairs', basesInput(() => duplexBases(l), () => {}, { readOnly: true })));
+    frag.appendChild(seqNote());
+    return frag;
+  }
   frag.appendChild(fieldRow('Base pairs', basesInput(() => duplexBases(l),
     v => { if (v === null) delete l.bases; else l.bases = v; }, { auto: !l.bases })));
   const A = linkStrand(l.a), B = linkStrand(l.b);
@@ -2265,6 +2424,16 @@ function joinSelectedPaths() {
 const LINECAP_NAMES = { round: 'rounded', butt: 'flat', square: 'square' };
 const LINECAP_VALUES = { rounded: 'round', flat: 'butt', square: 'square' };
 
+function joinLines({ a, b }) {
+  const merged = mergePaths(a.pts, a.segments || [], b.pts, b.segments || []);
+  beginChange();
+  a.pts = merged.pts;
+  a.segments = merged.segments;
+  state.doc.elements = state.doc.elements.filter(el => el !== b);
+  state.selection = [{ id: a.id }];
+  changed();
+}
+
 function renderPanel() {
   const panel = $('panelBody');
   // don't rebuild under the user's cursor while they type in a field
@@ -2283,7 +2452,17 @@ function renderPanel() {
   const styleSec = document.createElement('div');
   styleSec.className = 'panel-section sec-prop';
   let styled = false;
-  if (!single || (single.el.width !== undefined && !single.el.dna)) {
+  if (single?.el.mol) {
+    const el = single.el;
+    styleSec.appendChild(fieldRow('Shading', mappedSelect({ soft: 'Soft (rendered)', toon: 'Toon (flat bands)', cartoon: 'Cartoon (icon)' },
+      () => (el.molIcon ? 'cartoon' : el.dnaToon ? 'toon' : 'soft'), v => {
+        delete el.dnaToon; delete el.molIcon;
+        if (v === 'toon') el.dnaToon = true;
+        if (v === 'cartoon') el.molIcon = true;
+      })));
+    styleSec.appendChild(checkboxRow('Black outline', () => !!el.dnaOutline, v => { if (v) el.dnaOutline = true; else delete el.dnaOutline; }));
+    styled = true;
+  } else if (!single || (single.el.width !== undefined && !single.el.dna)) {
     styleSec.appendChild(fieldRow('Width', widthControl(
       () => (single?.el.width) ?? state.width,
       v => {
@@ -2293,7 +2472,7 @@ function renderPanel() {
       !!(single && single.el.width !== undefined))));
     styled = true;
   }
-  if (single && ['path', 'aline', 'ellipse', 'ink', 'rect'].includes(single.el.type) && single.seg === undefined) {
+  if (single && !single.el.mol && ['path', 'aline', 'ellipse', 'ink', 'rect'].includes(single.el.type) && single.seg === undefined) {
     const el = single.el;
     if (el.type === 'path') {
       styleSec.appendChild(fieldRow('Draw as', mappedSelect({ line: 'Line', dna: 'DNA molecule' },
@@ -2394,15 +2573,8 @@ function renderPanel() {
     }
     const join = joinSelectedPaths();
     if (join) {
-      row.append(smallButton('Join lines', () => {
-        const merged = mergePaths(join.a.pts, join.a.segments || [], join.b.pts, join.b.segments || []);
-        beginChange();
-        join.a.pts = merged.pts;
-        join.a.segments = merged.segments;
-        state.doc.elements = state.doc.elements.filter(el => el !== join.b);
-        state.selection = [{ id: join.a.id }];
-        changed();
-      }, 'Fuse two lines whose ends meet on the same grid point'));
+      row.append(smallButton('Join lines', () => joinLines(join),
+        'Fuse two lines whose ends meet on the same grid point'));
     }
     sec.appendChild(row);
     sec.appendChild(deleteButton('Delete selection'));
@@ -2483,18 +2655,23 @@ function renderPanel() {
       return;
     }
     if (bases) {
+      const rs = rungSeqs(el);
       const n = document.createElement('input');
       n.type = 'number'; n.min = 1; n.max = 1000; n.step = 1;
-      n.value = el.bases || defaultBases(A, B);
+      n.value = rs.n;
+      n.readOnly = rs.fromSeq;
       n.addEventListener('change', () => {
         const v = clamp(Math.round(+n.value) || 1, 1, 1000); n.value = v;
         beginChange(); el.bases = v; changed();
       });
       sec.appendChild(fieldRow('Bases', n));
+      if (rs.fromSeq) sec.appendChild(seqNote());
       sec.appendChild(fieldRow('Base pair look', mappedSelect(
         { line: 'Rung', dot: 'Dot', tick: 'Tick with gap' },
         () => el.rung || 'line', v => { if (v === 'line') delete el.rung; else el.rung = v; })));
-      sec.appendChild(fillControl(el, { optional: false, label: 'Base pair', pattern: false }));
+      sec.appendChild(fieldRow('Colour by', mappedSelect({ fill: 'One colour', sequence: 'Sequence (A C G T)' },
+        () => el.rungColor || 'fill', v => { if (v === 'fill') delete el.rungColor; else el.rungColor = v; })));
+      sec.appendChild(fillControl(el, { optional: false, label: el.rungColor ? 'Unsequenced' : 'Base pair', pattern: false }));
       sec.appendChild(deleteButton());
       panel.appendChild(sec);
       return;
@@ -2529,7 +2706,7 @@ function renderPanel() {
       path: 'Line', card: 'Card', arrow: 'Connection', text: 'Note', ink: 'Freehand',
       ellipse: 'Ellipse', rect: 'Rectangle', aline: 'Line note', aarrow: 'Arrow note',
     };
-    sec.appendChild(sectionTitle(titles[el.type] || el.type));
+    sec.appendChild(sectionTitle(MOLS[el.mol]?.name || titles[el.type] || el.type));
     if (el.type === 'card') {
       sec.appendChild(fieldRow('Title', boundInput(
         () => el.title, v => { el.title = v; }, { placeholder: 'section title' })));
@@ -3190,6 +3367,239 @@ Object.assign(MENU_ACTS, {
   alignTop: () => alignSelection('top'), alignVcenter: () => alignSelection('vcenter'), alignBottom: () => alignSelection('bottom'),
   distH: () => distributeSelection('h'), distV: () => distributeSelection('v'),
 });
+
+// ---- right-click menu ----
+// Built fresh from the selection each time, showing only what applies to it.
+// Right-clicking something unselected selects it first (a grouped object
+// selects its whole top-level group, as a left click does); right-clicking
+// empty canvas clears the selection and offers canvas-wide commands.
+// Items: { label, act, kbd?, checked?, disabled?, sub? } or '-' (separator).
+
+const edit = fn => () => { beginChange(); fn(); changed(); };
+const linksOn = (id, seg) => state.doc.elements.filter(l => l.type === 'link' &&
+  [l.a, l.b].some(r => r?.id === id && (seg === undefined || r.seg === seg)));
+const topGroup = el => { let g = byGroup(el.group); while (g?.parent && byGroup(g.parent)) g = byGroup(g.parent); return g; };
+
+function ctxItems() {
+  const sel = state.selection, els = selectedElements(), n = els.length;
+  const items = [], add = (label, act, o = {}) => items.push({ label, act, ...o }), sep = () => items.push('-');
+  const pressed = id => $(id).getAttribute('aria-pressed') === 'true';
+  if (!sel.length) {
+    add('Paste', pasteClipboard, { kbd: 'Ctrl+V', disabled: !clipboard });
+    add('Select All', selectAll, { kbd: 'Ctrl+A', disabled: !state.doc.elements.length });
+    sep();
+    add('Fit Scheme', () => $('zoomFit').click(), { kbd: '1' });
+    add('Show Grid', toggleGrid, { checked: MENU_CHECKS.grid() });
+    add('DNA Molecules', () => $('dnaToggle').click(), { checked: pressed('dnaToggle') });
+    add('Show Data Boxes', () => $('dataToggle').click(), { checked: pressed('dataToggle') });
+    return items;
+  }
+  const single = sel.length === 1 ? sel[0] : null;
+  const segOnly = sel.every(s => s.seg !== undefined);
+  const linksOnly = n > 0 && els.every(e => e.type === 'link');
+  // the selection is exactly one group (as a click on a grouped object makes it)
+  const oneGroup = !segOnly && [...whollySelectedGroups()].some(gid => groupElementMembers(gid).length === n);
+
+  // a domain: back to its line
+  if (single?.seg !== undefined) {
+    add('Select Whole Line', () => { state.selection = [{ id: single.id }]; refresh(); });
+    sep();
+  }
+
+  // links between two items, or the links on one item
+  const linkT = !oneGroup && linkTargetsFromSelection();
+  if (linkT) {
+    const existing = findLink(linkT[0], linkT[1]);
+    const strands = linkT.every(t => !t.group && linkStrand(t));
+    const dna = linkT.every(t => byId(t.id)?.dna);
+    if (existing) add('Unlink', edit(() => { state.doc.elements = state.doc.elements.filter(e => e !== existing); }));
+    else if (dna && strands) add('Pair as Duplex', () => createLink(linkT));
+    else {
+      if (strands) add('Pair with Base Pairs', () => createLink(linkT, 'bases'));
+      add(strands ? 'Link with Fill' : 'Link', () => createLink(linkT));
+    }
+  }
+  const lone = single && byId(single.id);
+  if (lone?.type === 'link') {
+    const strands = linkStrand(lone.a) && linkStrand(lone.b);
+    if (duplexLink(lone)) add('Select Both Strands', () => { state.selection = [{ id: lone.a.id }, { id: lone.b.id }]; refresh(); });
+    if (strands && !duplexLink(lone)) {
+      add(lone.style === 'bases' ? 'Show as Fill' : 'Show as Base Pairs',
+        edit(() => { lone.style = lone.style === 'bases' ? 'fill' : 'bases'; }));
+    }
+    add('Unlink', deleteSelection);
+  } else if (lone) {
+    const attached = linksOn(lone.id, single.seg);
+    if (attached.length) {
+      add(attached.length === 1 ? 'Remove Link' : `Remove ${attached.length} Links`,
+        edit(() => { state.doc.elements = state.doc.elements.filter(e => !attached.includes(e)); }));
+    }
+  }
+  if (items.length && items[items.length - 1] !== '-') sep();
+
+  // lines and DNA
+  const join = joinSelectedPaths();
+  if (join) add('Join Lines', () => joinLines(join));
+  const paths = els.filter(e => e.type === 'path');
+  if (paths.length) {
+    const allDNA = paths.every(p => p.dna);
+    add('Draw as DNA', edit(() => setDNA(paths, !allDNA)), { checked: allDNA });
+    if (allDNA) {
+      const all = k => paths.every(p => p[k]);
+      const toggle = (k, v) => edit(() => { for (const p of paths) { if (v) p[k] = v; else delete p[k]; } });
+      add('DNA Look', null, {
+        sub: [
+          { label: 'Space-filling', act: toggle('dnaSkin', null), checked: !paths.some(p => p.dnaSkin) },
+          { label: 'Ribbon + bases', act: toggle('dnaSkin', 'ribbon'), checked: paths.every(p => p.dnaSkin === 'ribbon') },
+          '-',
+          { label: 'Toon Shading', act: toggle('dnaToon', !all('dnaToon')), checked: all('dnaToon') },
+          { label: 'Black Outline', act: toggle('dnaOutline', !all('dnaOutline')), checked: all('dnaOutline') },
+          '-',
+          { label: 'Colour by Strand', act: toggle('dnaColor', null), checked: !paths.some(p => p.dnaColor) },
+          { label: 'Backbone + Bases', act: toggle('dnaColor', 'bases'), checked: paths.every(p => p.dnaColor === 'bases') },
+          { label: 'Sequence (A C G T)', act: toggle('dnaColor', 'sequence'), checked: paths.every(p => p.dnaColor === 'sequence') },
+        ],
+      });
+      add('Snap to DNA Grid', () => snapDNA(paths));
+    }
+  }
+  if (items.length && items[items.length - 1] !== '-') sep();
+
+  // groups
+  if (n >= 2 && !oneGroup) add('Group', groupSelection, { kbd: 'Ctrl+G' });
+  if (whollySelectedGroups().size) add('Ungroup', ungroupSelection, { kbd: 'Ctrl+Shift+G' });
+  if (lone && single.seg === undefined && lone.group) {
+    const g = byGroup(lone.group), top = topGroup(lone);
+    if (top) add(`Select Group “${top.name || 'group'}”`, () => { state.selection = groupElementMembers(top.id).map(x => ({ id: x.id })); refresh(); });
+    if (g && g !== top) add(`Select Group “${g.name || 'group'}”`, () => { state.selection = groupElementMembers(g.id).map(x => ({ id: x.id })); refresh(); });
+    add('Remove from Group', () => removeFromGroup(lone));
+  }
+  if (items.length && items[items.length - 1] !== '-') sep();
+
+  // the object itself
+  if (lone && single.seg === undefined && !linksOnly && !isSemantic(lone)) add('Promote to Object', edit(() => { lone.semantic = true; }));
+  if (n) {
+    if (!linksOnly) add('Save to Library', assetFromSelection);
+    add('Zoom to Selection', zoomToSelection, { kbd: '2' });
+    add('Arrange', null, {
+      sub: [
+        { label: 'Bring to Front', act: () => reorder('front'), kbd: 'Ctrl+Shift+]' },
+        { label: 'Bring Forward', act: () => reorder('up'), kbd: 'Ctrl+]' },
+        { label: 'Send Backward', act: () => reorder('down'), kbd: 'Ctrl+[' },
+        { label: 'Send to Back', act: () => reorder('back'), kbd: 'Ctrl+Shift+[' },
+        '-',
+        { label: 'Rotate 90° Left', act: () => transformSelection('ccw') },
+        { label: 'Rotate 90° Right', act: () => transformSelection('cw') },
+        { label: 'Flip Horizontal', act: () => transformSelection('h') },
+        { label: 'Flip Vertical', act: () => transformSelection('v') },
+      ],
+    });
+  }
+  if (n >= 2) {
+    add('Align', null, {
+      sub: [
+        ...['Left', 'Hcenter', 'Right', 'Top', 'Vcenter', 'Bottom'].map(k => ({
+          label: { Hcenter: 'Center', Vcenter: 'Middle' }[k] || k, act: MENU_ACTS[`align${k}`],
+        })),
+        ...(n >= 3 ? ['-', { label: 'Distribute Horizontally', act: MENU_ACTS.distH },
+          { label: 'Distribute Vertically', act: MENU_ACTS.distV }] : []),
+      ],
+    });
+  }
+  if (items.length && items[items.length - 1] !== '-') sep();
+
+  // clipboard
+  if (n) {
+    add('Cut', cutSelection, { kbd: 'Ctrl+X' });
+    add('Copy', copySelection, { kbd: 'Ctrl+C' });
+    if (!linksOnly) add('Duplicate', duplicateSelection, { kbd: 'Ctrl+D' });
+  }
+  add('Paste', pasteClipboard, { kbd: 'Ctrl+V', disabled: !clipboard });
+  add(segOnly ? (sel.length > 1 ? 'Delete Segments' : 'Delete Segment') : 'Delete', deleteSelection, { kbd: 'Del' });
+  return items;
+}
+
+let ctxMenu = null;
+function closeCtx() { ctxMenu?.remove(); ctxMenu = null; }
+function ctxList(items) {
+  const list = document.createElement('div');
+  list.className = 'menu-list';
+  list.setAttribute('role', 'menu');
+  items.forEach((it, i) => {
+    if (it === '-') { // no leading, trailing or doubled separators
+      if (i && i < items.length - 1 && items[i - 1] !== '-') list.appendChild(document.createElement('hr'));
+      return;
+    }
+    const b = document.createElement('button');
+    b.setAttribute('role', it.checked === undefined ? 'menuitem' : 'menuitemcheckbox');
+    if (it.checked !== undefined) b.setAttribute('aria-checked', String(!!it.checked));
+    b.disabled = !!it.disabled;
+    b.append(it.label);
+    if (it.kbd || it.sub) {
+      const k = document.createElement('kbd');
+      k.textContent = it.sub ? '▸' : it.kbd;
+      b.append(k);
+    }
+    if (!it.sub) {
+      b.addEventListener('click', () => { closeCtx(); it.act(); });
+      list.appendChild(b);
+      return;
+    }
+    b.setAttribute('aria-haspopup', 'true');
+    const wrap = document.createElement('div');
+    wrap.className = 'ctx-sub';
+    wrap.append(b, ctxList(it.sub));
+    list.appendChild(wrap);
+  });
+  return list;
+}
+function openCtx(x, y) {
+  closeCtx();
+  setMenu(null);
+  ctxMenu = ctxList(ctxItems());
+  ctxMenu.classList.add('ctx-menu');
+  document.body.appendChild(ctxMenu);
+  // keep it on screen; submenus open leftwards near the right edge
+  const r = ctxMenu.getBoundingClientRect();
+  ctxMenu.style.left = `${Math.max(4, Math.min(x, innerWidth - r.width - 4))}px`;
+  ctxMenu.style.top = `${Math.max(4, Math.min(y, innerHeight - r.height - 4))}px`;
+  if (x + r.width * 2 > innerWidth) ctxMenu.classList.add('flip');
+  ctxMenu.querySelector('button:not(:disabled)')?.focus();
+}
+// Right-click target → selection. hit: { id, seg } or null for empty canvas.
+function ctxSelect(hit) {
+  if (!hit) { state.selection = []; refresh(); return; }
+  const inSel = state.selection.some(s => s.id === hit.id && (s.seg === hit.seg || s.seg === undefined));
+  if (inSel) return;
+  const el = byId(hit.id), top = hit.seg === undefined && el?.group && topGroup(el);
+  state.selection = top ? groupElementMembers(top.id).map(x => ({ id: x.id })) : [hit];
+  refresh();
+}
+svg.addEventListener('contextmenu', e => {
+  if (e.target.closest?.('.inline-edit')) return; // the text editor keeps the native menu (spelling)
+  e.preventDefault();
+  if (isDragging()) return;
+  const g = e.target.closest?.('[data-id]');
+  const seg = e.target.getAttribute?.('data-seg') ?? g?.getAttribute('data-segi');
+  ctxSelect(g && byId(g.getAttribute('data-id'))
+    ? { id: g.getAttribute('data-id'), ...(seg != null ? { seg: +seg } : {}) } : null);
+  openCtx(e.clientX, e.clientY);
+});
+document.addEventListener('pointerdown', e => { if (ctxMenu && !ctxMenu.contains(e.target)) closeCtx(); }, true);
+window.addEventListener('blur', closeCtx);
+window.addEventListener('resize', closeCtx);
+svg.addEventListener('wheel', closeCtx, { passive: true });
+window.addEventListener('keydown', e => {
+  if (!ctxMenu) return;
+  if (e.key === 'Escape') { closeCtx(); e.stopPropagation(); e.preventDefault(); return; }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault(); e.stopPropagation();
+  const list = document.activeElement?.closest('.menu-list') || ctxMenu;
+  const btns = [...list.children].map(c => (c.matches('.ctx-sub') ? c.firstElementChild : c))
+    .filter(b => b.tagName === 'BUTTON' && !b.disabled);
+  const i = btns.indexOf(document.activeElement);
+  btns[(i + (e.key === 'ArrowDown' ? 1 : -1) + btns.length) % btns.length]?.focus();
+}, true);
 
 $('snapToggle').addEventListener('click', () => {
   state.snap = !state.snap;

@@ -300,5 +300,7 @@ export function basePairRungs(A, B, n) {
   const total = q => pa.reduce((s, p, i) => s + Math.hypot(p[0] - q[i][0], p[1] - q[i][1]), 0);
   const rb = [...pb].reverse();
   const qb = total(rb) < total(pb) ? rb : pb;
-  return pa.map((p, i) => [p, qb[i]]);
+  const out = pa.map((p, i) => [p, qb[i]]);
+  out.rev = qb === rb; // B read back to front: rung i is B's base n-1-i
+  return out;
 }

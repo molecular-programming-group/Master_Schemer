@@ -22,6 +22,12 @@ right-to-left (texture rotated 180°) is lit the same as one drawn left-to-right
 
 Geometry comes from the library's own modules (bdna_fiber, mn_surface), see
 _3D Modeling/Blender/assets/ASSETS.md, "DNA_Duplex".
+
+    DNA_STYLE=ribbon blender -b -P tools/bake_dna_brush.py    (no extension needed)
+
+bakes the oxView-like skin instead, into app/js/dna-tex-ribbon.js: the same fiber atoms,
+drawn as a flat ribbon through each strand's backbone and one rounded slab per base. Same
+frame, rise and caps, so the app swaps it in texture for texture.
 """
 import base64
 import json
@@ -41,7 +47,8 @@ import mn_surface   # noqa: E402
 import bpy          # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "..", "app", "js", "dna-tex.js")
+STYLE = os.environ.get("DNA_STYLE", "space")
+OUT = os.path.join(HERE, "..", "app", "js", "dna-tex.js" if STYLE == "space" else f"dna-tex-{STYLE}.js")
 WORK = os.environ.get("DNA_BAKE_WORK", "/tmp/dna_bake")
 
 N = 30          # bases in the baked model; a multiple of 10 so rotation k ↔ tail phase k
@@ -154,6 +161,128 @@ def render(sc, path):
     return px
 
 
+# ---- ribbon skin: plain meshes built from the fiber's atoms ----
+RIB_W, RIB_T = 4.6, 1.3        # ribbon width and thickness, Å
+SLAB_T, SLAB_W = 1.25, 2.1     # base slab half-thickness (along the axis) and half-width
+STICK_R = 0.75                 # backbone → base connector radius
+BB_ATOMS = ("P", "O5'", "C5'", "C4'", "C3'")
+
+
+def _sq(w, e):
+    return np.sign(w) * np.abs(w) ** e
+
+
+def superquadric(verts, faces, c, axes, radii, e1, e2, nu=20, nv=12):
+    """Append a superellipsoid: e ≈ 1 round, → 0 boxy. axes are its 3 unit vectors."""
+    base = len(verts)
+    verts.append(c - axes[2] * radii[2])
+    for j in range(1, nv):
+        v = -math.pi / 2 + math.pi * j / nv
+        for i in range(nu):
+            u = 2 * math.pi * i / nu
+            x = radii[0] * _sq(math.cos(v), e1) * _sq(math.cos(u), e2)
+            y = radii[1] * _sq(math.cos(v), e1) * _sq(math.sin(u), e2)
+            z = radii[2] * _sq(math.sin(v), e1)
+            verts.append(c + axes[0] * x + axes[1] * y + axes[2] * z)
+    verts.append(c + axes[2] * radii[2])
+    top = len(verts) - 1
+    ring = lambda j, i: base + 1 + (j - 1) * nu + i % nu
+    for i in range(nu):
+        faces.append((base, ring(1, i + 1), ring(1, i)))
+        faces.append((top, ring(nv - 1, i), ring(nv - 1, i + 1)))
+        for j in range(1, nv - 1):
+            faces.append((ring(j, i), ring(j, i + 1), ring(j + 1, i + 1), ring(j + 1, i)))
+    return len(faces)
+
+
+def ribbon(verts, faces, pts, per=10, nc=16):
+    """A flat band along pts (Catmull-Rom), its broad face turned out from the axis (x)."""
+    P = np.array(pts)
+    P = np.vstack([2 * P[0] - P[1], P, 2 * P[-1] - P[-2]])
+    samples = []
+    for i in range(1, len(P) - 2):
+        p0, p1, p2, p3 = P[i - 1:i + 3]
+        for s in np.linspace(0, 1, per, endpoint=False):
+            samples.append(0.5 * (2 * p1 + (-p0 + p2) * s + (2 * p0 - 5 * p1 + 4 * p2 - p3) * s * s
+                                  + (-p0 + 3 * p1 - 3 * p2 + p3) * s ** 3))
+    samples.append(P[-2])
+    # run on half a step past each end, so the band ends in a rounded tip, not on a base
+    samples = [P[1] - (P[2] - P[1]) * 0.35] + samples + [P[-2] + (P[-2] - P[-3]) * 0.35]
+    S = np.array(samples)
+    base = len(verts)
+    for k, c in enumerate(S):
+        T = S[min(k + 1, len(S) - 1)] - S[max(k - 1, 0)]
+        T /= np.linalg.norm(T)
+        n = np.array([0, c[1], c[2]])
+        n -= np.dot(n, T) * T
+        n /= np.linalg.norm(n)
+        w = np.cross(T, n)
+        taper = min(1.0, 0.45 + 0.55 * min(k, len(S) - 1 - k) / 3)   # rounded ends
+        for i in range(nc):
+            a = 2 * math.pi * i / nc
+            verts.append(c + w * (RIB_W / 2 * taper) * _sq(math.cos(a), 0.4)
+                         + n * (RIB_T / 2) * _sq(math.sin(a), 0.6))
+    rings = len(S)
+    for k in range(rings - 1):
+        for i in range(nc):
+            a, b = base + k * nc + i, base + k * nc + (i + 1) % nc
+            faces.append((a, b, b + nc, a + nc))
+    faces.append(tuple(base + nc - 1 - i for i in range(nc)))
+    faces.append(tuple(base + (rings - 1) * nc + i for i in range(nc)))
+
+
+def ribbon_model(fb, name):
+    """Mesh with 4 material slots, 2·(chain B) + (base), like the painted surface."""
+    verts, faces, slots = [], [], []
+    X = np.array([1.0, 0, 0])
+
+    def tag(slot):
+        slots.extend([slot] * (len(faces) - len(slots)))
+    for ch in "AB":
+        on = fb["chain"] == ch
+        if not on.any():
+            continue
+        bbs = []
+        for p in sorted(set(fb["pos"][on])):
+            r = on & (fb["pos"] == p)
+            nm = fb["name"][r]
+            xyz = fb["xyz"][r]
+            bb = xyz[np.isin(nm, BB_ATOMS)].mean(0)
+            bbs.append(bb)
+            c1 = xyz[nm == "C1'"][0]
+            ring = xyz[~np.isin(nm, list(bdna_fiber.BACKBONE))]
+            far = ring[np.argmax(np.linalg.norm(ring - c1, axis=1))]
+            d = far - c1
+            d -= np.dot(d, X) * X
+            L = np.linalg.norm(d)
+            e1 = d / L
+            # connector: backbone to C1'
+            sd = c1 - bb
+            sl = np.linalg.norm(sd)
+            sa = sd / sl
+            sb = np.cross(sa, X if abs(sa[0]) < 0.9 else [0, 0, 1.0])
+            sb /= np.linalg.norm(sb)
+            superquadric(verts, faces, (bb + c1) / 2, [sb, np.cross(sa, sb), sa],
+                         (STICK_R, STICK_R, sl / 2), 0.5, 1.0, nu=12, nv=8)
+            tag(2 * (ch == "B"))
+            superquadric(verts, faces, c1 + e1 * (L / 2 + 0.2), [e1, np.cross(X, e1), X],
+                         (L / 2 + 0.9, SLAB_W, SLAB_T), 0.35, 0.35)
+            tag(2 * (ch == "B") + 1)
+        ribbon(verts, faces, bbs)
+        tag(2 * (ch == "B"))
+    me = bpy.data.meshes.new(name)
+    me.from_pydata([tuple(v) for v in verts], [], faces)
+    me.update()
+    for poly, s in zip(me.polygons, slots):
+        poly.material_index = s
+        poly.use_smooth = True
+    obj = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(obj)
+    for _ in range(4):
+        obj.data.materials.append(None)
+    return obj
+
+
 # Every layer, as (model, material slots rendered white). Everything else on the model is
 # a holdout: transparent, but it still hides what is behind it. Slots are
 # 2·(chain B) + (base atom) — backbone and bases of each strand.
@@ -171,7 +300,10 @@ LAYERS = {
 
 def main():
     os.makedirs(WORK, exist_ok=True)
-    mn = mn_surface.start_blender()
+    if STYLE == "space":
+        mn = mn_surface.start_blender()
+    else:
+        bpy.ops.wm.read_factory_settings(use_empty=True)
     white, hold = material("white"), material("hold", holdout=True)
 
     # all three models share one frame (pose="raw") and one u: base 0 of strand A
@@ -179,10 +311,13 @@ def main():
     for kind, l1, l2 in (("ds", N, N), ("ss", N, 0), ("ssB", 0, N)):
         pdb = f"{WORK}/fiber_{kind}.pdb"
         fb = fibers[kind] = bdna_fiber.write_fiber(pdb, strand1_len=l1, strand2_len=l2, pose="raw")
-        obj = mn_surface.realize(mn, pdb, f"DNA_{kind}")
-        base = np.array([n not in bdna_fiber.BACKBONE for n in fb["name"]])
-        slot = 2 * (fb["chain"] == "B") + base
-        mn_surface.paint_by_nearest_atom(obj, fb["xyz"], slot, [white] * 4)
+        if STYLE == "ribbon":
+            obj = ribbon_model(fb, f"DNA_{kind}")
+        else:
+            obj = mn_surface.realize(mn, pdb, f"DNA_{kind}")
+            base = np.array([n not in bdna_fiber.BACKBONE for n in fb["name"]])
+            slot = 2 * (fb["chain"] == "B") + base
+            mn_surface.paint_by_nearest_atom(obj, fb["xyz"], slot, [white] * 4)
         obj.hide_render = True
         objs[kind] = obj
 
