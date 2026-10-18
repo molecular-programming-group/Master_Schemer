@@ -151,16 +151,33 @@
         <button role="menuitem" data-click="zoomFit">Fit Scheme<kbd>1</kbd></button>
         <button role="menuitem" data-act="zoomSel" data-sel="1">Zoom to Selection<kbd>2</kbd></button>
         <hr>
-        <button role="menuitemcheckbox" data-act="grid" data-check="grid">Show Grid<kbd>Ctrl+'</kbd></button>
-        <button role="menuitemcheckbox" data-click="snapToggle">Snap to Half-Grid</button>
+        <button role="menuitemcheckbox" data-act="keys" data-check="keys">Tool Hotkeys</button>
         <button role="menuitemcheckbox" data-click="dataToggle">Show Data Boxes</button>
         <button role="menuitemcheckbox" data-click="hoverToggle">Data on Hover</button>
-        <button role="menuitemcheckbox" data-click="dnaToggle">DNA Molecules</button>
+        <button role="menuitemcheckbox" data-act="dnaEnds" data-check="dnaEnds">Mark 3′ Ends</button>
         <button role="menuitemcheckbox" data-click="themeToggle">Dark Theme</button>
         <button role="menuitem" data-act="themes">Color Themes…</button>
         <hr>
+        <div class="menu-label">Draw Strands</div>
+        <button role="menuitemradio" data-look="own">As Each Strand Is Set</button>
+        <button role="menuitemradio" data-look="line">All as Lines</button>
+        <button role="menuitemradio" data-look="dna">All as DNA Molecules</button>
+        <button role="menuitemradio" data-look="seq">All as Sequences</button>
+        <hr>
         <button role="menuitem" data-act="expandAll">Expand All Objects</button>
         <button role="menuitem" data-act="collapseAll">Collapse All Objects</button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="menu-title" aria-haspopup="true" aria-expanded="false">Grid</button>
+      <div class="menu-list" role="menu" id="gridMenu">
+        <button role="menuitemcheckbox" data-act="grid" data-check="grid">Show Grid<kbd>Ctrl+'</kbd></button>
+        <button role="menuitemcheckbox" data-act="ticks" data-check="ticks">Show Base Ticks</button>
+        <hr>
+        <button role="menuitemcheckbox" data-click="snapToggle">Snap Shapes to Half-Grid</button>
+        <button role="menuitemcheckbox" data-act="baseSnap" data-check="baseSnap">Draw Strands in Whole Bases</button>
+        <button role="menuitem" data-act="fitSeq">Resize Strands to Grid</button>
+        <hr id="bpgAfter">
       </div>
     </div>
     <div class="menu">
@@ -287,6 +304,7 @@
         <circle cx="0" cy="20" r="1" fill="#d8d2c6"/>
         <circle cx="20" cy="20" r="1" fill="#d8d2c6"/>
       </pattern>
+      <pattern id="gridTicks" width="20" height="20" patternUnits="userSpaceOnUse"></pattern>
       <marker id="arrowHead" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
         <path d="M0 0.5 9 5 0 9.5z" fill="#55504a"/>
       </marker>
@@ -302,6 +320,7 @@
     </defs>
     <g id="world">
       <rect id="gridRect" fill="url(#gridDots)"/>
+      <rect id="gridTickRect" fill="url(#gridTicks)"/>
       <g id="layer-cards"></g>
       <g id="layer-back"></g>
       <g id="layer-under"></g>
@@ -335,7 +354,7 @@
     <button class="status-toggle" id="dataToggle" aria-pressed="false" data-tip="Show every object's data box">Data</button>
     <button class="status-toggle" id="hoverToggle" aria-pressed="false" data-tip="Show an object's data when you hover it">Data on hover</button>
     <button class="status-toggle" id="notesToggle" aria-pressed="true" data-tip="Show or hide the notes panel">Notes</button>
-    <button class="status-toggle" id="dnaToggle" aria-pressed="true" data-tip="Draw DNA strands as molecules, or every line plain (each keeps its own setting)">DNA</button>
+    <button class="status-toggle" id="dnaToggle" aria-pressed="true" data-tip="Draw strands as each is set, or every strand as a plain line (View → Draw Strands has more)">DNA</button>
     <button class="status-toggle" id="themeToggle" aria-pressed="false" data-tip="Switch between the light and dark interface">Dark</button>
     <span id="coords">0, 0</span>
   </span>

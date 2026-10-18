@@ -81,7 +81,8 @@ body.hide-objects.hide-library #sidebar,
 body.hide-color.hide-props #panel { display: none; }
 body.hide-color.hide-props { --panel-w: 0px; }
 body.hide-notes { --notes-w: 0px; }
-body.hide-grid #gridRect { display: none; }
+body.hide-grid #gridRect, body.hide-grid #gridTickRect, body.hide-ticks #gridTickRect { display: none; }
+#world[data-seq="near"] .seq-far, #world[data-seq="far"] .seq-near { display: none; }
 
 button { font: inherit; color: inherit; }
 
@@ -214,6 +215,16 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 .tool-btn svg { width: 19px; height: 19px; }
 .tool-btn:hover { background: var(--surface-2); }
 .tool-btn[aria-pressed="true"] { background: var(--primary); color: var(--bg); }
+/* View ▸ Tool Hotkeys: each tool's key in its corner */
+.tool-btn { position: relative; }
+body.show-keys .tool-btn[data-key]::before {
+  content: attr(data-key);
+  position: absolute; right: 1px; bottom: 1px;
+  min-width: 11px; padding: 0 2px; border-radius: 3px;
+  font: 600 10px/13px var(--font); text-align: center;
+  background: var(--surface-2); color: var(--ink); border: 1px solid var(--line);
+  pointer-events: none;
+}
 
 .rail-rule { width: 22px; border-top: 1px solid var(--line); margin: 4px 0; }
 
@@ -935,6 +946,7 @@ body.panning #canvas { cursor: grabbing !important; }
 .menu-list button:disabled { color: var(--muted); opacity: .55; cursor: default; }
 .menu-list button[aria-checked="true"]::before { content: "✓"; position: absolute; left: 9px; }
 .menu-list kbd { margin-left: auto; font: inherit; font-size: 12px; color: var(--muted); }
+.menu-label { padding: 4px 10px 2px 26px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .menu-list hr { border: none; border-top: 1px solid var(--line); margin: 4px 6px; }
 .ctx-menu { display: block; position: fixed; top: 0; left: 0; z-index: 300; }
 .ctx-sub { position: relative; }

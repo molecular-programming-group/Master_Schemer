@@ -8,7 +8,8 @@ import {
   nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex, bladeCross,
   resizeEndSegments,
 } from './geom.js';
-import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle } from './render.js';
+import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle, dnaBpg, strandView } from './render.js';
+import { gridPitch } from './dna.js';
 
 const $ = id => document.getElementById(id);
 const preview = () => $('layer-preview');
@@ -17,6 +18,17 @@ export const clearPreview = () => preview().replaceChildren();
 let drag = null;
 const r1 = v => Math.round(v * 10) / 10;
 const ptsAttr = pts => pts.map(p => `${p[0]},${p[1]}`).join(' ');
+
+// A strand leg's next point: half-grid steps, or whole bases (Grid → Snap
+// Strands to Whole Bases), measured along the leg so diagonals count too.
+const legSnap = (a, q) => (state.baseSnap ? snap8(a, q, gridPitch(dnaBpg()), true) : snap8(a, q, GRID / 2));
+// While drawing with base snap or sequences shown: the strand's base count at the cursor.
+function baseCount(pts, extra = 0) {
+  if (!state.baseSnap && strandView.mode !== 'seq') return;
+  const z = pts[pts.length - 1], s = state.view.s;
+  svgEl('text', { x: z[0] + 10 / s, y: z[1] - 10 / s, 'font-size': 11 / s, fill: SEL, 'font-weight': 600 }, preview())
+    .textContent = `${Math.round((polylineLength(pts) + extra) / gridPitch(dnaBpg()))} nt`;
+}
 
 // Annotation snapping (toggleable): grid-anchor a point unless snap is off.
 const annSnap = p => (state.snap ? snapHalfPt(p) : [r1(p[0]), r1(p[1])]);
@@ -223,12 +235,12 @@ function beginExtend(el, end) {
 function moveExtend(wp) {
   const pts = drag.pts;
   const a = pts[pts.length - 2], prov = pts[pts.length - 1];
-  const p = snap8(a, wp, GRID / 2);
+  const p = legSnap(a, wp);
   const dNew = dirOf(a, p), dProv = dirOf(a, prov);
   if (eq(prov, a) || eq(p, a) || (dNew[0] === dProv[0] && dNew[1] === dProv[1])) {
     pts[pts.length - 1] = p;
   } else {
-    const q = snap8(prov, wp, GRID / 2);
+    const q = legSnap(prov, wp);
     if (!eq(q, prov)) pts.push(q);
   }
   clearPreview();
@@ -236,6 +248,7 @@ function moveExtend(wp) {
     points: ptsAttr(pts), fill: 'none', stroke: resolveColor(drag.el.color),
     'stroke-width': drag.el.width || 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
   }, preview());
+  baseCount(pts, polylineLength(drag.el.pts));
 }
 
 function endExtend() {
@@ -582,13 +595,13 @@ export const tools = {
       if (drag.mode === 'extend') { moveExtend(wp); return; }
       const pts = drag.pts;
       const a = pts[pts.length - 2], prov = pts[pts.length - 1];
-      const p = snap8(a, wp, GRID / 2);
+      const p = legSnap(a, wp);
       const dNew = dirOf(a, p), dProv = dirOf(a, prov);
       if (eq(prov, a) || eq(p, a) || (dNew[0] === dProv[0] && dNew[1] === dProv[1])) {
         pts[pts.length - 1] = p;
       } else {
         // direction changed: the provisional point becomes a committed corner
-        const q = snap8(prov, wp, GRID / 2);
+        const q = legSnap(prov, wp);
         if (!eq(q, prov)) pts.push(q);
       }
       clearPreview();
@@ -599,6 +612,7 @@ export const tools = {
       svgEl('circle', {
         cx: pts[0][0], cy: pts[0][1], r: 3 / state.view.s, fill: resolveColor(state.color),
       }, preview());
+      baseCount(pts);
     },
     up() {
       if (!drag) return;
@@ -611,6 +625,7 @@ export const tools = {
       const el = addElement({
         type: 'path', pts, color: state.color, width: state.width, label: '', segments: [],
         linecap: 'butt', // line objects default to flat ends
+        ...{ dna: { dna: true, dnaToon: true, dnaOutline: true }, seq: { seqLook: true } }[state.drawLook], // as setLook would
       });
       state.selection = [{ id: el.id }];
       changed();

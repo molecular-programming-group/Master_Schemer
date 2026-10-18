@@ -143,14 +143,20 @@ export function midline(A, B, LA, LB, at, m = 64) {
 
 // ---- sequence colours ----
 
+// A field's text as a sequence: its bases (A C G T U N, upper-cased) with
+// spaces, digits, dashes and 5′/3′ marks dropped — or '' when it holds anything else.
+export function seqLetters(s) {
+  const t = (s || '').toUpperCase().replace(/[\s\d\-–—′'.]/g, '');
+  return /^[ACGTUN]+$/.test(t) ? t : '';
+}
 export const BASE_COLORS = { A: '#3a8a3e', C: '#2f6fd0', G: '#d59c12', T: '#c8352e' };
 export const COMPLEMENT = { A: 'T', T: 'A', C: 'G', G: 'C' };
-// A segment String read as a sequence: '' unless the whole string is bases
-// (whitespace and dashes ignored, U read as T, N an unknown base). At least 4
-// letters, so a domain named "a" or "tag" isn't mistaken for one.
+// A domain's String read as a sequence: seqLetters, but at least 4 letters, so
+// a domain named "a" or "tag" isn't mistaken for bases. (A strand's own
+// Sequence field is always bases, any length.)
 export function seqOf(str) {
-  const s = (str || '').replace(/[\s-]/g, '').toUpperCase().replace(/U/g, 'T');
-  return s.length >= 4 && /^[ACGTN]+$/.test(s) ? s : '';
+  const s = seqLetters(str);
+  return s.length >= 4 ? s : '';
 }
 // Deterministic "random" base for strand `id` at base index i — a UMI look
 // that doesn't reshuffle on every repaint.

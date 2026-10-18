@@ -103,12 +103,35 @@ molecules start in toon shading with a black outline.
   swatch recolours both backbones (or just one, while its picker is open), and
   the panel has a picker for each backbone
   plus the shading and colour-by controls for both strands.
-- **Global switch.** **DNA** in the status bar (or View → DNA Molecules) draws
-  every DNA strand as its plain line, and every duplex as base-pair rungs,
-  without changing the document. Each line keeps its own Draw-as setting, so a
-  scheme can mix molecules and plain lines. To convert many lines at once,
-  select them (Ctrl+A works, other objects are ignored) and tick **Draw the
-  lines as DNA molecules**.
+- **Sequences.** A strand's **Sequence** field (5′→3′) or a domain's
+  **String** holding A/C/G/T/U/N sets its base count; a domain's sequence
+  overrides the strand's over that domain. Drawn as *Sequence*, a strand shows
+  its letters along the line, one per base, each on a faint tile
+  of the strand colour so base boundaries show. The letters appear
+  once you zoom in far enough to read them, and are kept upright, so a strand
+  running right to left reads backwards. A strand whose sequence doesn't match its
+  drawn length shows the difference at its 3′ end (*+5 nt*), and **Grid → Resize
+  Strands to Grid** moves its 3′ end to fix it, or scales the whole shape when
+  the change is more than its last leg (the selected strands, or every
+  strand with a sequence when nothing is selected).
+- **Grid menu.** It holds the scale (*N bases per square*; 1 or 2 make
+  letters readable at 100%), the base ticks (one per base along the grid
+  lines, shown once zoomed in), and **Draw Strands in Whole Bases**, which
+  makes the Strand tool draw whole-base legs and shows the count as you draw.
+- **Draw as.** Each strand is drawn as a *Line*, a *DNA molecule* or a
+  *Sequence* (its letters), picked under **Draw as** in its Style panel, with
+  its **Sequence** box right below. Select several strands (Ctrl+A works, other
+  objects are ignored) to set them all at once.
+- **Global switch.** **View → Draw Strands** shows strands *as each is set*,
+  or *all* as lines, DNA molecules or sequences, without changing the document
+  (each strand keeps its own Draw as). **DNA** in the status bar flips between
+  all lines and as-set.
+- **Strand direction.** A strand runs 5′ → 3′ in the order it was drawn.
+  Selecting a molecule (or a duplex) shows its sense as chevrons along the
+  line with 5′ / 3′ at the ends; **View → Mark 3′ Ends** puts a small
+  chevron past every DNA strand's 3′ end. The helix is right-handed B-DNA
+  (baked from PDB 1BNA, no mirroring in the brush): with the axis horizontal,
+  the strands in front run top-left to bottom-right.
 - **Look.** **Shading** can be *Soft* (rendered) or *Toon* (flat bands), and
   **Black outline** is independent of colour. **Colour by** can be:
   - *Strand*.

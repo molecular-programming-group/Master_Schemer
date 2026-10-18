@@ -5,13 +5,13 @@ import {
   isSemantic, resolveColor, resolveLabel, reorder, pruneGroups,
   byGroup, childGroups, topLevelGroups, groupElementMembers,
 } from './model.js';
-import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength } from './geom.js';
+import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
-  linkStrand, rungSeqs, refSeq, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, dnaView, invalidateRenderCache,
-  FONTS, LINE_H, INLINE_TAGS,
+  linkStrand, rungSeqs, refSeq, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, strandView, lookOf, dnaView, invalidateRenderCache,
+  FONTS, LINE_H, INLINE_TAGS, inlineHTML,
 } from './render.js';
-import { DEFAULT_BPG, seqOf, spacing, tintRef, uAt, worldPerA } from './dna.js';
+import { DEFAULT_BPG, seqOf, spacing, tintRef, uAt, worldPerA, gridPitch, naturalBases, seqLetters } from './dna.js';
 import MOLS from './mol-tex.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
 import { THEMES } from './themes.js';
@@ -573,7 +573,7 @@ function createLink(targets, style) {
   });
   // two DNA strands pair up as a duplex rather than a filled area
   if (style) el.style = style;
-  else if (targets.every(t => byId(t.id)?.dna) && linkStrand(el.a) && linkStrand(el.b)) el.style = 'bases';
+  else if (targets.every(t => byId(t.id) && lookOf(byId(t.id)) === 'dna') && linkStrand(el.a) && linkStrand(el.b)) el.style = 'bases';
   state.selection = [{ id: el.id }];
   changed();
 }
@@ -604,6 +604,20 @@ function toggleGrid() {
   try { localStorage.setItem(GRID_HIDDEN_KEY, hidden ? '1' : ''); } catch { /* full */ }
 }
 try { document.body.classList.toggle('hide-grid', localStorage.getItem(GRID_HIDDEN_KEY) === '1'); } catch { /* shown */ }
+// Grid → Show Base Ticks / Draw Strands in Whole Bases: UI prefs too
+const TICKS_HIDDEN_KEY = 'master-schemer-ticks-hidden', BASE_SNAP_KEY = 'master-schemer-base-snap';
+function toggleTicks() {
+  const hidden = document.body.classList.toggle('hide-ticks');
+  try { localStorage.setItem(TICKS_HIDDEN_KEY, hidden ? '1' : ''); } catch { /* full */ }
+}
+function setBaseSnap(on, remember) {
+  state.baseSnap = on;
+  if (remember) try { localStorage.setItem(BASE_SNAP_KEY, on ? '1' : ''); } catch { /* full */ }
+}
+try {
+  document.body.classList.toggle('hide-ticks', localStorage.getItem(TICKS_HIDDEN_KEY) === '1');
+  setBaseSnap(localStorage.getItem(BASE_SNAP_KEY) === '1', false);
+} catch { /* defaults */ }
 
 window.addEventListener('keydown', e => {
   const t = e.target;
@@ -694,7 +708,7 @@ function displayName(el, i) {
   const label = resolveLabel(el.label || '');
   if (el.type === 'text') return label || el.text.split('\n')[0].slice(0, 24) || 'note';
   const names = {
-    path: 'line', ink: 'freehand', ellipse: 'ellipse', rect: 'rectangle',
+    path: 'strand', ink: 'freehand', ellipse: 'ellipse', rect: 'rectangle',
     aline: 'line note', aarrow: 'arrow',
   };
   if (MOLS[el.mol]) return label || MOLS[el.mol].name;
@@ -746,7 +760,7 @@ function sideItem({ depth, name, color, selected, onSelect, onRename, collapsibl
   }
   const label = document.createElement('span');
   label.className = 'side-name';
-  label.textContent = name;
+  label.innerHTML = inlineHTML(name.split('\n')[0]); // drawn as on canvas; rename edits the source
   row.appendChild(label);
   if (!onRename) {
     row.addEventListener('click', onSelect);
@@ -832,7 +846,7 @@ function parentNode(into, key, opts, hasChildren) {
 function segItems(el, depth, into) {
   (el.segments || []).forEach((seg, i) => {
     into.appendChild(sideItem({
-      depth, name: resolveLabel(seg.label || '') || `segment ${i + 1}`, color: resolveColor(seg.color),
+      depth, name: resolveLabel(seg.label || '') || `domain ${i + 1}`, color: resolveColor(seg.color),
       selected: state.selection.some(s => s.id === el.id && s.seg === i),
       onSelect: () => { state.selection = [{ id: el.id, seg: i }]; refresh(); },
       onRename: v => { setLabel(seg, v); }, ctx: true,
@@ -2041,7 +2055,7 @@ function kindBadge(single, n) {
     cls = 'group'; kind = grp.name; detail = `${n} object${n === 1 ? '' : 's'}`;
   } else if (single?.seg !== undefined) {
     cls = 'primary'; kind = 'Domain';
-    detail = `segment ${single.seg + 1} of ${name(single.el)}`;
+    detail = `domain ${single.seg + 1} of ${name(single.el)}`;
   } else if (single) {
     [cls, kind] = kindOf(single.el);
     detail = name(single.el);
@@ -2063,7 +2077,7 @@ function kindBadge(single, n) {
   k.textContent = kind;
   const d = document.createElement('span');
   d.className = 'kind-detail';
-  d.textContent = detail;
+  d.innerHTML = inlineHTML(detail);
   box.append(tag, k, d);
   return box;
 }
@@ -2199,6 +2213,21 @@ const backbone = ref => {
 // Turn lines into DNA strands (or back). A new strand takes its base-pair
 // partner's diameter (so the duplex between them comes out round), else
 // follows the DNA grid.
+// What the Strand tool draws: any Draw as look (LOOKS). A drawing default
+// (like width), so it changes no document and makes no undo step.
+const NEW_LOOK_KEY = 'master-schemer-new-strand-look';
+try { state.drawLook = localStorage.getItem(NEW_LOOK_KEY) || 'line'; } catch { /* lines */ }
+function newStrandSelect() {
+  const node = document.createElement('select');
+  for (const [v, t] of Object.entries(LOOKS)) node.add(new Option(t, v));
+  node.value = state.drawLook;
+  node.addEventListener('change', () => {
+    state.drawLook = node.value;
+    try { localStorage.setItem(NEW_LOOK_KEY, node.value); } catch { /* full */ }
+  });
+  return node;
+}
+
 function setDNA(els, on) {
   for (const el of els) {
     if (!on) { delete el.dna; continue; }
@@ -2209,6 +2238,35 @@ function setDNA(els, on) {
     el.dna = typeof other?.dna === 'number' ? other.dna : true;
     el.dnaToon = el.dnaOutline = true; // new strands start toon + outline
   }
+}
+
+// A strand's own Draw as (what View → Draw Strands → As Each Strand Is Set shows).
+const ownLook = el => (el.seqLook ? 'seq' : el.dna ? 'dna' : 'line');
+const LOOKS = { line: 'Line', dna: 'DNA molecule', seq: 'Sequence (letters)' };
+function setLook(els, look) {
+  for (const el of els) {
+    if (look === 'seq') { el.seqLook = true; delete el.dna; continue; }
+    delete el.seqLook;
+    setDNA([el], look === 'dna');
+  }
+}
+// Per-strand drawing toggles (one strand or several): junction ticks (plain lines
+// only) and labels that follow the strand's contour.
+function strandToggles(paths, lines) {
+  const frag = document.createDocumentFragment();
+  const toggle = (text, key) => frag.appendChild(checkboxRow(text, () => paths.every(p => p[key]), v => {
+    for (const p of paths) { if (v) p[key] = true; else delete p[key]; }
+  }));
+  if (lines) toggle('Ticks at domain junctions', 'ticks');
+  toggle('Labels follow the strand', 'labelsFollow');
+  return frag;
+}
+// While View → Draw Strands overrides every strand, say so where its own setting is edited.
+function lookNote() {
+  const p = document.createElement('p');
+  p.className = 'muted';
+  p.textContent = `Shown as ${{ line: 'lines', dna: 'DNA molecules', seq: 'sequences' }[strandView.mode]} for now: View → Draw Strands is set to all strands.`;
+  return p;
 }
 
 // Back onto the DNA grid: grid diameter, and every count — the strands' own,
@@ -2226,7 +2284,78 @@ function snapDNA(els) {
   changed();
 }
 
-const BPG_CHOICES = [4, 5, 6, 8, 10, 12, 15, 20];
+// A strand's own sequence (5′→3′, domains' sequences override it where they
+// sit), with how its base count compares to what the drawn length holds.
+function sequenceField(el) {
+  const frag = document.createDocumentFragment();
+  const note = document.createElement('p');
+  note.className = 'muted';
+  const say = () => {
+    const n = dnaLayout(el).n, fit = naturalBases(polylineLength(el.pts), gridPitch(dnaBpg()));
+    const bad = (el.seq || '').trim() && !seqLetters(el.seq);
+    note.textContent = bad ? 'Not a sequence (A C G T U N only) — kept as text.'
+      : n === fit ? `${n} nt — fits the drawn length.`
+        : `${n} nt — the drawn length holds ${fit}. Grid → Resize Strands to Grid.`;
+  };
+  frag.appendChild(fieldRow('Sequence', boundInput(() => el.seq || '', v => {
+    if (v.trim()) el.seq = v; else delete el.seq;
+    say();
+  }, { textarea: true, placeholder: '5′→3′, e.g. ATGCATGATCG' })));
+  say();
+  frag.appendChild(note);
+  return frag;
+}
+
+// Grid → Resize Strands to Grid: lengthen or shorten each selected strand (or,
+// with nothing selected, every strand with a sequence) at its 3′ end so its
+// bases sit at the grid's spacing: n bases = n / (bases per square) squares.
+// The 5′ end and corners stay — unless the change is more than the last leg can
+// take (e.g. after changing the scale), when the whole shape scales about its 5′ end.
+// ponytail: fits the whole strand; a domain with its own count stays as squeezed as it was.
+function fitToSequence() {
+  const sel = selectedElements();
+  const els = sel.length ? sel.filter(el => el.type === 'path')
+    : state.doc.elements.filter(el => el.type === 'path' && dnaLayout(el).n !== naturalBases(polylineLength(el.pts), gridPitch(dnaBpg()))
+      && (seqLetters(el.seq) || (el.segments || []).some(s => seqLetters(s.string))));
+  if (!els.length) return;
+  beginChange();
+  for (const el of els) {
+    const L = polylineLength(el.pts), want = dnaLayout(el).n * gridPitch(dnaBpg());
+    if (Math.abs(want - L) < 0.01) continue;
+    const z = el.pts[el.pts.length - 1], y = el.pts[el.pts.length - 2];
+    const leg = Math.hypot(z[0] - y[0], z[1] - y[1]), r3 = v => Math.round(v * 1000) / 1000;
+    if (Math.abs(want - L) >= leg) { // more than the last leg can take: scale the whole shape about its 5′ end
+      const k = want / L, o = el.pts[0];
+      el.pts = el.pts.map(p => [r3(o[0] + (p[0] - o[0]) * k), r3(o[1] + (p[1] - o[1]) * k)]);
+      el.segments = (el.segments || []).map(sg => ({ ...sg, t0: sg.t0 * k, t1: sg.t1 * k }));
+      continue;
+    }
+    if (want < L) el.pts = subPath(el.pts, 0, want);
+    else el.pts[el.pts.length - 1] = [r3(z[0] + (z[0] - y[0]) * (want - L) / leg), r3(z[1] + (z[1] - y[1]) * (want - L) / leg)];
+    el.segments = resizeEndSegments(el.segments, L, polylineLength(el.pts), 1);
+  }
+  changed();
+}
+
+// Grid → scale: the document's bases per grid square.
+function setBpg(n) {
+  if (n === dnaBpg()) return;
+  beginChange();
+  if (n === DEFAULT_BPG) delete state.doc.dnaBpg; else state.doc.dnaBpg = n;
+  changed();
+}
+
+const BPG_CHOICES = [1, 2, 4, 5, 6, 8, 10, 12, 15, 20];
+{
+  const after = $('bpgAfter');
+  for (const n of [...BPG_CHOICES].reverse()) {
+    const b = document.createElement('button');
+    b.setAttribute('role', 'menuitemradio');
+    b.dataset.bpg = n;
+    b.textContent = `${n} ${n === 1 ? 'Base' : 'Bases'} per Square${n === 10 ? ' (1 Turn)' : n === 20 ? ' (2 Turns)' : ''}`;
+    after.after(b);
+  }
+}
 // The document's DNA grid: how many bases one grid square holds.
 function dnaGridControl() {
   const map = Object.fromEntries(BPG_CHOICES.map(n =>
@@ -2308,12 +2437,6 @@ function spacingNote(len, n, D, auto, reset, what = 'bases') {
 
 function dnaControls(el) {
   const frag = document.createDocumentFragment();
-  if (!dnaView.show) {
-    const p = document.createElement('p');
-    p.className = 'muted';
-    p.textContent = 'DNA display is off — drawn as a plain line (DNA in the status bar, or View → DNA Molecules).';
-    frag.appendChild(p);
-  }
   frag.appendChild(fieldRow('Diameter', sliderNum(() => +diam(el).toFixed(1),
     v => { el.dna = v; }, { min: 4, max: 80, step: 0.5 })));
   const lay = dnaLayout(el);
@@ -2470,24 +2593,31 @@ function renderPanel() {
         if (single && single.el.width !== undefined) single.el.width = v;
       },
       !!(single && single.el.width !== undefined))));
+    if (!n) styleSec.appendChild(fieldRow('New strands', newStrandSelect()));
     styled = true;
   }
   if (single && !single.el.mol && ['path', 'aline', 'ellipse', 'ink', 'rect'].includes(single.el.type) && single.seg === undefined) {
     const el = single.el;
+    const look = el.type === 'path' ? ownLook(el) : 'line';
     if (el.type === 'path') {
-      styleSec.appendChild(fieldRow('Draw as', mappedSelect({ line: 'Line', dna: 'DNA molecule' },
-        () => (el.dna ? 'dna' : 'line'), v => setDNA([el], v === 'dna'))));
+      styleSec.appendChild(fieldRow('Draw as', mappedSelect(LOOKS, () => look, v => setLook([el], v))));
+      if (strandView.mode !== 'own') styleSec.appendChild(lookNote());
+      styleSec.appendChild(sequenceField(el));
+      if (look === 'seq') styleSec.appendChild(fieldRow('Letters', mappedSelect(
+        { strand: 'Strand colour', sequence: 'A C G T colours' },
+        () => (el.dnaColor === 'sequence' ? 'sequence' : 'strand'),
+        v => { if (v === 'sequence') el.dnaColor = v; else delete el.dnaColor; })));
     }
-    if (el.dna) styleSec.appendChild(dnaControls(el));
-    else styleSec.appendChild(fieldRow('Line style', selectControl(
+    if (look === 'dna') styleSec.appendChild(dnaControls(el));
+    else if (look === 'line') styleSec.appendChild(fieldRow('Line style', selectControl(
       ['solid', 'dashed', 'dotted'], () => el.dash || 'solid', v => { el.dash = v; })));
-    if (el.dna) { /* caps, ends and patterns don't apply to a molecule */ } else if (['path', 'aline', 'ink'].includes(el.type)) {
+    if (look !== 'line') { /* caps, ends and patterns don't apply to a molecule or letters */ } else if (['path', 'aline', 'ink'].includes(el.type)) {
       styleSec.appendChild(fieldRow('Line ends', selectControl(
         ['rounded', 'flat', 'square'],
         () => LINECAP_NAMES[el.linecap || 'round'],
         v => { el.linecap = LINECAP_VALUES[v]; })));
     }
-    if ((el.type === 'path' && !el.dna) || el.type === 'aline') {
+    if ((el.type === 'path' && look === 'line') || el.type === 'aline') {
       styleSec.appendChild(fieldRow('Start cap', selectControl(
         CAPS, () => el.cap0 || 'none', v => { el.cap0 = v; })));
       styleSec.appendChild(fieldRow('End cap', selectControl(
@@ -2495,11 +2625,12 @@ function renderPanel() {
       styleSec.appendChild(harpoonFlips(el));
     }
     if (el.type === 'path') {
-      if (!el.dna) styleSec.appendChild(patternControls(el, `line:${el.id}`));
+      if (look === 'line') styleSec.appendChild(patternControls(el, `line:${el.id}`));
       styleSec.appendChild(fieldRow('Corner radius', sliderNum(
         () => el.corner || 0,
         v => { if (v) el.corner = v; else delete el.corner; },
         { min: 0, max: 8 * GRID, step: GRID / 2 })));
+      styleSec.appendChild(strandToggles([el], look === 'line'));
     }
     if (el.type === 'rect') {
       styleSec.appendChild(fieldRow('Corner radius', numberControl(
@@ -2561,9 +2692,12 @@ function renderPanel() {
     }
     const paths = state.selection.filter(s => s.seg === undefined).map(s => byId(s.id)).filter(p => p?.type === 'path');
     if (paths.length) {
-      sec.appendChild(checkboxRow(paths.length === n ? 'Draw as DNA molecules' : `Draw the ${paths.length} lines as DNA molecules`,
-        () => paths.every(p => p.dna),
-        v => setDNA(paths, v)));
+      const looks = new Set(paths.map(ownLook));
+      sec.appendChild(fieldRow(paths.length === n ? 'Draw as' : `Draw the ${paths.length} strands as`,
+        mappedSelect(looks.size > 1 ? { '': 'Mixed', ...LOOKS } : LOOKS, () => (looks.size > 1 ? '' : [...looks][0]),
+          v => { if (v) setLook(paths, v); })));
+      if (strandView.mode !== 'own') sec.appendChild(lookNote());
+      sec.appendChild(strandToggles(paths, paths.some(p => ownLook(p) === 'line')));
       if (paths.every(p => p.dna)) {
         sec.appendChild(fieldRow('Diameter', sliderNum(() => +diam(paths[0]).toFixed(1),
           v => { for (const p of paths) p.dna = v; }, { min: 4, max: 80, step: 0.5 })));
@@ -2669,6 +2803,8 @@ function renderPanel() {
       sec.appendChild(fieldRow('Base pair look', mappedSelect(
         { line: 'Rung', dot: 'Dot', tick: 'Tick with gap' },
         () => el.rung || 'line', v => { if (v === 'line') delete el.rung; else el.rung = v; })));
+      if (el.rung === 'dot') sec.appendChild(fieldRow('Dot size', sliderNum(() => el.rungSize || 1.6,
+        v => { if (v === 1.6) delete el.rungSize; else el.rungSize = v; }, { min: 0.5, max: 8, step: 0.1 })));
       sec.appendChild(fieldRow('Colour by', mappedSelect({ fill: 'One colour', sequence: 'Sequence (A C G T)' },
         () => el.rungColor || 'fill', v => { if (v === 'fill') delete el.rungColor; else el.rungColor = v; })));
       sec.appendChild(fillControl(el, { optional: false, label: el.rungColor ? 'Unsequenced' : 'Base pair', pattern: false }));
@@ -2766,7 +2902,7 @@ function renderPanel() {
         dot.className = 'seg-dot';
         dot.style.background = resolveColor(seg.color);
         const name = document.createElement('span');
-        name.textContent = resolveLabel(seg.label || '') || `segment ${i + 1}`;
+        name.innerHTML = inlineHTML(resolveLabel(seg.label || '') || `domain ${i + 1}`);
         item.append(dot, name);
         item.addEventListener('click', () => {
           state.selection = [{ id: el.id, seg: i }];
@@ -3290,11 +3426,27 @@ const MENU_ACTS = {
   showPanels: () => setHiddenPanels([]), hidePanels: () => setHiddenPanels(PANELS),
   cut: cutSelection, duplicate: duplicateSelection, invertSel: invertSelection,
   selectNone: () => { state.selection = []; refresh(); },
-  zoomSel: zoomToSelection, grid: toggleGrid, exportPng: () => showExport('png'),
+  zoomSel: zoomToSelection, grid: toggleGrid, keys: () => setKeyHints(!document.body.classList.contains('show-keys')), exportPng: () => showExport('png'),
+  dnaEnds: () => setDNAEnds(!dnaView.ends, true),
   collapseAll, expandAll, themes: () => showThemes(),
+  ticks: toggleTicks, baseSnap: () => setBaseSnap(!state.baseSnap, true),
+  fitSeq: fitToSequence,
 };
 // checkbox items whose state isn't mirrored by a toolbar button
-const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid') };
+const MENU_CHECKS = {
+  grid: () => !document.body.classList.contains('hide-grid'),
+  ticks: () => !document.body.classList.contains('hide-ticks'),
+  baseSnap: () => !!state.baseSnap,
+  dnaEnds: () => dnaView.ends,
+  keys: () => document.body.classList.contains('show-keys'),
+};
+
+const KEY_HINTS_KEY = 'master-schemer-key-hints';
+function setKeyHints(on) {
+  document.body.classList.toggle('show-keys', on);
+  try { localStorage.setItem(KEY_HINTS_KEY, on ? '1' : '0'); } catch { /* full */ }
+}
+try { document.body.classList.toggle('show-keys', localStorage.getItem(KEY_HINTS_KEY) === '1'); } catch { /* off */ }
 
 // Tools menu mirrors the tool rail (so tools stay reachable when the rail is hidden)
 {
@@ -3308,6 +3460,7 @@ const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid')
     const kbd = document.createElement('kbd');
     kbd.textContent = keyOf[n.dataset.tool];
     b.append(kbd);
+    n.dataset.key = keyOf[n.dataset.tool]; // badge for View ▸ Tool Hotkeys
     $('toolsMenu').append(b);
   }
 }
@@ -3328,6 +3481,10 @@ function setMenu(m) {
   }
   for (const it of m.querySelectorAll('[data-check]'))
     it.setAttribute('aria-checked', String(MENU_CHECKS[it.dataset.check]()));
+  for (const it of m.querySelectorAll('[data-look]'))
+    it.setAttribute('aria-checked', String(it.dataset.look === strandView.mode));
+  for (const it of m.querySelectorAll('[data-bpg]'))
+    it.setAttribute('aria-checked', String(+it.dataset.bpg === dnaBpg()));
   for (const it of m.querySelectorAll('[data-pick-tool]'))
     it.setAttribute('aria-checked', String(state.tool === it.dataset.pickTool));
   for (const it of m.querySelectorAll('[data-panel]'))
@@ -3349,6 +3506,8 @@ menubar.addEventListener('click', e => {
   else if (item.dataset.act) MENU_ACTS[item.dataset.act]();
   else if (item.dataset.panel) togglePanel(item.dataset.panel);
   else if (item.dataset.pickTool) setTool(item.dataset.pickTool);
+  else if (item.dataset.bpg) setBpg(+item.dataset.bpg);
+  else if (item.dataset.look) setStrandView(item.dataset.look, true);
   else if (item.dataset.fmt) applyFormat(item.dataset.fmt);
 });
 menubar.addEventListener('pointerover', e => {
@@ -3411,7 +3570,7 @@ function ctxItems() {
   if (linkT) {
     const existing = findLink(linkT[0], linkT[1]);
     const strands = linkT.every(t => !t.group && linkStrand(t));
-    const dna = linkT.every(t => byId(t.id)?.dna);
+    const dna = linkT.every(t => byId(t.id) && lookOf(byId(t.id)) === 'dna');
     if (existing) add('Unlink', edit(() => { state.doc.elements = state.doc.elements.filter(e => e !== existing); }));
     else if (dna && strands) add('Pair as Duplex', () => createLink(linkT));
     else {
@@ -3442,8 +3601,12 @@ function ctxItems() {
   if (join) add('Join Lines', () => joinLines(join));
   const paths = els.filter(e => e.type === 'path');
   if (paths.length) {
-    const allDNA = paths.every(p => p.dna);
-    add('Draw as DNA', edit(() => setDNA(paths, !allDNA)), { checked: allDNA });
+    const allDNA = paths.every(p => ownLook(p) === 'dna');
+    add('Draw As', null, {
+      sub: Object.entries(LOOKS).map(([k, label]) => ({
+        label, act: edit(() => setLook(paths, k)), checked: paths.every(p => ownLook(p) === k),
+      })),
+    });
     if (allDNA) {
       const all = k => paths.every(p => p[k]);
       const toggle = (k, v) => edit(() => { for (const p of paths) { if (v) p[k] = v; else delete p[k]; } });
@@ -3810,22 +3973,35 @@ window.addEventListener('keydown', e => {
 // ---- appearance (a UI pref, like the notes panel) ----
 // Unset follows the OS; once toggled, the choice sticks.
 
-// View → DNA Molecules: draw DNA strands as molecules or as plain lines. A
-// display preference (remembered per browser), not a document edit.
-const DNA_VIEW_KEY = 'master-schemer-dna-view';
-function setDNAView(show, remember) {
-  dnaView.show = show;
-  $('dnaToggle').setAttribute('aria-pressed', String(show));
-  if (remember) try { localStorage.setItem(DNA_VIEW_KEY, show ? 'on' : 'off'); } catch { /* full */ }
+// View → Draw Strands: each as set, or all as lines / molecules / sequences.
+// A display preference (remembered per browser), not a document edit. The
+// status bar's DNA button flips between all-lines and each-as-set.
+const STRAND_VIEW_KEY = 'master-schemer-strand-view';
+function setStrandView(mode, remember) {
+  strandView.mode = mode;
+  $('dnaToggle').setAttribute('aria-pressed', String(mode !== 'line'));
+  if (remember) try { localStorage.setItem(STRAND_VIEW_KEY, mode); } catch { /* full */ }
   invalidateRenderCache();
   refresh();
 }
-$('dnaToggle').addEventListener('click', () => setDNAView(!dnaView.show, true));
+$('dnaToggle').addEventListener('click', () => setStrandView(strandView.mode === 'line' ? 'own' : 'line', true));
 {
   let saved = null;
-  try { saved = localStorage.getItem(DNA_VIEW_KEY); } catch { /* blocked */ }
-  if (saved === 'off') setDNAView(false, false);
+  try {
+    // ponytail: the old on/off DNA pref carries over once; drop after a release or two
+    saved = localStorage.getItem(STRAND_VIEW_KEY) ?? (localStorage.getItem('master-schemer-dna-view') === 'off' ? 'line' : null);
+  } catch { /* blocked */ }
+  if (['line', 'dna', 'seq'].includes(saved)) setStrandView(saved, false);
 }
+// View → Mark 3′ Ends: a small chevron past every DNA strand's 3' end (display only)
+const DNA_ENDS_KEY = 'master-schemer-dna-ends';
+function setDNAEnds(on, remember) {
+  dnaView.ends = on;
+  if (remember) try { localStorage.setItem(DNA_ENDS_KEY, on ? 'on' : 'off'); } catch { /* full */ }
+  invalidateRenderCache();
+  refresh();
+}
+try { if (localStorage.getItem(DNA_ENDS_KEY) === 'on') setDNAEnds(true, false); } catch { /* blocked */ }
 
 const THEME_KEY = 'master-schemer-theme';
 function setTheme(dark, remember) {

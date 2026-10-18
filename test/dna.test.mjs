@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { strandLayout, uAt, tAt, naturalBases, gridPitch, brushPath, midline } from '../app/js/dna.js';
-import { pointAt } from '../app/js/geom.js';
+import { strandLayout, uAt, tAt, naturalBases, gridPitch, brushPath, midline, seqLetters } from '../app/js/dna.js';
+import { pointAt, snap8 } from '../app/js/geom.js';
 
 test('strandLayout: free length shares the free count, fixed spans keep theirs', () => {
   const D = gridPitch(10); // the DNA grid: 10 bases per 20-unit square
@@ -55,9 +55,22 @@ test('midline pairs antiparallel strands end to end and merges straight runs', (
 test('seqOf: only whole sequences of 4+ bases count', async () => {
   const { seqOf } = await import('../app/js/dna.js');
   assert.equal(seqOf('gatt aca'), 'GATTACA');
-  assert.equal(seqOf('ACGU-NNA'), 'ACGTNNA');
+  assert.equal(seqOf('ACGU-NNA'), 'ACGUNNA'); // as written; colours read U as T
   assert.equal(seqOf('a'), '');        // a domain name, not a base
   assert.equal(seqOf('tag'), '');
   assert.equal(seqOf("domain a*"), '');
   assert.equal(seqOf(undefined), '');
+});
+
+test('seqLetters reads a sequence field, ignoring spacing and 5′/3′ marks', () => {
+  assert.equal(seqLetters("5'-atg cau-3'"), 'ATGCAU');
+  assert.equal(seqLetters('ACGT NNN'), 'ACGTNNN');
+  assert.equal(seqLetters('domain a*'), '');
+  assert.equal(seqLetters(''), '');
+});
+
+test('snap8 euclid steps measure along diagonals', () => {
+  const p = snap8([0, 0], [30, 30], 2, true);
+  assert.ok(Math.abs(Math.hypot(...p) / 2 - Math.round(Math.hypot(...p) / 2)) < 1e-3);
+  assert.deepEqual(snap8([0, 0], [31, 2], 10), [30, 0]);
 });
