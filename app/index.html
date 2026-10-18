@@ -42,18 +42,51 @@
     </span>
     <h1>Master Schemer</h1>
   </div>
-  <div class="topbar-group">
-    <button class="btn" id="newBtn">New</button>
-    <button class="btn" id="openBtn" data-tip="Open scheme (Ctrl+O)">Open</button>
-    <button class="btn" id="saveBtn" data-tip="Save scheme (Ctrl+S)">Save</button>
-    <button class="btn" id="saveAsBtn" data-tip="Save under a new name (Ctrl+Shift+S)">Save As</button>
-    <button class="btn" id="exportBtn" data-tip="Export SVG (Ctrl+E)">Export SVG</button>
-    <button class="btn" id="csvBtn" data-tip="Export objects and their data as CSV — selection scopes it">Export CSV</button>
-  </div>
-  <div class="topbar-group">
-    <button class="btn" id="copyBtn" data-tip="Copy selection (Ctrl+C)">Copy</button>
-    <button class="btn" id="pasteBtn" data-tip="Paste, offset from the original (Ctrl+V)">Paste</button>
-  </div>
+  <nav class="menubar" id="menubar" aria-label="Main menu">
+    <div class="menu">
+      <button class="menu-title" aria-haspopup="true" aria-expanded="false">File</button>
+      <div class="menu-list" role="menu">
+        <button role="menuitem" id="newBtn">New</button>
+        <button role="menuitem" id="openBtn">Open…<kbd>Ctrl+O</kbd></button>
+        <button role="menuitem" data-act="recent">Open Recent…<kbd>Ctrl+Shift+O</kbd></button>
+        <hr>
+        <button role="menuitem" id="saveBtn">Save<kbd>Ctrl+S</kbd></button>
+        <button role="menuitem" id="saveAsBtn">Save As…<kbd>Ctrl+Shift+S</kbd></button>
+        <hr>
+        <button role="menuitem" id="exportBtn">Export SVG<kbd>Ctrl+E</kbd></button>
+        <button role="menuitem" id="csvBtn">Export CSV</button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="menu-title" aria-haspopup="true" aria-expanded="false">Edit</button>
+      <div class="menu-list" role="menu">
+        <button role="menuitem" data-click="undoBtn">Undo<kbd>Ctrl+Z</kbd></button>
+        <button role="menuitem" data-click="redoBtn">Redo<kbd>Ctrl+Shift+Z</kbd></button>
+        <hr>
+        <button role="menuitem" id="copyBtn">Copy<kbd>Ctrl+C</kbd></button>
+        <button role="menuitem" id="pasteBtn">Paste<kbd>Ctrl+V</kbd></button>
+        <button role="menuitem" data-act="delete">Delete<kbd>Del</kbd></button>
+        <hr>
+        <button role="menuitem" data-act="selectAll">Select All<kbd>Ctrl+A</kbd></button>
+        <button role="menuitem" data-act="group">Group<kbd>Ctrl+G</kbd></button>
+        <button role="menuitem" data-act="ungroup">Ungroup<kbd>Ctrl+Shift+G</kbd></button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="menu-title" aria-haspopup="true" aria-expanded="false">View</button>
+      <div class="menu-list" role="menu">
+        <button role="menuitem" data-click="zoomIn">Zoom In<kbd>+</kbd></button>
+        <button role="menuitem" data-click="zoomOut">Zoom Out<kbd>−</kbd></button>
+        <button role="menuitem" data-click="zoomLabel">Actual Size<kbd>0</kbd></button>
+        <button role="menuitem" data-click="zoomFit">Fit Scheme<kbd>1</kbd></button>
+        <hr>
+        <button role="menuitemcheckbox" data-click="snapToggle">Snap to Half-Grid</button>
+        <button role="menuitemcheckbox" data-click="dataToggle">Show Data Boxes</button>
+        <button role="menuitemcheckbox" data-click="hoverToggle">Data on Hover</button>
+        <button role="menuitemcheckbox" data-click="notesToggle">Notes Panel</button>
+      </div>
+    </div>
+  </nav>
   <div class="topbar-group">
     <button class="icon-btn" id="undoBtn" data-tip="Undo (Ctrl+Z)" aria-label="Undo"><svg><use href="#i-undo"/></svg></button>
     <button class="icon-btn" id="redoBtn" data-tip="Redo (Ctrl+Shift+Z)" aria-label="Redo"><svg><use href="#i-redo"/></svg></button>

@@ -896,7 +896,9 @@ async function katexCSS() {
   return katexInlineCSS;
 }
 
-export async function exportSVGString() {
+// plain: skip KaTeX CSS + math foreignObjects — a lighter SVG for thumbnails
+// that a canvas can rasterize without being tainted (WebKit taints on foreignObject).
+export async function exportSVGString({ plain = false } = {}) {
   renderNow(false); // export clones the live layers — force every element in, unculled
   const box = contentBBox();
   if (!box) return null;
@@ -908,7 +910,7 @@ export async function exportSVGString() {
   out.setAttribute('width', x1 - x0);
   out.setAttribute('height', y1 - y0);
 
-  const needsMath = state.doc.elements.some(el =>
+  const needsMath = !plain && state.doc.elements.some(el =>
     (el.type === 'text' && isRichText(el)) ||
     (el.label && !el.labelHide && hasMath(resolveLabel(el.label))));
   if (needsMath) {
@@ -924,7 +926,7 @@ export async function exportSVGString() {
   for (const id of ['layer-cards', 'layer-links', 'layer-draw']) {
     out.appendChild($(id).cloneNode(true));
   }
-  for (const el of state.doc.elements) {
+  for (const el of plain ? [] : state.doc.elements) {
     const clone = out.querySelector(`[data-id="${el.id}"]`);
     if (!clone) continue;
     if (el.type === 'text' && isRichText(el)) {

@@ -367,6 +367,11 @@ function createLink(targets) {
 
 // ---- keyboard ----
 
+function selectAll() {
+  state.selection = state.doc.elements.filter(el => el.type !== 'arrow').map(el => ({ id: el.id }));
+  refresh();
+}
+
 window.addEventListener('keydown', e => {
   const t = e.target;
   if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
@@ -380,13 +385,9 @@ window.addEventListener('keydown', e => {
     else if (k === 'c') { e.preventDefault(); copySelection(); }
     else if (k === 'v') { e.preventDefault(); pasteClipboard(); }
     else if (k === 'e') { e.preventDefault(); exportSVG(); }
-    else if (k === 'o') { e.preventDefault(); openFile(); }
+    else if (k === 'o') { e.preventDefault(); e.shiftKey ? showRecent() : openFile(); }
     else if (k === 'g') { e.preventDefault(); e.shiftKey ? ungroupSelection() : groupSelection(); }
-    else if (k === 'a') {
-      e.preventDefault();
-      state.selection = state.doc.elements.filter(el => el.type !== 'arrow').map(el => ({ id: el.id }));
-      refresh();
-    }
+    else if (k === 'a') { e.preventDefault(); selectAll(); }
     return;
   }
   const tool = TOOL_KEYS[e.key.toLowerCase()];
@@ -2001,6 +2002,7 @@ async function saveJSON(saveAs = false) {
       download('scheme.schemer.json', text, 'application/json');
     }
     state.dirty = false;
+    rememberRecent(TAURI ? currentFile : null, currentFile?.name || 'scheme.schemer.json');
     $('hint').textContent = 'Saved.';
     toast('Saved ✓');
   } catch (err) {
@@ -2008,16 +2010,21 @@ async function saveJSON(saveAs = false) {
   }
 }
 
+function openPath(text, path) {
+  loadDocJSON(text);
+  currentFile = path;
+  state.dirty = false;
+  renderNotes();
+  fitView();
+  rememberRecent(path, path.split(/[\\/]/).pop());
+}
+
 async function openFile() {
   try {
     if (TAURI) {
       const path = await TAURI.dialog.open({ multiple: false, filters: FILE_FILTER });
       if (!path) return;
-      loadDocJSON(await TAURI.fs.readTextFile(path));
-      currentFile = path;
-      state.dirty = false;
-      renderNotes();
-      fitView();
+      openPath(await TAURI.fs.readTextFile(path), path);
     } else {
       $('fileInput').click();
     }
@@ -2047,6 +2054,133 @@ async function exportSVG() {
     $('hint').textContent = `Export failed: ${err.message || err}`;
   }
 }
+
+// ---- open recent (last 50 files ever opened/saved, with thumbnails) ----
+// Kept in localStorage (the Tauri webview persists it per app). Under Tauri an
+// entry reopens by path; in a browser there is no path, so it falls back to the picker.
+
+const RECENT_KEY = 'master-schemer-recent';
+const RECENT_MAX = 50;
+let recent = [];
+try { recent = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { recent = []; }
+function saveRecent() {
+  // ponytail: on quota errors shed the oldest half; IndexedDB if thumbs ever outgrow localStorage
+  for (;;) {
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(recent)); return; }
+    catch { if (recent.length <= 1) return; recent = recent.slice(0, Math.ceil(recent.length / 2)); }
+  }
+}
+
+// Rasterize the plain export SVG to a small JPEG data URL (~10 KB).
+async function makeThumb() {
+  const svg = await exportSVGString({ plain: true });
+  render(); // export rendered unculled; restore the culled view
+  if (!svg) return null;
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const W = 320, H = 200;
+    const k = Math.min(W / img.naturalWidth, H / img.naturalHeight);
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    g.fillStyle = state.doc.bg || '#ffffff';
+    g.fillRect(0, 0, W, H);
+    const w = img.naturalWidth * k, h = img.naturalHeight * k;
+    g.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+    return c.toDataURL('image/jpeg', 0.75);
+  } catch { return null; } finally { URL.revokeObjectURL(url); }
+}
+
+async function rememberRecent(path, name) {
+  const key = path || name;
+  const thumb = await makeThumb();
+  recent = [{ path, name, when: Date.now(), thumb }, ...recent.filter(r => (r.path || r.name) !== key)].slice(0, RECENT_MAX);
+  saveRecent();
+}
+
+async function openRecentEntry(r) {
+  closeRecent();
+  if (!TAURI || !r.path) {
+    $('hint').textContent = `Pick ${r.name} in the file dialog — the browser can't reopen files by path.`;
+    openFile();
+    return;
+  }
+  let text;
+  try { text = await TAURI.fs.readTextFile(r.path); }
+  catch {
+    recent = recent.filter(x => x !== r); saveRecent();
+    $('hint').textContent = `${r.path} is gone — removed it from Open Recent.`;
+    return;
+  }
+  try { openPath(text, r.path); }
+  catch (err) { $('hint').textContent = `Could not open ${r.name}: ${err.message || err}`; }
+}
+
+function closeRecent() { $('recent-modal')?.remove(); }
+
+function showRecent() {
+  closeRecent();
+  const overlay = document.createElement('div');
+  overlay.id = 'recent-modal';
+  overlay.className = 'modal-overlay';
+  overlay.addEventListener('pointerdown', e => { if (e.target === overlay) closeRecent(); });
+  const card = document.createElement('div');
+  card.className = 'modal-card recent-card';
+  const head = document.createElement('div');
+  head.className = 'modal-head';
+  const h = document.createElement('h2');
+  h.textContent = 'Open Recent';
+  const x = document.createElement('button');
+  x.className = 'modal-close';
+  x.textContent = '✕';
+  x.title = 'Close';
+  x.addEventListener('click', closeRecent);
+  head.append(h, x);
+  const grid = document.createElement('div');
+  grid.className = 'recent-grid';
+  if (!recent.length) grid.textContent = 'Nothing yet — schemes you open or save will appear here.';
+  for (const r of recent) {
+    const tile = document.createElement('button');
+    tile.className = 'recent-tile';
+    tile.title = r.path || r.name;
+    const thumb = document.createElement(r.thumb ? 'img' : 'div');
+    thumb.className = 'recent-thumb';
+    if (r.thumb) { thumb.src = r.thumb; thumb.alt = ''; }
+    const name = document.createElement('span');
+    name.className = 'recent-name';
+    name.textContent = r.name;
+    const meta = document.createElement('span');
+    meta.className = 'recent-meta';
+    const dir = r.path ? r.path.slice(0, -r.name.length).replace(/[\\/]$/, '') : '';
+    meta.textContent = [dir, new Date(r.when).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })].filter(Boolean).join(' · ');
+    const rm = document.createElement('span');
+    rm.className = 'recent-remove';
+    rm.textContent = '✕';
+    rm.title = 'Remove from list';
+    rm.addEventListener('click', e => {
+      e.stopPropagation();
+      recent = recent.filter(y => y !== r); saveRecent(); showRecent();
+    });
+    tile.append(thumb, name, meta, rm);
+    tile.addEventListener('click', () => openRecentEntry(r));
+    grid.appendChild(tile);
+  }
+  card.append(head, grid);
+  if (recent.length) {
+    const clear = document.createElement('button');
+    clear.className = 'btn recent-clear';
+    clear.textContent = 'Clear list';
+    clear.addEventListener('click', () => { recent = []; saveRecent(); showRecent(); });
+    card.appendChild(clear);
+  }
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  grid.querySelector('.recent-tile')?.focus();
+}
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && $('recent-modal')) closeRecent(); });
 
 // ---- CSV export (objects + their hidden data; selection scopes it) ----
 
@@ -2122,7 +2256,7 @@ $('fileInput').addEventListener('change', async e => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
-  try { loadDocJSON(await file.text()); currentFile = null; state.dirty = false; renderNotes(); fitView(); }
+  try { loadDocJSON(await file.text()); currentFile = null; state.dirty = false; renderNotes(); fitView(); rememberRecent(null, file.name); }
   catch { $('hint').textContent = `Could not read ${file.name} — not a Master Schemer file.`; }
 });
 $('libInput').addEventListener('change', async e => {
@@ -2140,6 +2274,40 @@ $('exportBtn').addEventListener('click', exportSVG);
 $('csvBtn').addEventListener('click', exportCSV);
 $('undoBtn').addEventListener('click', undo);
 $('redoBtn').addEventListener('click', redo);
+
+// Menu bar: click a title to open; while one is open, hovering another title
+// switches to it. Items either carry the action's own id, proxy a click to an
+// existing control (data-click), or name an action (data-act).
+const MENU_ACTS = { recent: () => showRecent(), delete: deleteSelection, selectAll, group: groupSelection, ungroup: ungroupSelection };
+const menubar = $('menubar');
+let openMenu = null;
+function setMenu(m) {
+  if (openMenu) { openMenu.classList.remove('open'); openMenu.firstElementChild.setAttribute('aria-expanded', 'false'); }
+  openMenu = m;
+  if (!m) return;
+  m.classList.add('open');
+  m.firstElementChild.setAttribute('aria-expanded', 'true');
+  for (const it of m.querySelectorAll('[data-click]')) {
+    const target = $(it.dataset.click);
+    it.disabled = target.disabled;
+    if (it.getAttribute('role') === 'menuitemcheckbox') it.setAttribute('aria-checked', target.getAttribute('aria-pressed'));
+  }
+}
+menubar.addEventListener('click', e => {
+  const title = e.target.closest('.menu-title');
+  if (title) { setMenu(openMenu === title.parentElement ? null : title.parentElement); return; }
+  const item = e.target.closest('[role^="menuitem"]');
+  if (!item) return;
+  setMenu(null);
+  if (item.dataset.click) $(item.dataset.click).click();
+  else if (item.dataset.act) MENU_ACTS[item.dataset.act]();
+});
+menubar.addEventListener('pointerover', e => {
+  const title = e.target.closest('.menu-title');
+  if (openMenu && title && title.parentElement !== openMenu) setMenu(title.parentElement);
+});
+document.addEventListener('pointerdown', e => { if (openMenu && !menubar.contains(e.target)) setMenu(null); });
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && openMenu) setMenu(null); }, true);
 
 $('snapToggle').addEventListener('click', () => {
   state.snap = !state.snap;
