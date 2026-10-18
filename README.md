@@ -230,7 +230,7 @@ between edits; use **Open** to reload a saved `.schemer.json`).
 No build step, no dependencies. Serve the folder and open it:
 
 ```bash
-python3 -m http.server 8123   # then http://localhost:8123
+python3 tools/serve.py 8123   # then http://localhost:8123 (no-cache, so a pull never leaves stale modules)
 ```
 
 (Any static server works; opening `index.html` directly also works in

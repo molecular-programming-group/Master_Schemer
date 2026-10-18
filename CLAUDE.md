@@ -2,7 +2,9 @@
 
 ## Running and testing
 
-- Local test version: `cd app && python3 -m http.server 8123`, then http://localhost:8123.
+- Local test version: `python3 tools/serve.py 8123`, then http://localhost:8123 (sends
+  `Cache-Control: no-cache`; plain `http.server` lets the browser keep stale modules
+  after a merge, and the app dies on a missing export).
   No build step — reload the page after an edit.
 - Unit tests: `node --test test/*.test.mjs`
 - Desktop shell: `cargo tauri dev` from the repo root (Tauri wraps `app/` unchanged).
