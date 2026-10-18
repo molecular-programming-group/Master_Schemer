@@ -2346,7 +2346,7 @@ function renderPanel() {
     const count = state.doc.elements.length;
     p.textContent = count
       ? `${count} object${count === 1 ? '' : 's'} in this scheme. Select one to edit its label and color.`
-      : 'An empty canvas. Pick the Line tool (L) and drag on the grid to draw your first path, or frame a section with the Card tool (C).';
+      : 'An empty canvas. Pick the Strand tool (L) and drag on the grid to draw your first path, or frame a section with the Card tool (C).';
     sec.appendChild(p);
     if (state.doc.elements.some(e => e.dna)) sec.appendChild(dnaGridControl());
     sec.appendChild(fieldRow('Background', colorPicker('bg',
