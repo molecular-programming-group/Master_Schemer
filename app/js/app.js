@@ -7,7 +7,7 @@ import {
 } from './model.js';
 import { GRID, mergePaths, rot90, flipPt, snapHalf } from './geom.js';
 import {
-  render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView,
+  render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
 } from './render.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
 
@@ -518,7 +518,8 @@ function displayName(el, i) {
     path: 'line', ink: 'freehand', ellipse: 'ellipse', rect: 'rectangle',
     aline: 'line note', aarrow: 'arrow',
   };
-  return label || `${names[el.type] || el.type} ${i + 1}`;
+  const kind = el.type === 'aline' && (el.cap0 !== 'none' || el.cap1 !== 'none') ? 'arrow' : names[el.type];
+  return label || `${kind || el.type} ${i + 1}`;
 }
 
 // A line's domain string: its segments' `string` fields concatenated in path
@@ -968,7 +969,8 @@ function assetThumbnail(asset) {
         fill: el.type === 'card' ? (el.fill || '#ffffff') : (el.fill || 'none'), stroke, 'stroke-width': sw });
     } else if (Array.isArray(el.pts) && el.pts.length) {
       for (const p of el.pts) acc(p[0], p[1]);
-      mk({ tag: 'polyline', points: el.pts.map(p => p.join(',')).join(' '), fill: 'none', stroke, 'stroke-width': sw });
+      if (el.type === 'aline') mk({ tag: 'path', d: alineD(el.pts), fill: 'none', stroke, 'stroke-width': sw });
+      else mk({ tag: 'polyline', points: el.pts.map(p => p.join(',')).join(' '), fill: 'none', stroke, 'stroke-width': sw });
     }
   }
   if (!isFinite(x0)) { x0 = 0; y0 = 0; x1 = 1; y1 = 1; }
@@ -1623,6 +1625,60 @@ function smallButton(label, onClick, title = '') {
   return b;
 }
 
+// What class of thing is selected: primary (strands and their domains),
+// structure (cards, connections, links), annotation, or a group.
+const KIND = {
+  path: ['primary', 'Strand'], card: ['structure', 'Section card'], arrow: ['structure', 'Connection'],
+  link: ['structure', 'Link'], text: ['annotation', 'Text note'], ellipse: ['annotation', 'Ellipse'],
+  rect: ['annotation', 'Rectangle'], ink: ['annotation', 'Freehand'],
+};
+const kindOf = el => el.type === 'aline'
+  ? ['annotation', el.cap0 !== 'none' || el.cap1 !== 'none' ? 'Arrow' : 'Line']
+  : KIND[el.type] || ['annotation', el.type];
+const CLASS_NAME = { primary: 'Primary object', structure: 'Structure', annotation: 'Annotation', group: 'Group' };
+
+function selectedGroup(n) {
+  const wholly = whollySelectedGroups();
+  const tops = [...wholly].filter(gid => !wholly.has(byGroup(gid).parent));
+  return tops.length === 1 && groupElementMembers(tops[0]).length === n ? byGroup(tops[0]) : null;
+}
+
+function kindBadge(single, n) {
+  if (!n) return null;
+  let cls, kind, detail = '';
+  const name = el => displayName(el, state.doc.elements.indexOf(el));
+  const grp = !single || single.seg === undefined ? selectedGroup(n) : null;
+  if (grp) {
+    cls = 'group'; kind = grp.name; detail = `${n} object${n === 1 ? '' : 's'}`;
+  } else if (single?.seg !== undefined) {
+    cls = 'primary'; kind = 'Domain';
+    detail = `segment ${single.seg + 1} of ${name(single.el)}`;
+  } else if (single) {
+    [cls, kind] = kindOf(single.el);
+    detail = name(single.el);
+    if (cls === 'annotation' && isSemantic(single.el)) detail += ' · tracked';
+  } else {
+    const counts = {};
+    for (const el of selectedElements()) { const c = kindOf(el)[0]; counts[c] = (counts[c] || 0) + 1; }
+    const keys = Object.keys(counts);
+    cls = keys.length === 1 ? keys[0] : 'mixed';
+    kind = `${n} objects`;
+    detail = keys.map(k => `${counts[k]} ${k}`).join(' · ');
+  }
+  const box = document.createElement('div');
+  box.className = `kind-badge kind-${cls}`;
+  const tag = document.createElement('span');
+  tag.className = 'kind-class';
+  tag.textContent = cls === 'mixed' ? 'Mixed selection' : CLASS_NAME[cls];
+  const k = document.createElement('strong');
+  k.textContent = kind;
+  const d = document.createElement('span');
+  d.className = 'kind-detail';
+  d.textContent = detail;
+  box.append(tag, k, d);
+  return box;
+}
+
 function sectionTitle(text) {
   const h = document.createElement('h2');
   h.textContent = text;
@@ -1761,6 +1817,8 @@ function renderPanel() {
   const single = selectionSingle();
   const n = state.selection.length;
 
+  const badge = kindBadge(single, n);
+  if (badge) panel.appendChild(badge);
   panel.appendChild(paletteSection());
 
   const styleSec = document.createElement('div');
