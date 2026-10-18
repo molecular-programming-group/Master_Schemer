@@ -888,6 +888,13 @@ function drawSeqStrand(g, el) {
     'stroke-width': el.width || 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, g);
   const near = svgEl('g', { class: 'seq-near', 'font-family': 'ui-monospace, Menlo, Consolas, monospace',
     'font-weight': 600, 'text-anchor': 'middle', 'dominant-baseline': 'central' }, g);
+  // the ghost trace: a faint band behind the letters, broken at every base boundary
+  const trace = svgEl('g', { fill: 'none', 'stroke-opacity': 0.16, 'stroke-linecap': 'butt', 'stroke-linejoin': 'round' }, near);
+  for (let i = 0; i < lay.n; i++) {
+    const t0 = tAt(lay.knots, i), t1 = tAt(lay.knots, i + 1), gap = Math.min((t1 - t0) * 0.1, pitch * 0.12);
+    svgEl('polyline', { points: ptsAttr(subPath(el.pts, t0 + gap, t1 - gap)), stroke: strandColor(el, (t0 + t1) / 2),
+      'stroke-width': +(Math.min(t1 - t0, pitch) * 1.3).toFixed(2) }, trace); // as tall as its letter
+  }
   for (let i = 0; i < lay.n; i++) {
     const t0 = tAt(lay.knots, i), t1 = tAt(lay.knots, i + 1), t = (t0 + t1) / 2;
     const [x, y] = pointAt(el.pts, t), a = pointAt(el.pts, t - 0.01), b = pointAt(el.pts, t + 0.01);

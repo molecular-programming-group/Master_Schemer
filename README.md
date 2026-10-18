@@ -106,11 +106,13 @@ molecules start in toon shading with a black outline.
 - **Sequences.** A strand's **Sequence** field (5′→3′) or a domain's
   **String** holding A/C/G/T/U/N sets its base count; a domain's sequence
   overrides the strand's over that domain. **View → Show Sequences** draws such
-  strands as their letters along the line, one per base. The letters appear
+  strands as their letters along the line, one per base, each on a faint tile
+  of the strand colour so base boundaries show. The letters appear
   once you zoom in far enough to read them, and are kept upright, so a strand
   running right to left reads backwards. A strand whose sequence doesn't match its
   drawn length shows the difference at its 3′ end (*+5 nt*), and **Grid → Resize
-  Strands to Grid** moves its 3′ end to fix it (the selected strands, or every
+  Strands to Grid** moves its 3′ end to fix it, or scales the whole shape when
+  the change is more than its last leg (the selected strands, or every
   strand with a sequence when nothing is selected).
 - **Grid menu.** It holds the scale (*N bases per square*; 1 or 2 make
   letters readable at 100%), the base ticks (one per base along the grid

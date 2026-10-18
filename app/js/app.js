@@ -2141,7 +2141,8 @@ function sequenceField(el) {
 // Grid → Resize Strands to Grid: lengthen or shorten each selected strand (or,
 // with nothing selected, every strand with a sequence) at its 3′ end so its
 // bases sit at the grid's spacing: n bases = n / (bases per square) squares.
-// The 5′ end and corners stay.
+// The 5′ end and corners stay — unless the change is more than the last leg can
+// take (e.g. after changing the scale), when the whole shape scales about its 5′ end.
 // ponytail: fits the whole strand; a domain with its own count stays as squeezed as it was.
 function fitToSequence() {
   const sel = selectedElements();
@@ -2153,12 +2154,16 @@ function fitToSequence() {
   for (const el of els) {
     const L = polylineLength(el.pts), want = dnaLayout(el).n * gridPitch(dnaBpg());
     if (Math.abs(want - L) < 0.01) continue;
-    if (want < L) el.pts = subPath(el.pts, 0, want);
-    else {
-      const z = el.pts[el.pts.length - 1], y = el.pts[el.pts.length - 2];
-      const d = Math.hypot(z[0] - y[0], z[1] - y[1]), k = (want - L) / d;
-      el.pts[el.pts.length - 1] = [z[0] + (z[0] - y[0]) * k, z[1] + (z[1] - y[1]) * k].map(v => Math.round(v * 1000) / 1000);
+    const z = el.pts[el.pts.length - 1], y = el.pts[el.pts.length - 2];
+    const leg = Math.hypot(z[0] - y[0], z[1] - y[1]), r3 = v => Math.round(v * 1000) / 1000;
+    if (Math.abs(want - L) >= leg) { // more than the last leg can take: scale the whole shape about its 5′ end
+      const k = want / L, o = el.pts[0];
+      el.pts = el.pts.map(p => [r3(o[0] + (p[0] - o[0]) * k), r3(o[1] + (p[1] - o[1]) * k)]);
+      el.segments = (el.segments || []).map(sg => ({ ...sg, t0: sg.t0 * k, t1: sg.t1 * k }));
+      continue;
     }
+    if (want < L) el.pts = subPath(el.pts, 0, want);
+    else el.pts[el.pts.length - 1] = [r3(z[0] + (z[0] - y[0]) * (want - L) / leg), r3(z[1] + (z[1] - y[1]) * (want - L) / leg)];
     el.segments = resizeEndSegments(el.segments, L, polylineLength(el.pts), 1);
   }
   changed();
