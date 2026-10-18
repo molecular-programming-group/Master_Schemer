@@ -32,7 +32,7 @@ check it off, commit.
 - [x] 09-surface — immobilized strands on the stock surface block, a strand-displacement step on the surface, cards as steps
 - [x] 10-tweezers — three-strand tweezers (hinge, two arms), fuel strand closing them, waste duplex
 - [x] 11-crossover — two-helix double-crossover tile with Holliday-junction routing (strands switching helices)
-- [ ] 12-mini-origami — scaffold rastered over 4 helices with staples crossing between them, Draw as DNA
+- [x] 12-mini-origami — scaffold rastered over 4 helices with staples crossing between them, Draw as DNA
 
 ## Notes
 
