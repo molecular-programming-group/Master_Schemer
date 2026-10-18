@@ -4,12 +4,13 @@ import {
   deleteSelection, selectionSingle, byId, newDoc, loadDocJSON,
   isSemantic, resolveColor, resolveLabel, reorder, pruneGroups,
   byGroup, childGroups, topLevelGroups, groupElementMembers, remapSegLinks, domainKey, domainUses, syncDomains,
+  displayName, kindWord, clearNameCache,
 } from './model.js';
-import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments } from './geom.js';
+import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments, drawnPts } from './geom.js';
 import {
-  render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
+  render, renderNow, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, POINTED_CAPS, PATTERNS, dataView, alineD, alineMid,
   linkStrand, rungSeqs, refSeq, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, strandView, lookOf, dnaView, invalidateRenderCache,
-  FONTS, LINE_H, INLINE_TAGS, inlineHTML, toon, outlined,
+  FONTS, LINE_H, INLINE_TAGS, inlineHTML, toon, outlined, LABEL_STYLE_KEYS, labelStyleOf, anchorFrac, textWidth,
 } from './render.js';
 import { DEFAULT_BPG, seqOf, spacing, tintRef, uAt, worldPerA, gridPitch, naturalBases, seqLetters } from './dna.js';
 import MOLS from './mol-tex.js';
@@ -34,6 +35,7 @@ function toast(msg) {
 // ---- refresh pipeline ----
 
 function refresh() {
+  clearNameCache();
   render();
   // panels are DOM-heavy; while a drag is live only the canvas needs frames
   if (!isDragging()) {
@@ -169,7 +171,10 @@ function zoomCenter(factor) {
   zoomAt([svg.clientWidth / 2, svg.clientHeight / 2], factor);
 }
 
-function fitView(box = contentBBox()) {
+function fitView(box) {
+  // draw everything first: a note's real size (KaTeX math especially) is only
+  // known once laid out, and a just-opened file hasn't been drawn yet
+  if (!box) { renderNow(false); box = contentBBox(); }
   const v = state.view;
   if (!box) { v.tx = 80; v.ty = 80; v.s = 1; refresh(); return; }
   const w = Math.max(box[2] - box[0], GRID), h = Math.max(box[3] - box[1], GRID);
@@ -225,6 +230,7 @@ function transformSelection(op) { // 'cw' | 'ccw' | 'h' | 'v'
   const pt = p => rot ? rot90(p, c, op === 'cw' ? 1 : -1) : flipPt(p, c, op);
   beginChange();
   for (const el of els) {
+    if (!rot && el.rot) el.rot = -el.rot; // a mirrored turned shape turns the other way
     if (el.type === 'ellipse') {
       [el.cx, el.cy] = pt([el.cx, el.cy]);
       if (rot) [el.rx, el.ry] = [el.ry, el.rx];
@@ -310,7 +316,7 @@ $('textbarToggle').addEventListener('click', () => togglePanel('textbar'));
 
 const FLAG = { b: 'bold', i: 'italic', u: 'underline', s: 'strike' };
 const SIZES = [6, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 96, 120, 144];
-const FMT_KEYS = ['font', 'size', 'bold', 'italic', 'underline', 'strike', 'align', 'lh'];
+const FMT_KEYS = ['font', 'size', 'bold', 'italic', 'underline', 'strike', 'align', 'anchored', 'lh'];
 const textTargets = () => selectedElements().filter(el => el.type === 'text');
 // A field holding a note's or label's source: the canvas editor, or the
 // panel's Text / Label fields (marked .fmt-src).
@@ -358,6 +364,14 @@ function textHint(msg) {
   $('hint').textContent = msg;
 }
 
+// Move a note's x from its current anchor to fraction k of its width, along
+// its (possibly rotated) baseline, so the text itself doesn't move.
+function reanchor(o, k) {
+  const dx = (k - anchorFrac(o)) * textWidth(o), r = (o.rotate || 0) * Math.PI / 180;
+  o.x = +(o.x + dx * Math.cos(r)).toFixed(2);
+  o.y = +(o.y + dx * Math.sin(r)).toFixed(2);
+}
+
 function applyFormat(f) {
   const [cmd, arg] = f.split(':');
   const ed = noteEditor();
@@ -377,7 +391,13 @@ function applyFormat(f) {
   const set = (o, k, v, dflt) => { if (v === dflt || v === undefined) delete o[k]; else o[k] = v; };
   const update = o => {
     if (FLAG[cmd]) set(o, FLAG[cmd], !first[FLAG[cmd]] || undefined);
-    else if (cmd === 'align') set(o, 'align', arg, 'left');
+    else if (cmd === 'align') {
+      // the note's x becomes the alignment anchor (left edge, centre, right
+      // edge); a placed note shifts its x so it stays where it is on screen
+      if (o.type === 'text') reanchor(o, { center: 0.5, right: 1 }[arg] || 0);
+      set(o, 'align', arg, 'left');
+      set(o, 'anchored', arg !== 'left' || undefined, undefined);
+    }
     else if (cmd === 'font') set(o, 'font', arg, 'sans');
     else if (cmd === 'lh') set(o, 'lh', +arg, LINE_H);
     else if (cmd === 'size') o.size = clamp(+arg || 14, 6, 144);
@@ -385,6 +405,7 @@ function applyFormat(f) {
       const cur = o.size || 14;
       o.size = cmd === 'bigger' ? SIZES.find(n => n > cur) ?? 144 : SIZES.findLast(n => n < cur) ?? 6;
     } else if (cmd === 'clear') {
+      if (o.anchored) reanchor(o, 0); // back to a left-anchored note, without moving it
       for (const k of FMT_KEYS) if (k !== 'size') delete o[k];
       if (typeof o.text === 'string') o.text = o.text.replace(new RegExp(`</?(${INLINE_TAGS.join('|')})>`, 'g'), '');
     }
@@ -696,18 +717,10 @@ function setLabel(target, v) {
 
 // ---- object sidebar (semantic registry) ----
 
-function displayName(el, i) {
-  if (el.type === 'card') return el.title || 'Untitled card';
-  const label = resolveLabel(el.label || '');
-  if (el.type === 'text') return label || el.text.split('\n')[0].slice(0, 24) || 'note';
-  const names = {
-    path: 'strand', ink: 'freehand', ellipse: 'ellipse', rect: 'rectangle',
-    aline: 'line note', aarrow: 'arrow',
-  };
-  if (MOLS[el.mol]) return label || MOLS[el.mol].name;
-  const kind = el.type === 'aline' && (el.cap0 !== 'none' || el.cap1 !== 'none') ? 'arrow' : names[el.type];
-  return label || `${kind || el.type} ${i + 1}`;
-}
+// Sidebar rows and the badge draw a name at row size, so KaTeX size commands
+// (`$\huge A$`) are dropped; truncation is left to CSS on the rendered text.
+const rowHTML = s => inlineHTML(s.split('\n')[0]
+  .replace(/\\(tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)(?![a-zA-Z])/g, ''));
 
 // A line's domain string: its segments' `string` fields concatenated in path
 // order. Derived (never stored), so it always reflects the current segments.
@@ -753,7 +766,7 @@ function sideItem({ depth, name, color, selected, onSelect, onRename, collapsibl
   }
   const label = document.createElement('span');
   label.className = 'side-name';
-  label.innerHTML = inlineHTML(name.split('\n')[0]); // drawn as on canvas; rename edits the source
+  label.innerHTML = rowHTML(name); // drawn as on canvas; rename edits the source
   row.appendChild(label);
   if (!onRename) {
     row.addEventListener('click', onSelect);
@@ -851,13 +864,13 @@ function segItems(el, depth, into) {
 
 function objectItems(els, depth, into) {
   els.forEach(el => {
-    const i = state.doc.elements.indexOf(el);
     const opts = {
-      depth, name: displayName(el, i),
+      depth, name: displayName(el),
       color: el.color !== undefined ? resolveColor(el.color) : null,
       selected: state.selection.some(s => s.id === el.id && s.seg === undefined),
       onSelect: () => { state.selection = [{ id: el.id }]; refresh(); },
-      onRename: v => { setLabel(el, v); },
+      // a card's name is its title; anything else gets its own `name`, cleared back to the default
+      onRename: v => { if (el.type === 'card') { el.title = v; delete el.name; } else if (v.trim()) el.name = v; else delete el.name; },
       dragRef: { kind: 'el', id: el.id }, ctx: true,
     };
     const segs = el.type === 'path' && (el.segments || []).length;
@@ -892,6 +905,8 @@ function renderSidebar() {
   if (body.contains(document.activeElement)) return; // mid-rename
   body.replaceChildren();
   const els = state.doc.elements;
+  const q = $('objFilter').value.trim().toLowerCase();
+  if (q) { renderFiltered(body, q); renderLibrary(); return; }
   const cards = els.filter(el => el.type === 'card');
   const tracked = els.filter(el => el.type !== 'card' && el.type !== 'arrow' && isSemantic(el));
   const placed = new Set();
@@ -924,7 +939,7 @@ function renderSidebar() {
       depth: 0, name: displayName(card), color: null,
       selected: state.selection.some(s => s.id === card.id),
       onSelect: () => { state.selection = [{ id: card.id }]; refresh(); },
-      onRename: v => { card.title = v; },
+      onRename: v => { card.title = v; delete card.name; },
       dragRef: { kind: 'el', id: card.id }, ctx: true,
     }, groupsHere.length + inside.length);
     row.classList.add('side-card');
@@ -1011,6 +1026,36 @@ function renameDomain(from, to) {
   const doms = state.doc.domains;
   if (doms[from]) { doms[to] ??= doms[from]; delete doms[from]; }
 }
+// Filter box: a flat list of the groups and objects (cards, tracked objects,
+// group members) whose name, label or text matches, matched on both the source
+// and its plain text (tags and $ dropped). A strand also matches by a domain label.
+function renderFiltered(body, q) {
+  const hit = s => !!s && (s.toLowerCase().includes(q) || s.replace(/<\/?\w+>|\$/g, '').toLowerCase().includes(q));
+  for (const g of state.doc.groups) {
+    if (!hit(g.name || 'group')) continue;
+    const members = groupElementMembers(g.id);
+    body.appendChild(sideItem({
+      depth: 0, name: g.name || 'group', color: null,
+      selected: members.length > 0 && members.every(m => state.selection.some(s => s.id === m.id && s.seg === undefined)),
+      onSelect: () => { state.selection = members.map(m => ({ id: m.id })); refresh(); },
+      onRename: v => { g.name = v; }, dragRef: { kind: 'grp', id: g.id }, ctx: true,
+    }));
+  }
+  const shown = state.doc.elements.filter(el => (el.type === 'card' || el.group || (el.type !== 'arrow' && isSemantic(el))) &&
+    (hit(displayName(el)) || hit(resolveLabel(el.label || '')) || hit(el.text) ||
+     (el.segments || []).some(seg => hit(resolveLabel(seg.label || '')))));
+  objectItems(shown, 0, body);
+  if (!body.childElementCount) {
+    const p = document.createElement('p');
+    p.className = 'muted side-empty';
+    p.textContent = 'No objects match.';
+    body.appendChild(p);
+  }
+}
+$('objFilter').addEventListener('input', renderSidebar);
+$('objFilter').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.target.value = ''; renderSidebar(); e.target.blur(); }
+});
 
 // ---- asset library (persists across sessions, transferable as a file) ----
 
@@ -1094,13 +1139,33 @@ try {
   }
 } catch { /* storage blocked — skip seeding */ }
 
+// Stock shapes: closed line notes (polygons), so every vertex stays editable.
+try {
+  const SEED_KEY = 'master-schemer-lib-seeded-shapes1';
+  if (!localStorage.getItem(SEED_KEY)) {
+    const poly = (name, pts, fill) => ({
+      id: newId(), category: 'Shapes', name, groups: [], // (not `stock`: a protein-set reissue drops those)
+      elements: [{ type: 'aline', id: newId(), pts, closed: true, color: '#2b2622', width: 1.5, cap0: 'none', cap1: 'none', ...(fill ? { fill } : {}) }],
+    });
+    const arrow = [[0, 10], [50, 10], [50, 0], [80, 20], [50, 40], [50, 30], [0, 30]];
+    library.push(
+      poly('block arrow', arrow, '#c9c2b6'),
+      poly('block arrow (hollow)', arrow),
+      poly('double block arrow (hollow)', [[0, 20], [25, 0], [25, 10], [75, 10], [75, 0], [100, 20], [75, 40], [75, 30], [25, 30], [25, 40]]),
+      poly('chevron', [[0, 0], [60, 0], [80, 20], [60, 40], [0, 40], [20, 20]], '#c9c2b6'),
+    );
+    localStorage.setItem(SEED_KEY, '1');
+    saveLibrary();
+  }
+} catch { /* storage blocked — skip seeding */ }
+
 // Memory-slot refs ('slot:<id>' colours and labels) resolved to plain values, for
 // copies leaving the document or a slot going away: read from `palette`/`labels`;
 // refs to ids in `keep` stay live.
 function freezeRefs(objs, palette = state.doc.palette, labels = state.doc.labelSlots, keep = new Set()) {
   const live = r => typeof r === 'string' && r.startsWith('slot:') && !keep.has(r.slice(5));
   for (const o of objs.flatMap(el => [el, ...(el.segments || [])])) {
-    for (const k of ['color', 'fill', 'patternBg'])
+    for (const k of ['color', 'fill', 'patternBg', 'labelColor'])
       if (live(o[k])) o[k] = palette.find(sl => `slot:${sl.id}` === o[k])?.color ?? resolveColor(o[k]);
     if (live(o.label)) o.label = labels.find(sl => `slot:${sl.id}` === o.label)?.text ?? '';
   }
@@ -1114,6 +1179,8 @@ function assetFromSelection() {
   }
   const { elements: els, groups } = c;
   freezeRefs(els); // another document won't have these slots
+  // the document's label look goes along, baked onto each label
+  for (const o of els.flatMap(el => [el, ...(el.segments || [])])) if (o.label) Object.assign(o, labelStyleOf(o));
   library.push({ id: newId(), name: `asset ${library.length + 1}`, elements: els, groups });
   saveLibrary();
   refresh();
@@ -1298,7 +1365,7 @@ function assetThumbnail(asset) {
   const acc = (x, y) => { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; };
   const mk = attrs => { const n = document.createElementNS(SVGNS, attrs.tag); for (const k in attrs) if (k !== 'tag') n.setAttribute(k, attrs[k]); svgt.appendChild(n); };
   for (const el of asset.elements) {
-    const stroke = el.color || '#55504a', sw = el.width || 2;
+    const stroke = el.color || '#55504a', sw = el.width ?? 2;
     if (el.type === 'ellipse') {
       acc(el.cx - el.rx, el.cy - el.ry); acc(el.cx + el.rx, el.cy + el.ry);
       mk({ tag: 'ellipse', cx: el.cx, cy: el.cy, rx: el.rx, ry: el.ry,
@@ -1313,8 +1380,8 @@ function assetThumbnail(asset) {
         fill: el.type === 'card' ? (el.fill || '#ffffff') : (el.fill || 'none'), stroke, 'stroke-width': sw });
     } else if (Array.isArray(el.pts) && el.pts.length) {
       for (const p of el.pts) acc(p[0], p[1]);
-      if (el.type === 'aline') mk({ tag: 'path', d: alineD(el.pts), fill: 'none', stroke, 'stroke-width': sw });
-      else mk({ tag: 'polyline', points: el.pts.map(p => p.join(',')).join(' '), fill: 'none', stroke, 'stroke-width': sw });
+      if (el.type === 'aline') mk({ tag: 'path', d: alineD(el), fill: el.closed && el.fill || 'none', stroke, 'stroke-width': sw });
+      else mk({ tag: 'polyline', points: drawnPts(el).map(p => p.join(',')).join(' '), fill: 'none', stroke, 'stroke-width': sw });
     }
   }
   if (!isFinite(x0)) { x0 = 0; y0 = 0; x1 = 1; y1 = 1; }
@@ -2133,7 +2200,7 @@ const KIND = {
   rect: ['annotation', 'Rectangle'], ink: ['annotation', 'Freehand'],
 };
 const kindOf = el => MOLS[el.mol] ? ['annotation', `${MOLS[el.mol].name} · PDB ${MOLS[el.mol].pdb}`] : el.type === 'aline'
-  ? ['annotation', el.cap0 !== 'none' || el.cap1 !== 'none' ? 'Arrow' : 'Line']
+  ? ['annotation', kindWord(el) === 'arrow' ? 'Arrow' : 'Line']
   : KIND[el.type] || ['annotation', el.type];
 const CLASS_NAME = { primary: 'Primary object', structure: 'Structure', annotation: 'Annotation', group: 'Group' };
 
@@ -2146,7 +2213,7 @@ function selectedGroup(n) {
 function kindBadge(single, n) {
   if (!n) return null;
   let cls, kind, detail = '';
-  const name = el => displayName(el, state.doc.elements.indexOf(el));
+  const name = displayName;
   const grp = !single || single.seg === undefined ? selectedGroup(n) : null;
   if (grp) {
     cls = 'group'; kind = grp.name; detail = `${n} object${n === 1 ? '' : 's'}`;
@@ -2174,7 +2241,7 @@ function kindBadge(single, n) {
   k.textContent = kind;
   const d = document.createElement('span');
   d.className = 'kind-detail';
-  d.innerHTML = inlineHTML(detail);
+  d.innerHTML = rowHTML(detail);
   box.append(tag, k, d);
   return box;
 }
@@ -2257,20 +2324,48 @@ function fillControl(el, { label = 'Fill', optional = true, pattern = true } = {
   return frag;
 }
 
-// A "flip harpoon" checkbox appears for whichever end caps are harpoons.
-function harpoonFlips(el) {
+// A flip checkbox for each end cap that has a side or a direction: a harpoon's
+// barb goes to the other side (capNflip), a pointed head turns around (capNrev). Then the head size
+// (el.capSize, both ends; 0 = from the line width).
+function capOptions(el) {
   const frag = document.createDocumentFragment();
-  if (el.cap0 === 'harpoon') {
-    frag.appendChild(checkboxRow('Flip start harpoon', () => !!el.cap0flip, v => {
-      if (v) el.cap0flip = true; else delete el.cap0flip;
+  for (const [k, end] of [['cap0', 'start'], ['cap1', 'end']]) {
+    const cap = el[k], f = cap === 'harpoon' ? `${k}flip` : `${k}rev`;
+    if (cap !== 'harpoon' && !POINTED_CAPS.includes(cap)) continue;
+    frag.appendChild(checkboxRow(cap === 'harpoon' ? `Flip ${end} harpoon` : `Reverse ${end} head`, () => !!el[f], v => {
+      if (v) el[f] = true; else delete el[f];
     }));
   }
-  if (el.cap1 === 'harpoon') {
-    frag.appendChild(checkboxRow('Flip end harpoon', () => !!el.cap1flip, v => {
-      if (v) el.cap1flip = true; else delete el.cap1flip;
-    }));
+  if ((el.cap0 || 'none') !== 'none' || (el.cap1 || 'none') !== 'none') {
+    frag.appendChild(fieldRow('Cap size (0 = auto)', sliderNum(
+      () => el.capSize || 0,
+      v => { if (v) el.capSize = v; else delete el.capSize; },
+      { min: 0, max: 60, step: 0.5 })));
   }
   return frag;
+}
+
+// Fill opacity for a filled shape (el.fillOpacity; absent = opaque).
+const fillOpacityRow = el => fieldRow('Fill opacity', rangeControl(
+  () => el.fillOpacity ?? 1,
+  v => { if (v >= 1) delete el.fillOpacity; else el.fillOpacity = v; },
+  { min: 0, max: 1, step: 0.05 }));
+
+// Smooth (curve through the vertices) on/off. A strand's domains keep their
+// place in proportion, since the curve is longer than the polyline; a line
+// note's single bend handle becomes a vertex on the curve and back.
+function setSmooth(el, v) {
+  if (el.type === 'aline' && el.pts.length === 3 && !el.closed) {
+    const [a, m, b] = el.pts, r1 = x => Math.round(x * 10) / 10;
+    el.pts = v ? [a, alineMid(el.pts).map(r1), b] // control → the curve's midpoint
+      : [a, [r1(2 * m[0] - (a[0] + b[0]) / 2), r1(2 * m[1] - (a[1] + b[1]) / 2)], b];
+  }
+  const L0 = polylineLength(drawnPts(el));
+  if (v) el.smooth = true; else delete el.smooth;
+  const k = polylineLength(drawnPts(el)) / L0;
+  if (el.type === 'path' && L0 && k !== 1) {
+    for (const sg of el.segments || []) { sg.t0 = Math.round(sg.t0 * k * 10) / 10; sg.t1 = Math.round(sg.t1 * k * 10) / 10; }
+  }
 }
 
 function labelDisplayFields(target) {
@@ -2286,6 +2381,42 @@ function labelDisplayFields(target) {
     }, 'Put the label back at its automatic spot'));
   }
   return frag;
+}
+
+// Label size, weight and colour. `get` gives the style in effect, `put(k, v)`
+// stores one key and `reset` (offered when `own` says there is something to
+// clear) clears them; dflt is the built-in look (size, colour).
+const WEIGHTS = { 400: 'Regular', 600: 'Semibold', 700: 'Bold' };
+function labelStyleControls(key, get, put, own, reset, dflt) {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(fieldRow('Label size', numberControl(() => get().labelSize || dflt.size, v => put('labelSize', v),
+    { min: 4, max: 144, step: 0.5 })));
+  frag.appendChild(fieldRow('Label weight', mappedSelect(WEIGHTS, () => String(get().labelWeight || 600),
+    v => put('labelWeight', +v))));
+  frag.appendChild(fieldRow('Label colour', colorPicker(key,
+    () => (get().labelColor ? resolveColor(get().labelColor) : dflt.color),
+    Object.assign(hex => { put('labelColor', hex); render(); }, { begin: beginChange }), changed)));
+  if (own()) {
+    frag.appendChild(smallButton('Reset label style', () => { beginChange(); reset(); changed(); },
+      'Clear this label style'));
+  }
+  return frag;
+}
+
+// One element's or segment's label style.
+function labelStyleFields(owner, key, dflt) {
+  if (!resolveLabel(owner.label || '')) return document.createDocumentFragment();
+  return labelStyleControls(key, () => labelStyleOf(owner), (k, v) => { owner[k] = v; },
+    () => LABEL_STYLE_KEYS.some(k => owner[k] !== undefined),
+    () => { for (const k of LABEL_STYLE_KEYS) delete owner[k]; }, dflt);
+}
+
+// The document-wide label style (doc.labelStyle): every label without its own.
+function docLabelStyleFields() {
+  const st = () => state.doc.labelStyle || {};
+  return labelStyleControls('lab:doc', st,
+    (k, v) => { (state.doc.labelStyle ||= {})[k] = v; },
+    () => !!state.doc.labelStyle, () => { delete state.doc.labelStyle; }, { size: 12, color: '#2b2622' });
 }
 
 // ---- DNA strands ----
@@ -2381,7 +2512,7 @@ function sequenceField(el) {
   const note = document.createElement('p');
   note.className = 'muted';
   const say = () => {
-    const n = dnaLayout(el).n, fit = naturalBases(polylineLength(el.pts), gridPitch(dnaBpg()));
+    const n = dnaLayout(el).n, fit = naturalBases(polylineLength(drawnPts(el)), gridPitch(dnaBpg()));
     const bad = (el.seq || '').trim() && !seqLetters(el.seq);
     note.textContent = bad ? 'Not a sequence (A C G T U N only) — kept as text.'
       : n === fit ? `${n} nt — fits the drawn length.`
@@ -2405,16 +2536,16 @@ function sequenceField(el) {
 function fitToSequence() {
   const sel = selectedElements();
   const els = sel.length ? sel.filter(el => el.type === 'path')
-    : state.doc.elements.filter(el => el.type === 'path' && dnaLayout(el).n !== naturalBases(polylineLength(el.pts), gridPitch(dnaBpg()))
+    : state.doc.elements.filter(el => el.type === 'path' && dnaLayout(el).n !== naturalBases(polylineLength(drawnPts(el)), gridPitch(dnaBpg()))
       && (seqLetters(el.seq) || (el.segments || []).some(s => seqOf(s.string))));
   if (!els.length) return;
   beginChange();
   for (const el of els) {
-    const L = polylineLength(el.pts), want = dnaLayout(el).n * gridPitch(dnaBpg());
+    const L = polylineLength(drawnPts(el)), want = dnaLayout(el).n * gridPitch(dnaBpg());
     if (Math.abs(want - L) < 0.01) continue;
     const z = el.pts[el.pts.length - 1], y = el.pts[el.pts.length - 2];
     const leg = Math.hypot(z[0] - y[0], z[1] - y[1]), r3 = v => Math.round(v * 1000) / 1000;
-    if (Math.abs(want - L) >= leg) { // more than the last leg can take: scale the whole shape about its 5′ end
+    if (Math.abs(want - L) >= leg || el.smooth) { // (a smooth curve scales exactly: always this way) // more than the last leg can take: scale the whole shape about its 5′ end
       const k = want / L, o = el.pts[0];
       el.pts = el.pts.map(p => [r3(o[0] + (p[0] - o[0]) * k), r3(o[1] + (p[1] - o[1]) * k)]);
       el.segments = (el.segments || []).map(sg => ({ ...sg, t0: sg.t0 * k, t1: sg.t1 * k }));
@@ -2615,6 +2746,39 @@ function seqNote() {
 }
 const linkSeq = l => refSeq(l.a, byId(l.a.id)) || refSeq(l.b, byId(l.b.id));
 
+// Where along each end a base-pair link pairs: from/to as % of that end's domain
+// (or line), so a short domain can pair with part of a longer one. A fraction
+// like 6/13 is read as one. Both full = the old whole-domain pairing.
+function pairRangeRows(l) {
+  const frag = document.createDocumentFragment();
+  for (const [ref, name] of [[l.a, 'A'], [l.b, 'B']]) {
+    const row = document.createElement('div');
+    row.className = 'width-row';
+    const box = (k, dflt) => {
+      const node = document.createElement('input');
+      node.type = 'text'; node.size = 5;
+      node.value = +((ref[k] ?? dflt) * 100).toFixed(1);
+      node.title = 'Percent of the domain from its start, or a fraction such as 6/13';
+      node.addEventListener('change', () => {
+        const m = node.value.match(/^\s*([\d.]+)\s*\/\s*([\d.]+)\s*$/);
+        const v = clamp(m ? m[1] / m[2] : parseFloat(node.value) / 100, 0, 1);
+        const f0 = k === 'f0' ? v : ref.f0 ?? 0, f1 = k === 'f1' ? v : ref.f1 ?? 1;
+        if (!(f1 - f0 > 0.001)) { node.value = +((ref[k] ?? dflt) * 100).toFixed(1); return; }
+        beginChange();
+        if (v === dflt) delete ref[k]; else ref[k] = v;
+        changed();
+      });
+      return node;
+    };
+    const to = document.createElement('span');
+    to.className = 'muted'; to.textContent = 'to';
+    row.append(box('f0', 0), to, box('f1', 1));
+    const label = resolveLabel(backbone(ref).label || ''); // math/markup labels read badly here
+    frag.appendChild(fieldRow(`Pairs ${label && !/[$<]/.test(label) ? label : name} over (%)`, row));
+  }
+  return frag;
+}
+
 function duplexBasesControls(l) {
   const frag = document.createDocumentFragment();
   if (linkSeq(l)) {
@@ -2673,6 +2837,14 @@ function renderPanel() {
 
   const badge = kindBadge(single, n);
   if (badge) panel.appendChild(badge);
+  // every element can carry its own name (Objects panel, badge, note refs); a card's is its title
+  if (single && single.seg === undefined && single.el.type !== 'card') {
+    const el = single.el, sec = document.createElement('div');
+    sec.className = 'panel-section sec-prop';
+    sec.appendChild(fieldRow('Name', boundInput(() => el.name || '', v => { if (v.trim()) el.name = v; else delete el.name; },
+      { placeholder: 'default (shown above)' })));
+    panel.appendChild(sec);
+  }
   panel.appendChild(paletteSection());
 
   const styleSec = document.createElement('div');
@@ -2710,6 +2882,19 @@ function renderPanel() {
         { strand: 'Strand colour', sequence: 'A C G T colours' },
         () => (el.dnaColor === 'sequence' ? 'sequence' : 'strand'),
         v => { if (v === 'sequence') el.dnaColor = v; else delete el.dnaColor; })));
+      if (look === 'seq') styleSec.appendChild(fieldRow('Letter size', sliderNum(() => el.seqScale || 1,
+        v => { if (v === 1) delete el.seqScale; else el.seqScale = v; }, { min: 0.4, max: 3, step: 0.1 })));
+      if (look === 'line') {
+        styleSec.appendChild(fieldRow('Base ticks', mappedSelect(
+          { none: 'None', left: 'One side', right: 'Other side', both: 'Both sides' },
+          () => el.comb || 'none', v => { if (v === 'none') delete el.comb; else el.comb = v; })));
+        if (el.comb) {
+          styleSec.appendChild(fieldRow('Tick length', sliderNum(() => el.combLen ?? 6,
+            v => { if (v === 6) delete el.combLen; else el.combLen = v; }, { min: 1, max: 30, step: 0.5 })));
+          styleSec.appendChild(fieldRow('Tick spacing', sliderNum(() => el.combStep || 6,
+            v => { if (v === 6) delete el.combStep; else el.combStep = v; }, { min: 2, max: 30, step: 0.5 })));
+        }
+      }
     }
     if (look === 'dna') styleSec.appendChild(dnaControls(el));
     else if (look === 'line') styleSec.appendChild(fieldRow('Line style', selectControl(
@@ -2720,16 +2905,31 @@ function renderPanel() {
         () => LINECAP_NAMES[el.linecap || 'round'],
         v => { el.linecap = LINECAP_VALUES[v]; })));
     }
-    if ((el.type === 'path' && look === 'line') || el.type === 'aline') {
+    if (((el.type === 'path' && look === 'line') || el.type === 'aline') && !el.closed) {
       styleSec.appendChild(fieldRow('Start cap', selectControl(
         CAPS, () => el.cap0 || 'none', v => { el.cap0 = v; })));
       styleSec.appendChild(fieldRow('End cap', selectControl(
         CAPS, () => el.cap1 || 'none', v => { el.cap1 = v; })));
-      styleSec.appendChild(harpoonFlips(el));
+      styleSec.appendChild(capOptions(el));
+    }
+    if (el.type === 'path' || el.type === 'aline') {
+      styleSec.appendChild(checkboxRow('Smooth curve through the points', () => !!el.smooth, v => setSmooth(el, v)));
+    }
+    if (el.type === 'aline') { // a closed line note is a polygon: fillable, outline optional
+      styleSec.appendChild(checkboxRow('Closed shape', () => !!el.closed, v => {
+        if (v) el.closed = true; else delete el.closed;
+      }));
+      if (el.closed) {
+        styleSec.appendChild(checkboxRow('Outline', () => !el.noStroke, v => {
+          if (v) delete el.noStroke; else el.noStroke = true;
+        }));
+        styleSec.appendChild(fillControl(el));
+        if (el.fill) styleSec.appendChild(fillOpacityRow(el));
+      }
     }
     if (el.type === 'path') {
       if (look === 'line') styleSec.appendChild(patternControls(el, `line:${el.id}`));
-      styleSec.appendChild(fieldRow('Corner radius', sliderNum(
+      if (!el.smooth) styleSec.appendChild(fieldRow('Corner radius', sliderNum(
         () => el.corner || 0,
         v => { if (v) el.corner = v; else delete el.corner; },
         { min: 0, max: 8 * GRID, step: GRID / 2 })));
@@ -2741,7 +2941,14 @@ function renderPanel() {
         v => { el.r = v; },
         { min: 0, max: Math.floor(Math.min(el.w, el.h) / 2), step: 1 })));
     }
-    if (el.type === 'rect' || el.type === 'ellipse') styleSec.appendChild(fillControl(el));
+    if (el.type === 'rect' || el.type === 'ellipse') {
+      styleSec.appendChild(fieldRow('Rotation (°)', sliderNum(
+        () => el.rot || 0,
+        v => { if (v) el.rot = v; else delete el.rot; },
+        { min: -180, max: 180, step: 1 })));
+      styleSec.appendChild(fillControl(el));
+      if (el.fill && !el.glow) styleSec.appendChild(fillOpacityRow(el));
+    }
     styled = true;
   }
   if (styled) {
@@ -2771,6 +2978,12 @@ function renderPanel() {
         beginChange(); delete state.doc.bg; changed();
       }, 'Back to white'));
     }
+    sec.appendChild(sectionTitle('Labels'));
+    const lp = document.createElement('p');
+    lp.className = 'muted';
+    lp.textContent = 'For every domain and object label that has no style of its own.';
+    sec.appendChild(lp);
+    sec.appendChild(docLabelStyleFields());
   } else if (!single) {
     sec.appendChild(sectionTitle(`${n} objects`));
     const row = document.createElement('div');
@@ -2822,7 +3035,7 @@ function renderPanel() {
     if (el.dna) sec.appendChild(segmentBases(el, single.seg));
     else {
       sec.appendChild(fieldRow('Thickness', widthControl(
-        () => seg.width ?? ((el.width || 2) + 2.5),
+        () => seg.width ?? ((el.width ?? 2) + 2.5),
         v => { seg.width = v; },
         true)));
       sec.appendChild(fieldRow('Line ends', selectControl(
@@ -2833,6 +3046,7 @@ function renderPanel() {
     }
     sec.appendChild(labelFields(seg, 'e.g. domain a', true));
     sec.appendChild(labelDisplayFields(seg));
+    sec.appendChild(labelStyleFields(seg, `lab:${el.id}.${single.seg}`, { size: 12, color: resolveColor(seg.color) }));
     sec.appendChild(fieldRow('String', boundInput(
       () => seg.string || '', v => { seg.string = v; },
       { placeholder: 'e.g. domain sequence' })));
@@ -2866,6 +3080,7 @@ function renderPanel() {
     }
     if (bases && duplexLink(el)) {
       sec.appendChild(duplexBasesControls(el));
+      sec.appendChild(pairRangeRows(el));
       // the duplex has no colour of its own: each backbone is its strand's paired
       // segment (or line), hidden inside it — so edit them from here
       const nameOf = ref => resolveLabel(backbone(ref).label || '') || resolveLabel(byId(ref.id).label || '')
@@ -2909,9 +3124,17 @@ function renderPanel() {
         () => el.rung || 'line', v => { if (v === 'line') delete el.rung; else el.rung = v; })));
       if (el.rung === 'dot') sec.appendChild(fieldRow('Dot size', sliderNum(() => el.rungSize || 1.6,
         v => { if (v === 1.6) delete el.rungSize; else el.rungSize = v; }, { min: 0.5, max: 8, step: 0.1 })));
-      sec.appendChild(fieldRow('Colour by', mappedSelect({ fill: 'One colour', sequence: 'Sequence (A C G T)' },
+      else sec.appendChild(fieldRow('Rung width', sliderNum(() => el.rungWidth ?? 1.5,
+        v => { if (v === 1.5) delete el.rungWidth; else el.rungWidth = v; }, { min: 0.25, max: 8, step: 0.25 })));
+      sec.appendChild(fieldRow('Rungs', mappedSelect(
+        { auto: 'Auto', straight: 'Straight (from the shorter strand)', spread: 'Spread over both strands' },
+        () => el.rungAlign || 'auto', v => { if (v === 'auto') delete el.rungAlign; else el.rungAlign = v; })));
+      sec.appendChild(pairRangeRows(el));
+      sec.appendChild(fieldRow('Colour by', mappedSelect(
+        { fill: 'One colour', strands: 'Strand colours (two-tone)', sequence: 'Sequence (A C G T)' },
         () => el.rungColor || 'fill', v => { if (v === 'fill') delete el.rungColor; else el.rungColor = v; })));
-      sec.appendChild(fillControl(el, { optional: false, label: el.rungColor ? 'Unsequenced' : 'Base pair', pattern: false }));
+      if (el.rungColor !== 'strands') sec.appendChild(fillControl(el,
+        { optional: false, label: el.rungColor ? 'Unsequenced' : 'Base pair', pattern: false }));
       sec.appendChild(deleteButton());
       panel.appendChild(sec);
       return;
@@ -2958,7 +3181,10 @@ function renderPanel() {
       }
     } else if (el.type !== 'text' || isSemantic(el)) {
       sec.appendChild(labelFields(el, 'name this object', el.type === 'path'));
-      if (el.type !== 'text') sec.appendChild(labelDisplayFields(el));
+      if (el.type !== 'text') {
+        sec.appendChild(labelDisplayFields(el));
+        sec.appendChild(labelStyleFields(el, `lab:${el.id}`, { size: 12.5, color: resolveColor(el.color) || '#2b2622' }));
+      }
     }
     if (el.type === 'text') {
       const src = boundInput(() => el.text, v => { el.text = v; }, { textarea: true });
@@ -2974,6 +3200,16 @@ function renderPanel() {
         changed();
       });
       sec.appendChild(fieldRow('Size', sizeInput));
+      // alignment goes through the text toolbar's command, which keeps the note in place
+      const alignSel = document.createElement('select');
+      for (const [v, t] of Object.entries({ left: 'Left', center: 'Centre', right: 'Right' })) alignSel.add(new Option(t, v));
+      alignSel.value = el.align || 'left';
+      alignSel.addEventListener('change', () => applyFormat(`align:${alignSel.value}`));
+      sec.appendChild(fieldRow('Align', alignSel));
+      sec.appendChild(fieldRow('Rotation (°, clockwise)', numberControl(
+        () => el.rotate || 0,
+        v => { v = ((v % 360) + 540) % 360 - 180; if (v) el.rotate = v; else delete el.rotate; },
+        { min: -360, max: 360, step: 15 })));
       sec.appendChild(fieldRow('Wrap width (0 = none)', numberControl(
         () => el.w || 0,
         v => { if (v >= GRID) el.w = v; else delete el.w; },
@@ -3003,7 +3239,7 @@ function renderPanel() {
         dot.className = 'seg-dot';
         dot.style.background = resolveColor(seg.color);
         const name = document.createElement('span');
-        name.innerHTML = inlineHTML(resolveLabel(seg.label || '') || `domain ${i + 1}`);
+        name.innerHTML = rowHTML(resolveLabel(seg.label || '') || `domain ${i + 1}`);
         item.append(dot, name);
         item.addEventListener('click', () => {
           state.selection = [{ id: el.id, seg: i }];
@@ -3933,7 +4169,7 @@ function refLabel(kind, id) {
     return g.name || 'group';
   }
   const el = byId(id);
-  return el ? displayName(el, state.doc.elements.indexOf(el)) : '(deleted)';
+  return el ? displayName(el) : '(deleted)';
 }
 
 function makeChip(kind, id) {

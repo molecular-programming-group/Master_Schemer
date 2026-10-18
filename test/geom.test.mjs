@@ -5,7 +5,25 @@ import {
   GRID, snap, snapHalf, snap8, simplify, polylineLength, pointAt, nearestOnPath,
   subPath, rectEdgePoint, mergePaths, rot90, flipPt, insertIndex,
   convexHull, ellipsePoints, roundedPathD, resizeEndSegments, basePairRungs, defaultBases,
+  smoothPolyline, extendPolyline,
 } from '../app/js/geom.js';
+
+test('smoothPolyline keeps straight runs and ends, flattens a zigzag', () => {
+  const line = smoothPolyline([[0, 0], [100, 0]], 12);
+  assert.deepEqual(line[0], [0, 0]);
+  assert.deepEqual(line[line.length - 1], [100, 0]);
+  assert.ok(line.every(p => Math.abs(p[1]) < 1e-9));
+  // zigzag of amplitude 6 and period 12 along x: interior samples lie near the axis
+  const zig = [[0, 0]];
+  for (let i = 1; i < 20; i++) zig.push([i * 6, i % 2 ? 6 : -6]);
+  zig.push([120, 0]);
+  const sm = smoothPolyline(zig, 12);
+  assert.ok(sm.every(p => Math.abs(p[1]) < 1.5), 'zigzag flattened, ends included');
+});
+
+test('extendPolyline continues both end tangents', () => {
+  assert.deepEqual(extendPolyline([[0, 0], [10, 0], [10, 10]], 5), [[-5, 0], [0, 0], [10, 0], [10, 10], [10, 15]]);
+});
 
 test('resizeEndSegments keeps segments put, growing/consuming only the touched end', () => {
   const segs = [{ t0: 0, t1: 20 }, { t0: 40, t1: 60 }, { t0: 80, t1: 100 }];
@@ -193,4 +211,22 @@ test('basePairRungs: flags B read back to front for antiparallel strands', async
   const A = [[0, 0], [100, 0]];
   assert.equal(basePairRungs(A, [[100, 10], [0, 10]], 4).rev, true);
   assert.equal(basePairRungs(A, [[0, 10], [100, 10]], 4).rev, false);
+});
+
+test('basePairRungs: straight rungs when one strand runs on past the other', () => {
+  const A = [[0, 0], [100, 0]], B = [[40, 10], [0, 10]]; // B pairs the first 40 of A, antiparallel
+  const r = basePairRungs(A, B, 4);
+  for (const [p, q] of r) assert.equal(p[0], q[0]); // square, not splayed over A's 100
+  assert.deepEqual(r.map(([p]) => p[0]), [5, 15, 25, 35]);
+  assert.equal(r.rev, true);
+  assert.deepEqual(r.map(x => x[3]), [35, 25, 15, 5]); // B's arc lengths, in A's order
+  // forced spread keeps the old look; equal lengths spread as before
+  assert.deepEqual(basePairRungs(A, B, 4, 'spread').map(([p]) => p[0]), [12.5, 37.5, 62.5, 87.5]);
+  // the longer one as B, same direction
+  const s = basePairRungs([[20, 0], [60, 0]], [[0, 10], [100, 10]], 2);
+  assert.deepEqual(s.map(([p, q]) => [p[0], q[0]]), [[30, 30], [50, 50]]);
+  assert.equal(s.rev, false);
+  // not side by side (the short one overhangs the long one's end): auto spreads
+  const o = basePairRungs([[0, 0], [100, 0]], [[90, 10], [130, 10]], 2);
+  assert.deepEqual(o.map(([, q]) => q[0]), [100, 120]);
 });

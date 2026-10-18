@@ -1,8 +1,9 @@
 // Document model, selection, history, persistence.
 
-import { polylineLength, subPath, splitSegments } from './geom.js';
+import { polylineLength, subPath, splitSegments, drawnPts } from './geom.js';
 import { defaultPalette } from './themes.js';
 import { seqOf, seqLetters } from './dna.js';
+import MOLS from './mol-tex.js';
 
 export const COLORS = [
   { name: 'Ink',     hex: '#2b2622' },
@@ -296,7 +297,7 @@ export function cloneElements(ids) {
 // default in proportion to length), a domain sequence straddling the cut likewise.
 export function cutPath(el, tc, k) {
   if (el?.type !== 'path') return null;
-  const total = polylineLength(el.pts);
+  const P = drawnPts(el), total = polylineLength(P);
   if (tc <= 0.5 || tc >= total - 0.5) return null;
   beginChange();
   const [segsA, segsB] = splitSegments(el.segments, tc, total);
@@ -310,11 +311,13 @@ export function cutPath(el, tc, k) {
   const mk = (pts, segments, seq) => {
     const c = JSON.parse(JSON.stringify(el)); // deep-copy so children never share refs
     delete c.bases; // a DNA strand's free base count doesn't split meaningfully: back to auto
+    // ponytail: a smooth strand's halves keep the curve as its dense samples (same look, many vertices)
+    delete c.smooth;
     if (q) c.seq = seq;
     return Object.assign(c, { id: newId(), pts, segments });
   };
-  const a = mk(subPath(el.pts, 0, tc), segsA, q.slice(0, k));
-  const b = mk(subPath(el.pts, tc, total), segsB, q.slice(k));
+  const a = mk(subPath(P, 0, tc), segsA, q.slice(0, k));
+  const b = mk(subPath(P, tc, total), segsB, q.slice(k));
   const i = state.doc.elements.indexOf(el);
   state.doc.elements.splice(i, 1, a, b); // children take the parent's paint slot
   state.doc.elements = state.doc.elements.filter(x =>
@@ -345,7 +348,7 @@ function splitString(h, s, f, first) {
 // other segment index (and the links using it) holds. Returns the two halves.
 export function splitDomain(el, tc) {
   if (el?.type !== 'path') return null;
-  const total = polylineLength(el.pts);
+  const total = polylineLength(drawnPts(el));
   tc = Math.round(tc * 10) / 10;
   const segs = el.segments ||= [];
   let i = segs.findIndex(s => s.t0 < tc && tc < s.t1);
@@ -425,7 +428,11 @@ function migrate(doc) {
     if (k && !doc.domains[k.name]) doc.domains[k.name] = { color: `slot:${sl.colorSlot}` };
   }
   for (const o of doc.elements.flatMap(el => [el, ...(el.segments || [])]))
-    if (typeof o.label === 'string' && o.label.startsWith('slot:')) o.label = text(o.label);
+    if (typeof o.label === 'string' && o.label.startsWith('slot:')) {
+      const sl = doc.labelSlots.find(x => `slot:${x.id}` === o.label);
+      for (const k of ['labelSize', 'labelColor', 'labelWeight']) if (sl?.[k] !== undefined) o[k] ??= sl[k]; // its slot's label look
+      o.label = text(o.label);
+    }
   doc.labelSlots = [];
   doc.elements = doc.elements.filter(drawable); // a damaged element is dropped, not loaded to break the app
   for (const el of doc.elements) { // fields the editor assumes, missing from hand-made files
@@ -454,4 +461,58 @@ export function loadDocJSON(text) {
     changed();
     throw e;
   }
+}
+
+// An object's name: its own `name` if the user gave it one, else a default
+// built from what it shows (label, title, text, or what a link joins), else a
+// per-kind count ("strand 3" is the third strand, whatever lies between).
+export function displayName(el) { return el.name || defaultName(el); }
+
+const KIND_WORD = {
+  path: 'strand', ink: 'freehand', ellipse: 'ellipse', rect: 'rectangle', aarrow: 'arrow',
+  text: 'note', link: 'link', arrow: 'connection', card: 'card',
+};
+export const kindWord = el => MOLS[el.mol] ? MOLS[el.mol].name
+  : el.type === 'aline' ? (el.cap0 && el.cap0 !== 'none') || (el.cap1 && el.cap1 !== 'none') ? 'arrow' : 'line'
+  : KIND_WORD[el.type] || el.type;
+
+// ponytail: per-kind counts are one O(n) pass, cached until the next refresh
+// (or an element the cache hasn't seen) so a 700-row sidebar stays linear.
+let ordCache = null, idCache = null;
+export const clearNameCache = () => { ordCache = idCache = null; };
+function ordinal(el) {
+  if (!ordCache?.has(el)) {
+    ordCache = new Map(); idCache = new Map();
+    const n = {};
+    for (const e of state.doc.elements) {
+      const w = kindWord(e); n[w] = (n[w] || 0) + 1; ordCache.set(e, n[w]); idCache.set(e.id, e);
+    }
+  }
+  return ordCache.get(el) || 1;
+}
+const cachedById = id => { if (!idCache) ordinal(state.doc.elements[0]); return idCache?.get(id) || byId(id); };
+
+// One end of a link or connection: a domain's label, a group's name, or the
+// object's own name.
+function endName(t) {
+  if (!t) return '';
+  if (t.group) return byGroup(t.group)?.name || '';
+  const el = cachedById(t.id ?? t);
+  if (!el || el.type === 'link' || el.type === 'arrow') return '';
+  const seg = t.seg !== undefined ? el.segments?.[t.seg] : null;
+  return (seg && resolveLabel(seg.label || '')) || displayName(el);
+}
+
+export function defaultName(el) {
+  if (el.type === 'card') return el.title || 'Untitled card';
+  const label = resolveLabel(el.label || '');
+  if (label) return label;
+  if (el.type === 'text') return el.text.split('\n')[0] || 'note';
+  if (MOLS[el.mol]) return MOLS[el.mol].name;
+  if (el.type === 'link' || el.type === 'arrow') {
+    const [a, b] = el.type === 'link' ? [el.a, el.b] : [el.from, el.to];
+    const na = endName(a), nb = endName(b);
+    if (na && nb) return `${na} ${el.type === 'link' ? '↔' : '→'} ${nb}`;
+  }
+  return `${kindWord(el)} ${ordinal(el)}`;
 }

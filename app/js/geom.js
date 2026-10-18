@@ -34,6 +34,14 @@ export const rot90 = (p, c, dir) => dir > 0
   ? [c[0] - (p[1] - c[1]), c[1] + (p[0] - c[0])]
   : [c[0] + (p[1] - c[1]), c[1] - (p[0] - c[0])];
 
+// Rotate p by `deg` degrees about c (y down: positive = clockwise on screen).
+export function rotatePt(p, c, deg) {
+  if (!deg) return [p[0], p[1]];
+  const a = deg * Math.PI / 180, cs = Math.cos(a), sn = Math.sin(a);
+  const dx = p[0] - c[0], dy = p[1] - c[1];
+  return [c[0] + dx * cs - dy * sn, c[1] + dx * sn + dy * cs];
+}
+
 // Mirror p about c along an axis: 'h' flips left-right, 'v' flips top-bottom.
 export const flipPt = (p, c, axis) => axis === 'h'
   ? [2 * c[0] - p[0], p[1]] : [p[0], 2 * c[1] - p[1]];
@@ -119,6 +127,37 @@ export function subPath(pts, t0, t1) {
   return out;
 }
 
+// The polyline resampled every ~step units, each sample averaged over ±h of arc
+// length: wiggles shorter than 2h flatten out, corners round off. Past the ends
+// the path is mirrored through its end point, so the ends stay put, straight
+// runs are unchanged, and a wiggle flattens right up to the end too.
+// Used for text that rides a strand's contour.
+export function smoothPolyline(pts, h, step = 2) {
+  const L = polylineLength(pts);
+  if (!(L > 0) || !(h > 0)) return pts.map(p => [p[0], p[1]]);
+  const n = Math.max(1, Math.ceil(L / step));
+  const s = Array.from({ length: n + 1 }, (_, i) => pointAt(pts, L * i / n));
+  const at = j => { // odd reflection beyond either end
+    if (j < 0) { j = Math.min(-j, n); return [2 * s[0][0] - s[j][0], 2 * s[0][1] - s[j][1]]; }
+    if (j > n) { j = Math.max(2 * n - j, 0); return [2 * s[n][0] - s[j][0], 2 * s[n][1] - s[j][1]]; }
+    return s[j];
+  };
+  const k = Math.max(1, Math.round(h * n / L));
+  return s.map((_, i) => {
+    let x = 0, y = 0;
+    for (let j = i - k; j <= i + k; j++) { const q = at(j); x += q[0]; y += q[1]; }
+    return [x / (2 * k + 1), y / (2 * k + 1)];
+  });
+}
+
+// The polyline lengthened by d at both ends, straight on along its end tangents.
+export function extendPolyline(pts, d) {
+  const n = pts.length;
+  if (n < 2) return pts.map(p => [p[0], p[1]]);
+  const out = (p, q) => { const l = dist(p, q) || 1; return [p[0] + (p[0] - q[0]) / l * d, p[1] + (p[1] - q[1]) / l * d]; };
+  return [out(pts[0], pts[1]), ...pts.map(p => [p[0], p[1]]), out(pts[n - 1], pts[n - 2])];
+}
+
 // SVG path data for a polyline with every interior vertex filleted by a
 // circular arc of `radius` (world units) — the "elbow bend" of the curve tool.
 // Endpoints stay sharp, and corners whose adjacent edges are too short for the
@@ -147,6 +186,62 @@ export function roundedPathD(pts, radius) {
   d += ` L${last[0]} ${last[1]}`;
   return d;
 }
+
+// A smooth curve through every vertex: a centripetal Catmull-Rom spline (no
+// cusps or self-loops when vertices are unevenly spaced), as cubic Bézier spans
+// [p1, c1, c2, p2]. Open ends continue straight through a reflected phantom
+// vertex; `closed` wraps around to the first vertex.
+export function smoothSpans(pts, closed = false) {
+  const n = pts.length;
+  if (n < 2) return [];
+  const at = i => {
+    if (closed) return pts[(i % n + n) % n];
+    if (i < 0) return [2 * pts[0][0] - pts[1][0], 2 * pts[0][1] - pts[1][1]];
+    if (i >= n) return [2 * pts[n - 1][0] - pts[n - 2][0], 2 * pts[n - 1][1] - pts[n - 2][1]];
+    return pts[i];
+  };
+  const spans = [];
+  for (let i = 0; i < (closed ? n : n - 1); i++) {
+    const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+    const a1 = Math.sqrt(dist(p0, p1)) || 1e-6, a2 = Math.sqrt(dist(p1, p2)) || 1e-6, a3 = Math.sqrt(dist(p2, p3)) || 1e-6;
+    const c1 = [0, 1].map(k => (a1 * a1 * p2[k] - a2 * a2 * p0[k] + (2 * a1 * a1 + 3 * a1 * a2 + a2 * a2) * p1[k]) / (3 * a1 * (a1 + a2)));
+    const c2 = [0, 1].map(k => (a3 * a3 * p1[k] - a2 * a2 * p3[k] + (2 * a3 * a3 + 3 * a3 * a2 + a2 * a2) * p2[k]) / (3 * a3 * (a3 + a2)));
+    spans.push([p1, c1, c2, p2]);
+  }
+  return spans;
+}
+
+const r3 = v => Math.round(v * 1000) / 1000 || 0;
+
+// SVG path data for the smooth curve through pts.
+export function smoothD(pts, closed = false) {
+  const sp = smoothSpans(pts, closed);
+  if (!sp.length) return `M${pts.map(p => p.join(' ')).join(' L')}`;
+  return `M${sp[0][0][0]} ${sp[0][0][1]}` + sp.map(([, c1, c2, q]) =>
+    ` C${r3(c1[0])} ${r3(c1[1])} ${r3(c2[0])} ${r3(c2[1])} ${q[0]} ${q[1]}`).join('') + (closed ? ' Z' : '');
+}
+
+// The same curve sampled as a dense polyline (about one point per 4 units), so
+// arc-length geometry — segments, labels, links, caps — follows what is drawn.
+export function smoothPts(pts, closed = false) {
+  const sp = smoothSpans(pts, closed);
+  if (!sp.length) return pts.map(p => [p[0], p[1]]);
+  const out = [[sp[0][0][0], sp[0][0][1]]];
+  for (const [p, c1, c2, q] of sp) {
+    const k = Math.max(4, Math.min(64, Math.ceil((dist(p, c1) + dist(c1, c2) + dist(c2, q)) / 4)));
+    for (let j = 1; j <= k; j++) {
+      const t = j / k, u = 1 - t;
+      const b = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t];
+      out.push([0, 1].map(i => r3(b[0] * p[i] + b[1] * c1[i] + b[2] * c2[i] + b[3] * q[i])));
+    }
+  }
+  return out;
+}
+
+// The polyline a strand is drawn along: its vertices, or the smooth curve
+// through them (el.smooth). Everything measured along a strand — segments
+// (t0/t1), labels, caps, ticks, links — goes through this.
+export const drawnPts = el => (el.smooth && el.pts.length > 2 ? smoothPts(el.pts) : el.pts);
 
 export function bboxOfPts(pts) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -295,18 +390,46 @@ export function rectEdgePoint(cx, cy, w, h, tx, ty) {
 export const defaultBases = (A, B) =>
   Math.max(1, Math.round(Math.min(polylineLength(A), polylineLength(B)) / 6));
 
-// n rungs: base i sits at the centre of the i-th of n equal slices of each
-// strand. B is read in whichever direction gives the shorter rungs, so
-// antiparallel strands (drawn running opposite ways) pair end to end correctly.
-export function basePairRungs(A, B, n) {
-  const at = (P, len, i) => pointAt(P, (i + 0.5) / n * len);
+// n rungs, each [pA, pB, tA, tB] (the two points and their arc lengths along A
+// and B); out.rev = B read back to front (rung i is B's base n-1-i).
+// 'spread': base i sits at the centre of the i-th of n equal slices of each
+// strand, B read in whichever direction gives the shorter rungs, so antiparallel
+// strands (drawn running opposite ways) pair end to end correctly.
+// 'straight': the bases sit evenly along the shorter strand and each pairs with
+// the nearest point of the longer, so rungs stay square where one strand runs on
+// past the other (an arrow tail, a partial domain).
+// Unset (auto): straight when the strands differ in length, lie side by side
+// (every rung lands inside the longer one, all about as long), else spread.
+export function basePairRungs(A, B, n, align) {
   const la = polylineLength(A), lb = polylineLength(B);
+  if (align !== 'spread' && (align === 'straight' || Math.abs(la - lb) > 1)) {
+    const out = straightRungs(A, B, la, lb, n);
+    if (align === 'straight' || out.fits) return out;
+  }
+  const at = (P, len, i) => (i + 0.5) / n * len;
   const pa = [], pb = [];
   for (let i = 0; i < n; i++) { pa.push(at(A, la, i)); pb.push(at(B, lb, i)); }
-  const total = q => pa.reduce((s, p, i) => s + Math.hypot(p[0] - q[i][0], p[1] - q[i][1]), 0);
+  const total = q => pa.reduce((s, t, i) => s + dist(pointAt(A, t), pointAt(B, q[i])), 0);
   const rb = [...pb].reverse();
   const qb = total(rb) < total(pb) ? rb : pb;
-  const out = pa.map((p, i) => [p, qb[i]]);
-  out.rev = qb === rb; // B read back to front: rung i is B's base n-1-i
+  const out = pa.map((t, i) => [pointAt(A, t), pointAt(B, qb[i]), t, qb[i]]);
+  out.rev = qb === rb;
   return out;
+}
+
+function straightRungs(A, B, la, lb, n) {
+  const flip = lb < la; // place on the shorter strand, project onto the longer
+  const [S, Lg, ls, ll] = flip ? [B, A, lb, la] : [A, B, la, lb];
+  let rungs = Array.from({ length: n }, (_, i) => {
+    const t = (i + 0.5) / n * ls, p = pointAt(S, t), q = nearestOnPath(Lg, p).t;
+    return flip ? [pointAt(Lg, q), p, q, t] : [p, pointAt(Lg, q), t, q];
+  });
+  const k = flip ? 2 : 3; // the longer strand's arc length
+  const rev = n > 1 && rungs[n - 1][k] < rungs[0][k];
+  if (flip && rev) rungs = rungs.reverse(); // rungs run in A's order
+  const lens = rungs.map(([p, q]) => dist(p, q));
+  rungs.fits = rungs.every(r => r[k] > 0.01 && r[k] < ll - 0.01) &&
+    Math.max(...lens) - Math.min(...lens) <= Math.max(2, 0.2 * Math.max(...lens));
+  rungs.rev = rev;
+  return rungs;
 }
