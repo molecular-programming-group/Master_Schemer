@@ -909,8 +909,15 @@ function renderLink(el) {
     if (duplexLink(el)) return { node: g, under: drawDuplex(g, el) };
     const color = resolveColor(el.fill) || '#2b2622';
     for (const [p, q] of basePairRungs(A, B, el.bases || defaultBases(A, B))) {
+      if (el.rung === 'dot') { // one dot midway: a base pair in dotted duplex notation
+        svgEl('circle', { cx: (p[0] + q[0]) / 2, cy: (p[1] + q[1]) / 2, r: 1.6, fill: color }, g);
+        continue;
+      }
+      // 'tick': alignment-style dash, a quarter of the gap clear of each strand
+      const k = el.rung === 'tick' ? 0.25 : 0;
       svgEl('line', {
-        x1: p[0], y1: p[1], x2: q[0], y2: q[1],
+        x1: p[0] + (q[0] - p[0]) * k, y1: p[1] + (q[1] - p[1]) * k,
+        x2: q[0] - (q[0] - p[0]) * k, y2: q[1] - (q[1] - p[1]) * k,
         stroke: color, 'stroke-width': 1.5, 'stroke-linecap': 'butt',
       }, g);
     }

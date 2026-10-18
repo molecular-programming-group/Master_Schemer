@@ -2491,6 +2491,9 @@ function renderPanel() {
         beginChange(); el.bases = v; changed();
       });
       sec.appendChild(fieldRow('Bases', n));
+      sec.appendChild(fieldRow('Base pair look', mappedSelect(
+        { line: 'Rung', dot: 'Dot', tick: 'Tick with gap' },
+        () => el.rung || 'line', v => { if (v === 'line') delete el.rung; else el.rung = v; })));
       sec.appendChild(fillControl(el, { optional: false, label: 'Base pair', pattern: false }));
       sec.appendChild(deleteButton());
       panel.appendChild(sec);
