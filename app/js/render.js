@@ -472,6 +472,10 @@ function renderPath(el) {
   if (plain) { // a DNA strand ends in its own molecular caps
     capGlyph(g, el.pts[0], endDir(el.pts, 0), el.cap0, c0.paint, c0.w, el.cap0flip);
     capGlyph(g, el.pts[el.pts.length - 1], endDir(el.pts, 1), el.cap1, c1.paint, c1.w, el.cap1flip);
+  } else if (dna && dnaView.ends) { // View → Mark 3′ Ends: a low-key chevron just past the 3' cap
+    const d = endDir(el.pts, 1), D = diam(el), z = el.pts[el.pts.length - 1];
+    chevron(g, [z[0] + d[0] * (D * 0.55 + 3), z[1] + d[1] * (D * 0.55 + 3)], d, Math.max(2.5, D * 0.22),
+      { stroke: c1.paint, 'stroke-width': Math.max(1.2, D * 0.08), opacity: 0.7 });
   }
   drawLabel(g, divs, measures, el, labelPos(el.pts, len / 2, dna ? labelOff - 2 : 14, -1),
     { size: 12.5, color, id: el.id });
@@ -712,6 +716,11 @@ export const lookOf = el => {
 };
 export const seqStrand = el => lookOf(el) === 'seq';
 const shownDNA = el => lookOf(el) === 'dna';
+// View → Mark 3′ Ends (display only).
+export const dnaView = { ends: false };
+// a plain line shown as a molecule by View → Draw Strands looks like a new one: toon + outline
+const toon = el => (el.dna ? !!el.dnaToon : true);
+const outlined = el => (el.dna ? !!el.dnaOutline : true);
 export const diam = el => (typeof el.dna === 'number' ? el.dna : naturalD(dnaBpg()));
 
 const dnaEnd = ref => {
@@ -871,12 +880,12 @@ function drawDNAStrand(g, el) {
     const strandIndex = i => Math.round(dir > 0 ? i - c : c - i - 1); // brush base slot → strand base
     drawBrush(target, {
       path: brushPath(verts.map(v => v.p), fillet(D), verts.map(v => v.t * sgn)),
-      knots: knots.map(([t, u]) => [t * sgn, u]), D, caps, toon: el.dnaToon,
+      knots: knots.map(([t, u]) => [t * sgn, u]), D, caps, toon: toon(el),
       layers: strandLayers(el, tex, `${tex}b`, tOf, i => baseLetter(el, lay, strandIndex(i))),
       breaks: (el.segments || []).flatMap(s => [s.t0 * sgn, s.t1 * sgn]),
     });
   }
-  return el.dnaOutline ? outlineOf(target, D) : null;
+  return outlined(el) ? outlineOf(target, D) : null;
 }
 
 // A strand in sequence view: one letter per base at its place along the line,
@@ -950,9 +959,9 @@ function drawDuplex(g, l) {
   const body = svgEl('g', {}, g);
   drawBrush(body, {
     path: brushPath(mid.pts, fillet(D)), knots: [[0, 0], [Lm, n]], D, layers, breaks,
-    caps: { head: true, tail: true }, toon: A.dnaToon || B.dnaToon,
+    caps: { head: true, tail: true }, toon: toon(A) || toon(B),
   });
-  return A.dnaOutline || B.dnaOutline ? outlineOf(body, D) : null;
+  return outlined(A) || outlined(B) ? outlineOf(body, D) : null;
 }
 
 // Everything a DNA strand's or duplex's pixels depend on beyond its own JSON.
@@ -1039,6 +1048,37 @@ function handleDot(overlay, x, y, s, extra = {}) {
   }, overlay);
 }
 
+// An open chevron at p pointing along unit dir d, arms `r` long.
+function chevron(parent, p, d, r, attrs) {
+  const n = [-d[1], d[0]];
+  const q = (a, b) => `${p[0] + d[0] * a + n[0] * b},${p[1] + d[1] * a + n[1] * b}`;
+  return svgEl('polyline', { points: [q(-r * 0.6, r), q(r * 0.4, 0), q(-r * 0.6, -r)].join(' '), fill: 'none',
+    'stroke-linecap': 'round', 'stroke-linejoin': 'round', ...attrs }, parent);
+}
+
+// A selected DNA strand's 5'→3' sense (its points run 5' → 3'): chevrons along
+// the line and 5′ / 3′ at its ends, haloed so they read over the molecule.
+function polarityGhost(overlay, el, s, color = SEL) {
+  const len = polylineLength(el.pts), step = 48 / s, r = 5 / s;
+  const off = diam(el) * 0.6 + 8 / s;
+  for (const w of [[4.5 / s, '#ffffff', 0.9], [1.75 / s, color, 1]]) {
+    const at = { stroke: w[1], 'stroke-width': w[0], opacity: w[2] };
+    for (let t = (len % step) / 2 || step / 2; t < len; t += step) {
+      const a = pointAt(el.pts, Math.max(0, t - 1)), b = pointAt(el.pts, Math.min(len, t + 1));
+      const d = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      chevron(overlay, pointAt(el.pts, t), [(b[0] - a[0]) / d, (b[1] - a[1]) / d], r, at);
+    }
+  }
+  for (const end of [0, 1]) {
+    const p = el.pts[end ? el.pts.length - 1 : 0], d = endDir(el.pts, end);
+    svgEl('text', {
+      x: p[0] + d[0] * off, y: p[1] + d[1] * off, 'font-size': 12 / s, 'font-weight': 700,
+      'text-anchor': 'middle', 'dominant-baseline': 'central', fill: color,
+      stroke: '#ffffff', 'stroke-width': 3 / s, 'paint-order': 'stroke',
+    }, overlay).textContent = end ? '3′' : '5′';
+  }
+}
+
 function renderSelection(overlay) {
   const s = state.view.s;
   const single = state.selection.length === 1;
@@ -1069,6 +1109,7 @@ function renderSelection(overlay) {
           points: ptsAttr(st.pts), fill: 'none', stroke: resolveColor(st.color), 'stroke-width': 2 / s,
           'stroke-dasharray': `${6 / s} ${4 / s}`, opacity: 0.9, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
         }, overlay);
+        polarityGhost(overlay, st, s, resolveColor(st.color));
       }
     }
     if (el.type === 'path' || el.type === 'ink') {
@@ -1078,6 +1119,7 @@ function renderSelection(overlay) {
       };
       if (el.type === 'ink') svgEl('path', { d: inkD(el.pts), ...attrs }, overlay);
       else svgEl('polyline', { points: ptsAttr(el.pts), ...attrs }, overlay);
+      if (shownDNA(el)) polarityGhost(overlay, el, s);
     }
     const b = elementBBox(el);
     svgEl('rect', {

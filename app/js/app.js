@@ -8,7 +8,7 @@ import {
 import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
-  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, strandView, lookOf, invalidateRenderCache,
+  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, strandView, lookOf, dnaView, invalidateRenderCache,
   FONTS, LINE_H, INLINE_TAGS,
 } from './render.js';
 import { DEFAULT_BPG, spacing, uAt, gridPitch, naturalBases, seqLetters } from './dna.js';
@@ -3219,6 +3219,7 @@ const MENU_ACTS = {
   cut: cutSelection, duplicate: duplicateSelection, invertSel: invertSelection,
   selectNone: () => { state.selection = []; refresh(); },
   zoomSel: zoomToSelection, grid: toggleGrid, exportPng: () => showExport('png'),
+  dnaEnds: () => setDNAEnds(!dnaView.ends, true),
   collapseAll, expandAll, themes: () => showThemes(),
   ticks: toggleTicks, baseSnap: () => setBaseSnap(!state.baseSnap, true),
   fitSeq: fitToSequence,
@@ -3228,6 +3229,7 @@ const MENU_CHECKS = {
   grid: () => !document.body.classList.contains('hide-grid'),
   ticks: () => !document.body.classList.contains('hide-ticks'),
   baseSnap: () => !!state.baseSnap,
+  dnaEnds: () => dnaView.ends,
 };
 
 // Tools menu mirrors the tool rail (so tools stay reachable when the rail is hidden)
@@ -3537,6 +3539,15 @@ $('dnaToggle').addEventListener('click', () => setStrandView(strandView.mode ===
   } catch { /* blocked */ }
   if (['line', 'dna', 'seq'].includes(saved)) setStrandView(saved, false);
 }
+// View → Mark 3′ Ends: a small chevron past every DNA strand's 3' end (display only)
+const DNA_ENDS_KEY = 'master-schemer-dna-ends';
+function setDNAEnds(on, remember) {
+  dnaView.ends = on;
+  if (remember) try { localStorage.setItem(DNA_ENDS_KEY, on ? 'on' : 'off'); } catch { /* full */ }
+  invalidateRenderCache();
+  refresh();
+}
+try { if (localStorage.getItem(DNA_ENDS_KEY) === 'on') setDNAEnds(true, false); } catch { /* blocked */ }
 
 const THEME_KEY = 'master-schemer-theme';
 function setTheme(dark, remember) {

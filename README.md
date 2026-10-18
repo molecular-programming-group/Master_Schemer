@@ -126,6 +126,12 @@ molecules start in toon shading with a black outline.
   or *all* as lines, DNA molecules or sequences, without changing the document
   (each strand keeps its own Draw as). **DNA** in the status bar flips between
   all lines and as-set.
+- **Strand direction.** A strand runs 5′ → 3′ in the order it was drawn.
+  Selecting a molecule (or a duplex) shows its sense as chevrons along the
+  line with 5′ / 3′ at the ends; **View → Mark 3′ Ends** puts a small
+  chevron past every DNA strand's 3′ end. The helix is right-handed B-DNA
+  (baked from PDB 1BNA, no mirroring in the brush): with the axis horizontal,
+  the strands in front run top-left to bottom-right.
 - **Look.** **Shading** can be *Soft* (rendered) or *Toon* (flat bands), and
   **Black outline** is independent of colour. **Colour by** can be:
   - *Strand*.
