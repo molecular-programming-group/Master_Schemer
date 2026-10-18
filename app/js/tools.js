@@ -285,6 +285,11 @@ export const tools = {
         };
         return;
       }
+      const abend = t.closest?.('[data-abend]');
+      if (abend) {
+        drag = { mode: 'abend', el: byId(abend.getAttribute('data-id')) };
+        return;
+      }
       const aend = t.closest?.('[data-aend]');
       if (aend) {
         drag = { mode: 'aend', el: byId(aend.getAttribute('data-id')), i: +aend.getAttribute('data-aend') };
@@ -418,6 +423,16 @@ export const tools = {
         const el = drag.el;
         el.pts[drag.i] = snapHalfPt(wp);
         el.segments = resizeEndSegments(drag.origSegs, drag.origTotal, polylineLength(el.pts), drag.end);
+        changed();
+        return;
+      }
+      if (drag.mode === 'abend') {
+        // the curve passes through the handle: control = 2·mid − (a + b)/2
+        began();
+        const el = drag.el, a = el.pts[0], b = el.pts[el.pts.length - 1];
+        const h = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        el.pts = dist(wp, h) < 6 / state.view.s ? [a, b]
+          : [a, [r1(2 * wp[0] - h[0]), r1(2 * wp[1] - h[1])], b];
         changed();
         return;
       }
@@ -884,8 +899,8 @@ export const tools = {
     },
   },
 
-  aline: { hint: 'Drag to draw a straight line annotation · snaps to grid (toggle in the status bar)' },
-  aarrow: { hint: 'Drag to draw an arrow annotation · snaps to grid (toggle in the status bar)' },
+  aline: { hint: 'Drag to draw a line annotation · drag its middle ◆ handle to curve it · snaps to grid (toggle in the status bar)' },
+  aarrow: { hint: 'Drag to draw an arrow annotation · drag its middle ◆ handle to curve it · snaps to grid (toggle in the status bar)' },
 
   text: {
     hint: 'Click to place a note — or drag a box to set its wrap width · $math$ for LaTeX',

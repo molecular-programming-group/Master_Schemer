@@ -78,7 +78,8 @@ export function elementBBox(el) {
       return [el.x - m, el.y - m, el.x + el.w + m, el.y + el.h + m];
     }
     case 'path': case 'ink': case 'aline': {
-      const b = bboxOfPts(el.pts), m = shownDNA(el) ? diam(el) * 0.75 + 4 : (el.width || 2) + 4;
+      const b = bboxOfPts(el.type === 'aline' ? alinePts(el.pts) : el.pts);
+      const m = shownDNA(el) ? diam(el) * 0.75 + 4 : (el.width || 2) + 4;
       return [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
     }
     case 'ellipse': {
@@ -500,16 +501,30 @@ function renderRect(el) {
   return { node: g, divs, measures };
 }
 
+// A line note is straight [a, b] or a quadratic curve [a, control, b].
+export const alineD = ([a, c, b]) => b
+  ? `M${a[0]} ${a[1]} Q${c[0]} ${c[1]} ${b[0]} ${b[1]}` : `M${a[0]} ${a[1]} L${c[0]} ${c[1]}`;
+// Points along the curve (for bounding boxes and link outlines).
+function alinePts(pts) {
+  if (pts.length < 3) return pts;
+  const [a, c, b] = pts, q = (t, i) => (1 - t) ** 2 * a[i] + 2 * (1 - t) * t * c[i] + t * t * b[i];
+  return Array.from({ length: 17 }, (_, k) => [q(k / 16, 0), q(k / 16, 1)]);
+}
+// The curve's midpoint: where its bend handle sits.
+export const alineMid = ([a, c, b]) => b
+  ? [(a[0] + 2 * c[0] + b[0]) / 4, (a[1] + 2 * c[1] + b[1]) / 4] : [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2];
+
 function renderALine(el) {
   const g = svgEl('g', { 'data-id': el.id });
   const divs = [], measures = [];
-  const [a, b] = el.pts;
+  const a = el.pts[0], b = el.pts[el.pts.length - 1];
   const color = resolveColor(el.color);
-  svgEl('line', {
-    x1: a[0], y1: a[1], x2: b[0], y2: b[1],
-    stroke: 'transparent', 'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
+  const d = alineD(el.pts);
+  svgEl('path', {
+    d, fill: 'none', stroke: 'transparent', 'stroke-width': Math.max(12, (el.width || 2) + 8), 'data-hit': '1',
   }, g);
-  svgEl('line', { x1: a[0], y1: a[1], x2: b[0], y2: b[1], ...strokeAttrs(el) }, g);
+  svgEl('path', { d, fill: 'none', ...strokeAttrs(el) }, g);
+  // a quadratic's end tangents point at its control point, so endDir works unchanged
   capGlyph(g, a, endDir(el.pts, 0), el.cap0, color, el.width || 2, el.cap0flip);
   capGlyph(g, b, endDir(el.pts, 1), el.cap1, color, el.width || 2, el.cap1flip);
   drawLabel(g, divs, measures, el, bboxLabelAnchor(el), { size: 12.5, color, id: el.id });
@@ -559,7 +574,8 @@ function renderText(el) {
 // Boundary points of one element, in world units.
 function elOutline(el) {
   switch (el.type) {
-    case 'path': case 'ink': case 'aline': return el.pts;
+    case 'path': case 'ink': return el.pts;
+    case 'aline': return alinePts(el.pts);
     case 'ellipse': return ellipsePoints(el.cx, el.cy, el.rx, el.ry);
     case 'rect': case 'card':
       return [[el.x, el.y], [el.x + el.w, el.y], [el.x + el.w, el.y + el.h], [el.x, el.y + el.h]];
@@ -962,8 +978,16 @@ function renderSelection(overlay) {
     }
     // annotation line/arrow endpoints: drag to reshape (like resizing a shape)
     if (el.type === 'aline' && single) {
-      el.pts.forEach((p, i) =>
-        handleDot(overlay, p[0], p[1], s, { 'data-aend': i, 'data-id': el.id }));
+      [0, el.pts.length - 1].forEach(i =>
+        handleDot(overlay, el.pts[i][0], el.pts[i][1], s, { 'data-aend': i, 'data-id': el.id }));
+      // middle handle: drag to bend the line into a curve, back to straight to undo
+      const m = alineMid(el.pts);
+      svgEl('rect', {
+        x: m[0] - 4.5 / s, y: m[1] - 4.5 / s, width: 9 / s, height: 9 / s,
+        transform: `rotate(45 ${m[0]} ${m[1]})`,
+        fill: '#ffffff', stroke: SEL, 'stroke-width': 2 / s,
+        'data-abend': '1', 'data-id': el.id, style: 'cursor:move',
+      }, overlay);
     }
     // vertex handles for the line-edit tool
     if (el.type === 'path' && single && state.tool === 'edit') {

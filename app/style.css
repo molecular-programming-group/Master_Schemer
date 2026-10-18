@@ -13,6 +13,7 @@
   --primary-soft: oklch(0.94 0.04 80);
   --accent: oklch(0.42 0.09 250);
   --danger: oklch(0.53 0.19 25);
+  --group: oklch(0.5 0.11 155);
   --radius: 8px;
   --z-tooltip: 30;
   --z-edit: 20;
@@ -35,6 +36,7 @@
   --primary-soft: oklch(0.36 0.055 74);
   --accent: oklch(0.72 0.1 250);
   --danger: oklch(0.68 0.18 25);
+  --group: oklch(0.72 0.11 155);
 }
 
 * { box-sizing: border-box; margin: 0; }
@@ -365,7 +367,7 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 #layer-overlay, #layer-preview { pointer-events: none; }
 #layer-overlay [data-handle], #layer-overlay [data-pend],
 #layer-overlay [data-seghandle], #layer-overlay [data-vertex],
-#layer-overlay [data-aend] { pointer-events: auto; }
+#layer-overlay [data-aend], #layer-overlay [data-abend] { pointer-events: auto; }
 
 /* transient save/action acknowledgement */
 #toast {
@@ -488,6 +490,23 @@ body.panning #canvas { cursor: grabbing !important; }
 }
 
 .panel-section { display: flex; flex-direction: column; gap: 10px; }
+
+/* Selection class badge at the top of the properties panel */
+.kind-badge {
+  --k: var(--muted);
+  display: grid; gap: 1px; padding: 7px 10px; margin-bottom: 4px;
+  border-left: 4px solid var(--k); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--k) 12%, var(--bg));
+}
+.kind-primary { --k: var(--primary); }
+.kind-structure { --k: var(--accent); }
+.kind-group { --k: var(--group); }
+.kind-class {
+  font-size: 10.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--k) 75%, var(--ink));
+}
+.kind-badge strong { font-size: 14px; color: var(--ink); }
+.kind-detail { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .panel-section h2 {
   font-size: 11px;
