@@ -388,6 +388,9 @@ window.addEventListener('keydown', e => {
     else if (k === 'o') { e.preventDefault(); e.shiftKey ? showRecent() : openFile(); }
     else if (k === 'g') { e.preventDefault(); e.shiftKey ? ungroupSelection() : groupSelection(); }
     else if (k === 'a') { e.preventDefault(); selectAll(); }
+    // physical bracket keys, so the shortcut works on layouts where ] needs AltGr
+    else if (e.code === 'BracketRight') { e.preventDefault(); reorder(e.shiftKey ? 'front' : 'up'); }
+    else if (e.code === 'BracketLeft') { e.preventDefault(); reorder(e.shiftKey ? 'back' : 'down'); }
     return;
   }
   const tool = TOOL_KEYS[e.key.toLowerCase()];
@@ -2287,6 +2290,8 @@ function setMenu(m) {
   if (!m) return;
   m.classList.add('open');
   m.firstElementChild.setAttribute('aria-expanded', 'true');
+  for (const it of m.querySelectorAll('[data-sel]'))
+    it.disabled = selectedElements().length < +it.dataset.sel;
   for (const it of m.querySelectorAll('[data-click]')) {
     const target = $(it.dataset.click);
     it.disabled = target.disabled;
@@ -2308,6 +2313,15 @@ menubar.addEventListener('pointerover', e => {
 });
 document.addEventListener('pointerdown', e => { if (openMenu && !menubar.contains(e.target)) setMenu(null); });
 window.addEventListener('keydown', e => { if (e.key === 'Escape' && openMenu) setMenu(null); }, true);
+
+// Object menu: the properties panel's Arrange buttons
+Object.assign(MENU_ACTS, {
+  front: () => reorder('front'), raise: () => reorder('up'), lower: () => reorder('down'), back: () => reorder('back'),
+  rotCcw: () => transformSelection('ccw'), rotCw: () => transformSelection('cw'),
+  flipH: () => transformSelection('h'), flipV: () => transformSelection('v'),
+  alignLeft: () => alignSelection('left'), alignHcenter: () => alignSelection('hcenter'), alignRight: () => alignSelection('right'),
+  alignTop: () => alignSelection('top'), alignVcenter: () => alignSelection('vcenter'), alignBottom: () => alignSelection('bottom'),
+});
 
 $('snapToggle').addEventListener('click', () => {
   state.snap = !state.snap;
