@@ -3112,10 +3112,11 @@ const MENU_ACTS = {
   selectNone: () => { state.selection = []; refresh(); },
   zoomSel: zoomToSelection, grid: toggleGrid, exportPng: () => showExport('png'),
   dnaAll: () => setDNAAll(!dnaView.all, true),
+  dnaEnds: () => setDNAEnds(!dnaView.ends, true),
   collapseAll, expandAll, themes: () => showThemes(),
 };
 // checkbox items whose state isn't mirrored by a toolbar button
-const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid'), dnaAll: () => dnaView.all };
+const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid'), dnaAll: () => dnaView.all, dnaEnds: () => dnaView.ends };
 
 // Tools menu mirrors the tool rail (so tools stay reachable when the rail is hidden)
 {
@@ -3421,6 +3422,15 @@ function setDNAAll(all, remember) {
   if (remember) try { localStorage.setItem(DNA_ALL_KEY, all ? 'on' : 'off'); } catch { /* full */ }
   setDNAView(all || dnaView.show, remember); // turning it on shows molecules
 }
+// View → Mark 3′ Ends: a small chevron past every DNA strand's 3' end (display only)
+const DNA_ENDS_KEY = 'master-schemer-dna-ends';
+function setDNAEnds(on, remember) {
+  dnaView.ends = on;
+  if (remember) try { localStorage.setItem(DNA_ENDS_KEY, on ? 'on' : 'off'); } catch { /* full */ }
+  invalidateRenderCache();
+  refresh();
+}
+try { if (localStorage.getItem(DNA_ENDS_KEY) === 'on') setDNAEnds(true, false); } catch { /* blocked */ }
 try { if (localStorage.getItem(DNA_ALL_KEY) === 'on') { dnaView.all = true; invalidateRenderCache(); refresh(); } } catch { /* blocked */ }
 
 const THEME_KEY = 'master-schemer-theme';

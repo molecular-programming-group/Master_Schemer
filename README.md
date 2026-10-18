@@ -109,7 +109,13 @@ molecules start in toon shading with a black outline.
   scheme can mix molecules and plain lines. **View → All Strands as DNA** goes
   the other way: every plain line is drawn as a molecule too (toon + outline),
   and base-pair links between them as duplexes, again without editing the
-  document. To convert many lines at once,
+  document.
+- **Strand direction.** A strand runs 5′ → 3′ in the order it was drawn.
+  Selecting a molecule (or a duplex) shows its sense as chevrons along the
+  line with 5′ / 3′ at the ends; **View → Mark 3′ Ends** puts a small
+  chevron past every DNA strand's 3′ end. The helix is right-handed B-DNA
+  (baked from PDB 1BNA, no mirroring in the brush): with the axis horizontal,
+  the strands in front run top-left to bottom-right. To convert many lines at once,
   select them (Ctrl+A works, other objects are ignored) and tick **Draw the
   lines as DNA molecules**.
 - **Look.** **Shading** can be *Soft* (rendered) or *Toon* (flat bands), and
