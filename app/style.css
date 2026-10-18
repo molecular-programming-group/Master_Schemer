@@ -302,6 +302,8 @@ body.show-keys .tool-btn[data-key]::before {
   white-space: nowrap;
 }
 
+.side-name .katex, .kind-badge .katex { font-size: 1.1em; }
+
 .side-rename {
   font: inherit;
   width: 100%;
