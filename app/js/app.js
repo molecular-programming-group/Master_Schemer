@@ -3,7 +3,7 @@ import {
   state, COLORS, setOnChanged, beginChange, changed, touch, undo, redo, newId, addElement,
   deleteSelection, selectionSingle, byId, newDoc, loadDocJSON,
   isSemantic, resolveColor, resolveLabel, reorder, pruneGroups,
-  byGroup, childGroups, topLevelGroups, groupElementMembers,
+  byGroup, childGroups, topLevelGroups, groupElementMembers, displayName, kindWord, clearNameCache,
 } from './model.js';
 import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments } from './geom.js';
 import {
@@ -34,6 +34,7 @@ function toast(msg) {
 // ---- refresh pipeline ----
 
 function refresh() {
+  clearNameCache();
   render();
   // panels are DOM-heavy; while a drag is live only the canvas needs frames
   if (!isDragging()) {
@@ -703,18 +704,10 @@ function applyLabelColorSlot(labelSlot) {
 
 // ---- object sidebar (semantic registry) ----
 
-function displayName(el, i) {
-  if (el.type === 'card') return el.title || 'Untitled card';
-  const label = resolveLabel(el.label || '');
-  if (el.type === 'text') return label || el.text.split('\n')[0].slice(0, 24) || 'note';
-  const names = {
-    path: 'strand', ink: 'freehand', ellipse: 'ellipse', rect: 'rectangle',
-    aline: 'line note', aarrow: 'arrow',
-  };
-  if (MOLS[el.mol]) return label || MOLS[el.mol].name;
-  const kind = el.type === 'aline' && (el.cap0 !== 'none' || el.cap1 !== 'none') ? 'arrow' : names[el.type];
-  return label || `${kind || el.type} ${i + 1}`;
-}
+// Sidebar rows and the badge draw a name at row size, so KaTeX size commands
+// (`$\huge A$`) are dropped; truncation is left to CSS on the rendered text.
+const rowHTML = s => inlineHTML(s.split('\n')[0]
+  .replace(/\\(tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)(?![a-zA-Z])/g, ''));
 
 // A line's domain string: its segments' `string` fields concatenated in path
 // order. Derived (never stored), so it always reflects the current segments.
@@ -760,7 +753,7 @@ function sideItem({ depth, name, color, selected, onSelect, onRename, collapsibl
   }
   const label = document.createElement('span');
   label.className = 'side-name';
-  label.innerHTML = inlineHTML(name.split('\n')[0]); // drawn as on canvas; rename edits the source
+  label.innerHTML = rowHTML(name); // drawn as on canvas; rename edits the source
   row.appendChild(label);
   if (!onRename) {
     row.addEventListener('click', onSelect);
@@ -782,6 +775,7 @@ function sideItem({ depth, name, color, selected, onSelect, onRename, collapsibl
       if (done) return;
       done = true;
       const v = input.value;
+      input.remove(); // let the refresh below rebuild the sidebar (it skips while a rename is focused)
       if (commit && v !== name) { beginChange(); onRename(v); changed(); }
       else refresh();
     };
@@ -856,13 +850,13 @@ function segItems(el, depth, into) {
 
 function objectItems(els, depth, into) {
   els.forEach(el => {
-    const i = state.doc.elements.indexOf(el);
     const opts = {
-      depth, name: displayName(el, i),
+      depth, name: displayName(el),
       color: el.color !== undefined ? resolveColor(el.color) : null,
       selected: state.selection.some(s => s.id === el.id && s.seg === undefined),
       onSelect: () => { state.selection = [{ id: el.id }]; refresh(); },
-      onRename: v => { setLabel(el, v); },
+      // a card's name is its title; anything else gets its own `name`, cleared back to the default
+      onRename: v => { if (el.type === 'card') { el.title = v; delete el.name; } else if (v.trim()) el.name = v; else delete el.name; },
       dragRef: { kind: 'el', id: el.id }, ctx: true,
     };
     const segs = el.type === 'path' && (el.segments || []).length;
@@ -897,6 +891,8 @@ function renderSidebar() {
   if (body.contains(document.activeElement)) return; // mid-rename
   body.replaceChildren();
   const els = state.doc.elements;
+  const q = $('objFilter').value.trim().toLowerCase();
+  if (q) { renderFiltered(body, q); renderLibrary(); return; }
   const cards = els.filter(el => el.type === 'card');
   const tracked = els.filter(el => el.type !== 'card' && el.type !== 'arrow' && isSemantic(el));
   const placed = new Set();
@@ -929,7 +925,7 @@ function renderSidebar() {
       depth: 0, name: displayName(card), color: null,
       selected: state.selection.some(s => s.id === card.id),
       onSelect: () => { state.selection = [{ id: card.id }]; refresh(); },
-      onRename: v => { card.title = v; },
+      onRename: v => { card.title = v; delete card.name; },
       dragRef: { kind: 'el', id: card.id },
     }, groupsHere.length + inside.length);
     row.classList.add('side-card');
@@ -954,6 +950,37 @@ function renderSidebar() {
   }
   renderLibrary();
 }
+
+// Filter box: a flat list of the groups and objects (cards, tracked objects,
+// group members) whose name, label or text matches, matched on both the source
+// and its plain text (tags and $ dropped). A strand also matches by a domain label.
+function renderFiltered(body, q) {
+  const hit = s => !!s && (s.toLowerCase().includes(q) || s.replace(/<\/?\w+>|\$/g, '').toLowerCase().includes(q));
+  for (const g of state.doc.groups) {
+    if (!hit(g.name || 'group')) continue;
+    const members = groupElementMembers(g.id);
+    body.appendChild(sideItem({
+      depth: 0, name: g.name || 'group', color: null,
+      selected: members.length > 0 && members.every(m => state.selection.some(s => s.id === m.id && s.seg === undefined)),
+      onSelect: () => { state.selection = members.map(m => ({ id: m.id })); refresh(); },
+      onRename: v => { g.name = v; }, dragRef: { kind: 'grp', id: g.id }, ctx: true,
+    }));
+  }
+  const shown = state.doc.elements.filter(el => (el.type === 'card' || el.group || (el.type !== 'arrow' && isSemantic(el))) &&
+    (hit(displayName(el)) || hit(resolveLabel(el.label || '')) || hit(el.text) ||
+     (el.segments || []).some(seg => hit(resolveLabel(seg.label || '')))));
+  objectItems(shown, 0, body);
+  if (!body.childElementCount) {
+    const p = document.createElement('p');
+    p.className = 'muted side-empty';
+    p.textContent = 'No objects match.';
+    body.appendChild(p);
+  }
+}
+$('objFilter').addEventListener('input', renderSidebar);
+$('objFilter').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.target.value = ''; renderSidebar(); e.target.blur(); }
+});
 
 // ---- asset library (persists across sessions, transferable as a file) ----
 
@@ -2036,7 +2063,7 @@ const KIND = {
   rect: ['annotation', 'Rectangle'], ink: ['annotation', 'Freehand'],
 };
 const kindOf = el => MOLS[el.mol] ? ['annotation', `${MOLS[el.mol].name} · PDB ${MOLS[el.mol].pdb}`] : el.type === 'aline'
-  ? ['annotation', el.cap0 !== 'none' || el.cap1 !== 'none' ? 'Arrow' : 'Line']
+  ? ['annotation', kindWord(el) === 'arrow' ? 'Arrow' : 'Line']
   : KIND[el.type] || ['annotation', el.type];
 const CLASS_NAME = { primary: 'Primary object', structure: 'Structure', annotation: 'Annotation', group: 'Group' };
 
@@ -2049,7 +2076,7 @@ function selectedGroup(n) {
 function kindBadge(single, n) {
   if (!n) return null;
   let cls, kind, detail = '';
-  const name = el => displayName(el, state.doc.elements.indexOf(el));
+  const name = displayName;
   const grp = !single || single.seg === undefined ? selectedGroup(n) : null;
   if (grp) {
     cls = 'group'; kind = grp.name; detail = `${n} object${n === 1 ? '' : 's'}`;
@@ -2077,7 +2104,7 @@ function kindBadge(single, n) {
   k.textContent = kind;
   const d = document.createElement('span');
   d.className = 'kind-detail';
-  d.innerHTML = inlineHTML(detail);
+  d.innerHTML = rowHTML(detail);
   box.append(tag, k, d);
   return box;
 }
@@ -2570,6 +2597,14 @@ function renderPanel() {
 
   const badge = kindBadge(single, n);
   if (badge) panel.appendChild(badge);
+  // every element can carry its own name (Objects panel, badge, note refs); a card's is its title
+  if (single && single.seg === undefined && single.el.type !== 'card') {
+    const el = single.el, sec = document.createElement('div');
+    sec.className = 'panel-section sec-prop';
+    sec.appendChild(fieldRow('Name', boundInput(() => el.name || '', v => { if (v.trim()) el.name = v; else delete el.name; },
+      { placeholder: 'default (shown above)' })));
+    panel.appendChild(sec);
+  }
   panel.appendChild(paletteSection());
 
   const styleSec = document.createElement('div');
@@ -2902,7 +2937,7 @@ function renderPanel() {
         dot.className = 'seg-dot';
         dot.style.background = resolveColor(seg.color);
         const name = document.createElement('span');
-        name.innerHTML = inlineHTML(resolveLabel(seg.label || '') || `domain ${i + 1}`);
+        name.innerHTML = rowHTML(resolveLabel(seg.label || '') || `domain ${i + 1}`);
         item.append(dot, name);
         item.addEventListener('click', () => {
           state.selection = [{ id: el.id, seg: i }];
@@ -3824,7 +3859,7 @@ function refLabel(kind, id) {
     return g.name || 'group';
   }
   const el = byId(id);
-  return el ? displayName(el, state.doc.elements.indexOf(el)) : '(deleted)';
+  return el ? displayName(el) : '(deleted)';
 }
 
 function makeChip(kind, id) {

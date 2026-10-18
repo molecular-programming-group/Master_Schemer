@@ -2,6 +2,7 @@
 
 import { polylineLength, subPath, splitSegments } from './geom.js';
 import { defaultPalette } from './themes.js';
+import MOLS from './mol-tex.js';
 
 export const COLORS = [
   { name: 'Ink',     hex: '#2b2622' },
@@ -350,4 +351,58 @@ export function restoreAutosave() {
     const text = localStorage.getItem(AUTOSAVE_KEY);
     if (text) state.doc = migrate(JSON.parse(text));
   } catch { /* corrupt autosave: start fresh */ }
+}
+
+// An object's name: its own `name` if the user gave it one, else a default
+// built from what it shows (label, title, text, or what a link joins), else a
+// per-kind count ("strand 3" is the third strand, whatever lies between).
+export function displayName(el) { return el.name || defaultName(el); }
+
+const KIND_WORD = {
+  path: 'strand', ink: 'freehand', ellipse: 'ellipse', rect: 'rectangle', aarrow: 'arrow',
+  text: 'note', link: 'link', arrow: 'connection', card: 'card',
+};
+export const kindWord = el => MOLS[el.mol] ? MOLS[el.mol].name
+  : el.type === 'aline' ? (el.cap0 && el.cap0 !== 'none') || (el.cap1 && el.cap1 !== 'none') ? 'arrow' : 'line'
+  : KIND_WORD[el.type] || el.type;
+
+// ponytail: per-kind counts are one O(n) pass, cached until the next refresh
+// (or an element the cache hasn't seen) so a 700-row sidebar stays linear.
+let ordCache = null, idCache = null;
+export const clearNameCache = () => { ordCache = idCache = null; };
+function ordinal(el) {
+  if (!ordCache?.has(el)) {
+    ordCache = new Map(); idCache = new Map();
+    const n = {};
+    for (const e of state.doc.elements) {
+      const w = kindWord(e); n[w] = (n[w] || 0) + 1; ordCache.set(e, n[w]); idCache.set(e.id, e);
+    }
+  }
+  return ordCache.get(el) || 1;
+}
+const cachedById = id => { if (!idCache) ordinal(state.doc.elements[0]); return idCache?.get(id) || byId(id); };
+
+// One end of a link or connection: a domain's label, a group's name, or the
+// object's own name.
+function endName(t) {
+  if (!t) return '';
+  if (t.group) return byGroup(t.group)?.name || '';
+  const el = cachedById(t.id ?? t);
+  if (!el || el.type === 'link' || el.type === 'arrow') return '';
+  const seg = t.seg !== undefined ? el.segments?.[t.seg] : null;
+  return (seg && resolveLabel(seg.label || '')) || displayName(el);
+}
+
+export function defaultName(el) {
+  if (el.type === 'card') return el.title || 'Untitled card';
+  const label = resolveLabel(el.label || '');
+  if (label) return label;
+  if (el.type === 'text') return el.text.split('\n')[0] || 'note';
+  if (MOLS[el.mol]) return MOLS[el.mol].name;
+  if (el.type === 'link' || el.type === 'arrow') {
+    const [a, b] = el.type === 'link' ? [el.a, el.b] : [el.from, el.to];
+    const na = endName(a), nb = endName(b);
+    if (na && nb) return `${na} ${el.type === 'link' ? '↔' : '→'} ${nb}`;
+  }
+  return `${kindWord(el)} ${ordinal(el)}`;
 }

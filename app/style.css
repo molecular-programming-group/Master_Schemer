@@ -71,7 +71,7 @@ body.hide-toolbar { --ctrl-h: 0px; }
 body.hide-textbar { --text-h: 0px; }
 body.hide-toolbar #ctrlbar, body.hide-textbar #textbar,
 body.hide-tools #toolrail,
-body.hide-objects .side-head-obj, body.hide-objects #sidebarBody,
+body.hide-objects .side-head-obj, body.hide-objects #sidebarBody, body.hide-objects #objFilter,
 body.hide-library .side-head-lib, body.hide-library #libraryBody,
 body.hide-color .sec-color, body.hide-props .sec-prop,
 body.hide-notes #notesPanel { display: none; }
@@ -256,6 +256,20 @@ body.show-keys .tool-btn[data-key]::before {
   color: var(--muted);
   padding: 12px 12px 6px;
 }
+
+#objFilter {
+  flex: none;
+  height: 26px;
+  margin: 0 12px 6px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+#objFilter:focus { outline: 2px solid var(--primary); outline-offset: -1px; border-color: transparent; }
 
 #sidebarBody { display: flex; flex-direction: column; padding: 0 6px 12px; }
 
