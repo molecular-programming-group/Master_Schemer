@@ -215,6 +215,16 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 .tool-btn svg { width: 19px; height: 19px; }
 .tool-btn:hover { background: var(--surface-2); }
 .tool-btn[aria-pressed="true"] { background: var(--primary); color: var(--bg); }
+/* View ▸ Tool Hotkeys: each tool's key in its corner */
+.tool-btn { position: relative; }
+body.show-keys .tool-btn[data-key]::before {
+  content: attr(data-key);
+  position: absolute; right: 1px; bottom: 1px;
+  min-width: 11px; padding: 0 2px; border-radius: 3px;
+  font: 600 10px/13px var(--font); text-align: center;
+  background: var(--surface-2); color: var(--ink); border: 1px solid var(--line);
+  pointer-events: none;
+}
 
 .rail-rule { width: 22px; border-top: 1px solid var(--line); margin: 4px 0; }
 

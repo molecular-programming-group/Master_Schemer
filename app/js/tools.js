@@ -625,6 +625,7 @@ export const tools = {
       const el = addElement({
         type: 'path', pts, color: state.color, width: state.width, label: '', segments: [],
         linecap: 'butt', // line objects default to flat ends
+        ...{ dna: { dna: true, dnaToon: true, dnaOutline: true }, seq: { seqLook: true } }[state.drawLook], // as setLook would
       });
       state.selection = [{ id: el.id }];
       changed();
