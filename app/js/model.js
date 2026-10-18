@@ -73,6 +73,7 @@ export const state = {
   color: INK,
   textDefaults: {}, // formatting for new notes, set from the text toolbar with no note selected
   width: 2,
+  drawDNA: false, // Strand tool draws DNA molecules (a remembered drawing default)
   snap: true, // annotation shapes snap to the half-grid (toggle in the status bar)
   view: { tx: 0, ty: 0, s: 1 },
   history: [],

@@ -2075,6 +2075,21 @@ const backbone = ref => {
 // Turn lines into DNA strands (or back). A new strand takes its base-pair
 // partner's diameter (so the duplex between them comes out round), else
 // follows the DNA grid.
+// What the Strand tool draws: plain lines or DNA molecules. A drawing default
+// (like width), so it changes no document and makes no undo step.
+const NEW_DNA_KEY = 'master-schemer-new-strands-dna';
+try { state.drawDNA = localStorage.getItem(NEW_DNA_KEY) === '1'; } catch { /* lines */ }
+function newStrandSelect() {
+  const node = document.createElement('select');
+  for (const [v, t] of [['line', 'Line'], ['dna', 'DNA molecule']]) node.add(new Option(t, v));
+  node.value = state.drawDNA ? 'dna' : 'line';
+  node.addEventListener('change', () => {
+    state.drawDNA = node.value === 'dna';
+    try { localStorage.setItem(NEW_DNA_KEY, state.drawDNA ? '1' : '0'); } catch { /* full */ }
+  });
+  return node;
+}
+
 function setDNA(els, on) {
   for (const el of els) {
     if (!on) { delete el.dna; continue; }
@@ -2291,6 +2306,7 @@ function renderPanel() {
         if (single && single.el.width !== undefined) single.el.width = v;
       },
       !!(single && single.el.width !== undefined))));
+    if (!n) styleSec.appendChild(fieldRow('New strands', newStrandSelect()));
     styled = true;
   }
   if (single && ['path', 'aline', 'ellipse', 'ink', 'rect'].includes(single.el.type) && single.seg === undefined) {
@@ -3113,11 +3129,22 @@ const MENU_ACTS = {
   showPanels: () => setHiddenPanels([]), hidePanels: () => setHiddenPanels(PANELS),
   cut: cutSelection, duplicate: duplicateSelection, invertSel: invertSelection,
   selectNone: () => { state.selection = []; refresh(); },
-  zoomSel: zoomToSelection, grid: toggleGrid, exportPng: () => showExport('png'),
+  zoomSel: zoomToSelection, grid: toggleGrid, keys: () => setKeyHints(!document.body.classList.contains('show-keys')),
+  exportPng: () => showExport('png'),
   collapseAll, expandAll, themes: () => showThemes(),
 };
 // checkbox items whose state isn't mirrored by a toolbar button
-const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid') };
+const MENU_CHECKS = {
+  grid: () => !document.body.classList.contains('hide-grid'),
+  keys: () => document.body.classList.contains('show-keys'),
+};
+
+const KEY_HINTS_KEY = 'master-schemer-key-hints';
+function setKeyHints(on) {
+  document.body.classList.toggle('show-keys', on);
+  try { localStorage.setItem(KEY_HINTS_KEY, on ? '1' : '0'); } catch { /* full */ }
+}
+try { document.body.classList.toggle('show-keys', localStorage.getItem(KEY_HINTS_KEY) === '1'); } catch { /* off */ }
 
 // Tools menu mirrors the tool rail (so tools stay reachable when the rail is hidden)
 {
@@ -3131,6 +3158,7 @@ const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid')
     const kbd = document.createElement('kbd');
     kbd.textContent = keyOf[n.dataset.tool];
     b.append(kbd);
+    n.dataset.key = keyOf[n.dataset.tool]; // badge for View ▸ Tool Hotkeys
     $('toolsMenu').append(b);
   }
 }
