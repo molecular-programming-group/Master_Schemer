@@ -701,9 +701,12 @@ export function linkStrand(ref) {
 export const dnaBpg = () => state.doc.dnaBpg || DEFAULT_BPG;
 // Global display switch: off draws every DNA strand as its plain line (and
 // duplexes as base-pair rungs) without touching the document — each line keeps
-// its own Draw-as setting for when it's back on.
-export const dnaView = { show: true };
-const shownDNA = el => !!el.dna && dnaView.show;
+// its own Draw-as setting for when it's back on. `all` (View → All Strands as
+// DNA) also draws every plain line as a molecule, toon + outline like a new one.
+export const dnaView = { show: true, all: false };
+export const shownDNA = el => dnaView.show && (!!el.dna || (dnaView.all && el.type === 'path'));
+const toon = el => (el.dna ? !!el.dnaToon : true);
+const outlined = el => (el.dna ? !!el.dnaOutline : true);
 export const diam = el => (typeof el.dna === 'number' ? el.dna : naturalD(dnaBpg()));
 
 const dnaEnd = ref => {
@@ -845,12 +848,12 @@ function drawDNAStrand(g, el) {
     const strandIndex = i => Math.round(dir > 0 ? i - c : c - i - 1); // brush base slot → strand base
     drawBrush(target, {
       path: brushPath(verts.map(v => v.p), fillet(D), verts.map(v => v.t * sgn)),
-      knots: knots.map(([t, u]) => [t * sgn, u]), D, caps, toon: el.dnaToon,
+      knots: knots.map(([t, u]) => [t * sgn, u]), D, caps, toon: toon(el),
       layers: strandLayers(el, tex, `${tex}b`, tOf, i => baseLetter(el, lay, strandIndex(i))),
       breaks: (el.segments || []).flatMap(s => [s.t0 * sgn, s.t1 * sgn]),
     });
   }
-  return el.dnaOutline ? outlineOf(target, D) : null;
+  return outlined(el) ? outlineOf(target, D) : null;
 }
 
 // The double helix of a duplex link, laid along the midline between its two
@@ -885,9 +888,9 @@ function drawDuplex(g, l) {
   const body = svgEl('g', {}, g);
   drawBrush(body, {
     path: brushPath(mid.pts, fillet(D)), knots: [[0, 0], [Lm, n]], D, layers, breaks,
-    caps: { head: true, tail: true }, toon: A.dnaToon || B.dnaToon,
+    caps: { head: true, tail: true }, toon: toon(A) || toon(B),
   });
-  return A.dnaOutline || B.dnaOutline ? outlineOf(body, D) : null;
+  return outlined(A) || outlined(B) ? outlineOf(body, D) : null;
 }
 
 // Everything a DNA strand's or duplex's pixels depend on beyond its own JSON.
@@ -951,7 +954,7 @@ function elKey(el, salt) {
   // links trace live geometry: rekey when either endpoint's outline moves
   if (el.type === 'link') key += '|' + ptsAttr([...linkTargetPoints(el.a), ...linkTargetPoints(el.b)]);
   // DNA strands and duplexes depend on each other (shape, counts, colours) and the DNA grid
-  if (el.dna || (el.type === 'link' && duplexLink(el))) key += dnaKey(el);
+  if (shownDNA(el) || (el.type === 'link' && duplexLink(el))) key += dnaKey(el);
   return key;
 }
 

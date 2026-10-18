@@ -106,7 +106,10 @@ molecules start in toon shading with a black outline.
 - **Global switch.** **DNA** in the status bar (or View → DNA Molecules) draws
   every DNA strand as its plain line, and every duplex as base-pair rungs,
   without changing the document. Each line keeps its own Draw-as setting, so a
-  scheme can mix molecules and plain lines. To convert many lines at once,
+  scheme can mix molecules and plain lines. **View → All Strands as DNA** goes
+  the other way: every plain line is drawn as a molecule too (toon + outline),
+  and base-pair links between them as duplexes, again without editing the
+  document. To convert many lines at once,
   select them (Ctrl+A works, other objects are ignored) and tick **Draw the
   lines as DNA molecules**.
 - **Look.** **Shading** can be *Soft* (rendered) or *Toon* (flat bands), and

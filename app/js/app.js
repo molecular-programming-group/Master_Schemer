@@ -8,7 +8,7 @@ import {
 import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
-  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, dnaView, invalidateRenderCache,
+  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, dnaView, shownDNA, invalidateRenderCache,
   FONTS, LINE_H, INLINE_TAGS,
 } from './render.js';
 import { DEFAULT_BPG, spacing, uAt } from './dna.js';
@@ -572,7 +572,7 @@ function createLink(targets) {
     fill: resolveColor(currentColor()) || '#8a857c', opacity: 0.45,
   });
   // two DNA strands pair up as a duplex rather than a filled area
-  if (targets.every(t => byId(t.id)?.dna) && linkStrand(el.a) && linkStrand(el.b)) el.style = 'bases';
+  if (targets.every(t => byId(t.id) && shownDNA(byId(t.id))) && linkStrand(el.a) && linkStrand(el.b)) el.style = 'bases';
   state.selection = [{ id: el.id }];
   changed();
 }
@@ -3111,10 +3111,11 @@ const MENU_ACTS = {
   cut: cutSelection, duplicate: duplicateSelection, invertSel: invertSelection,
   selectNone: () => { state.selection = []; refresh(); },
   zoomSel: zoomToSelection, grid: toggleGrid, exportPng: () => showExport('png'),
+  dnaAll: () => setDNAAll(!dnaView.all, true),
   collapseAll, expandAll, themes: () => showThemes(),
 };
 // checkbox items whose state isn't mirrored by a toolbar button
-const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid') };
+const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid'), dnaAll: () => dnaView.all };
 
 // Tools menu mirrors the tool rail (so tools stay reachable when the rail is hidden)
 {
@@ -3413,6 +3414,14 @@ $('dnaToggle').addEventListener('click', () => setDNAView(!dnaView.show, true));
   try { saved = localStorage.getItem(DNA_VIEW_KEY); } catch { /* blocked */ }
   if (saved === 'off') setDNAView(false, false);
 }
+// View → All Strands as DNA: every plain line drawn as a molecule too (display only)
+const DNA_ALL_KEY = 'master-schemer-dna-all';
+function setDNAAll(all, remember) {
+  dnaView.all = all;
+  if (remember) try { localStorage.setItem(DNA_ALL_KEY, all ? 'on' : 'off'); } catch { /* full */ }
+  setDNAView(all || dnaView.show, remember); // turning it on shows molecules
+}
+try { if (localStorage.getItem(DNA_ALL_KEY) === 'on') { dnaView.all = true; invalidateRenderCache(); refresh(); } } catch { /* blocked */ }
 
 const THEME_KEY = 'master-schemer-theme';
 function setTheme(dark, remember) {
