@@ -77,6 +77,7 @@ body.hide-objects.hide-library #sidebar,
 body.hide-color.hide-props #panel { display: none; }
 body.hide-color.hide-props { --panel-w: 0px; }
 body.hide-notes { --notes-w: 0px; }
+body.hide-grid #gridRect { display: none; }
 
 button { font: inherit; color: inherit; }
 

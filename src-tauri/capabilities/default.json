@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Window basics, native open/save dialogs, and text-file read/write for user documents.",
+  "description": "Window basics, native open/save dialogs, and text-file read/write for user documents, binary write for PNG export.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -8,6 +8,7 @@
     "dialog:default",
     "fs:default",
     { "identifier": "fs:allow-read-text-file", "allow": [{ "path": "**" }] },
-    { "identifier": "fs:allow-write-text-file", "allow": [{ "path": "**" }] }
+    { "identifier": "fs:allow-write-text-file", "allow": [{ "path": "**" }] },
+    { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] }
   ]
 }

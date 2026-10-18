@@ -164,8 +164,7 @@ function zoomCenter(factor) {
   zoomAt([svg.clientWidth / 2, svg.clientHeight / 2], factor);
 }
 
-function fitView() {
-  const box = contentBBox();
+function fitView(box = contentBBox()) {
   const v = state.view;
   if (!box) { v.tx = 80; v.ty = 80; v.s = 1; refresh(); return; }
   const w = Math.max(box[2] - box[0], GRID), h = Math.max(box[3] - box[1], GRID);
@@ -177,7 +176,7 @@ function fitView() {
 
 $('zoomIn').addEventListener('click', () => zoomCenter(1.25));
 $('zoomOut').addEventListener('click', () => zoomCenter(0.8));
-$('zoomFit').addEventListener('click', fitView);
+$('zoomFit').addEventListener('click', () => fitView());
 $('zoomLabel').addEventListener('click', () => {
   const v = state.view;
   const c = screenToWorld([svg.clientWidth / 2, svg.clientHeight / 2]);
@@ -407,6 +406,26 @@ function selectAll() {
   refresh();
 }
 
+function invertSelection() {
+  const sel = new Set(state.selection.filter(s => s.seg === undefined).map(s => s.id));
+  state.selection = state.doc.elements
+    .filter(el => el.type !== 'arrow' && !sel.has(el.id)).map(el => ({ id: el.id }));
+  refresh();
+}
+
+function zoomToSelection() {
+  const els = selectedElements();
+  if (els.length) fitView(combinedBBox(els));
+}
+
+// grid visibility is a UI pref (localStorage), not part of the file
+const GRID_HIDDEN_KEY = 'master-schemer-grid-hidden';
+function toggleGrid() {
+  const hidden = document.body.classList.toggle('hide-grid');
+  try { localStorage.setItem(GRID_HIDDEN_KEY, hidden ? '1' : ''); } catch { /* full */ }
+}
+try { document.body.classList.toggle('hide-grid', localStorage.getItem(GRID_HIDDEN_KEY) === '1'); } catch { /* shown */ }
+
 window.addEventListener('keydown', e => {
   const t = e.target;
   if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
@@ -419,7 +438,11 @@ window.addEventListener('keydown', e => {
     else if (k === 's') { e.preventDefault(); saveJSON(e.shiftKey); }
     else if (k === 'c') { e.preventDefault(); copySelection(); }
     else if (k === 'v') { e.preventDefault(); pasteClipboard(); }
-    else if (k === 'e') { e.preventDefault(); exportSVG(); }
+    else if (k === 'e') { e.preventDefault(); e.shiftKey ? exportPNG() : exportSVG(); }
+    else if (k === 'x') { e.preventDefault(); cutSelection(); }
+    else if (k === 'd') { e.preventDefault(); duplicateSelection(); }
+    else if (k === 'i' && e.shiftKey) { e.preventDefault(); invertSelection(); }
+    else if (e.key === "'") { e.preventDefault(); toggleGrid(); }
     else if (k === 'o') { e.preventDefault(); e.shiftKey ? showRecent() : openFile(); }
     else if (k === 'g') { e.preventDefault(); e.shiftKey ? ungroupSelection() : groupSelection(); }
     else if (k === 'a') { e.preventDefault(); selectAll(); }
@@ -439,6 +462,7 @@ window.addEventListener('keydown', e => {
     case '+': case '=': zoomCenter(1.25); break;
     case '-': zoomCenter(0.8); break;
     case '1': fitView(); break;
+    case '2': zoomToSelection(); break;
     case '0': $('zoomLabel').click(); break;
     case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown': {
       const items = state.selection.filter(s => s.seg === undefined).map(s => byId(s.id)).filter(Boolean);
@@ -828,7 +852,9 @@ function placeAsset(asset, atWorld) {
 let clipboard = null;
 let pasteCount = 0;
 
-function copySelection() {
+// The selection as standalone copies: cards bring their contents, grouped
+// elements bring their whole group.
+function collectSelection() {
   const ids = new Set();
   for (const s of state.selection) {
     if (s.seg !== undefined) continue;
@@ -838,13 +864,32 @@ function copySelection() {
     if (el.type === 'card') for (const c of cardContents(el)) ids.add(c.id);
     if (el.group) for (const m of state.doc.elements) if (m.group === el.group) ids.add(m.id);
   }
-  if (!ids.size) { $('hint').textContent = 'Select something first, then copy it.'; return; }
+  if (!ids.size) return null;
   const els = state.doc.elements.filter(el => ids.has(el.id))
     .map(el => JSON.parse(JSON.stringify(el)));
   const groups = state.doc.groups.filter(g => els.some(el => el.group === g.id)).map(g => ({ ...g }));
-  clipboard = { elements: els, groups };
+  return { elements: els, groups };
+}
+
+function copySelection() {
+  const c = collectSelection();
+  if (!c) { $('hint').textContent = 'Select something first, then copy it.'; return false; }
+  clipboard = c;
   pasteCount = 0;
-  $('hint').textContent = `Copied ${els.length} object${els.length === 1 ? '' : 's'}.`;
+  $('hint').textContent = `Copied ${c.elements.length} object${c.elements.length === 1 ? '' : 's'}.`;
+  return true;
+}
+
+function cutSelection() {
+  if (copySelection()) { deleteSelection(); pasteCount = -1; } // paste lands where the cut was
+}
+
+function duplicateSelection() {
+  const c = collectSelection();
+  if (!c) return;
+  beginChange();
+  insertElements(c.elements, c.groups, solid => { for (const el of solid) shiftEl(el, GRID, GRID); });
+  $('hint').textContent = 'Duplicated.';
 }
 
 function pasteClipboard() {
@@ -2071,6 +2116,54 @@ async function exportSVG() {
   }
 }
 
+// Rasterize the export SVG at 2× (capped so huge schemes stay under canvas
+// limits). Returns a PNG blob, null for an empty canvas, or undefined if the
+// webview tainted the canvas (WebKit does for math foreignObjects).
+async function rasterizePNG(plain) {
+  const svgText = await exportSVGString({ plain });
+  render(); // export rendered unculled; restore the culled view
+  if (!svgText) return null;
+  const url = URL.createObjectURL(new Blob([svgText], { type: 'image/svg+xml' }));
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const k = Math.min(2, 8000 / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k);
+    c.height = Math.round(img.naturalHeight * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return await new Promise(res => c.toBlob(res, 'image/png'));
+  } catch { return undefined; } finally { URL.revokeObjectURL(url); }
+}
+
+async function exportPNG() {
+  state.selection = [];
+  refresh();
+  $('hint').textContent = 'Building PNG…';
+  let blob = await rasterizePNG(false), note = '';
+  if (blob === undefined) {
+    blob = await rasterizePNG(true);
+    note = ' Math labels were left out — export SVG to keep them.';
+  }
+  if (blob === null) { $('hint').textContent = 'Nothing to export yet — the canvas is empty.'; return; }
+  if (!blob) { $('hint').textContent = 'PNG export failed.'; return; }
+  try {
+    if (TAURI) {
+      const path = await TAURI.dialog.save({
+        defaultPath: 'scheme.png', filters: [{ name: 'PNG image', extensions: ['png'] }],
+      });
+      if (!path) return;
+      await TAURI.fs.writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+    } else {
+      download('scheme.png', blob, 'image/png');
+    }
+    $('hint').textContent = 'PNG exported.' + note;
+  } catch (err) {
+    $('hint').textContent = `Export failed: ${err.message || err}`;
+  }
+}
+
 // ---- open recent (last 50 files ever opened/saved, with thumbnails) ----
 // Kept in localStorage (the Tauri webview persists it per app). Under Tauri an
 // entry reopens by path; in a browser there is no path, so it falls back to the picker.
@@ -2297,7 +2390,28 @@ $('redoBtn').addEventListener('click', redo);
 const MENU_ACTS = {
   recent: () => showRecent(), delete: deleteSelection, selectAll, group: groupSelection, ungroup: ungroupSelection,
   showPanels: () => setHiddenPanels([]), hidePanels: () => setHiddenPanels(PANELS),
+  cut: cutSelection, duplicate: duplicateSelection, invertSel: invertSelection,
+  selectNone: () => { state.selection = []; refresh(); },
+  zoomSel: zoomToSelection, grid: toggleGrid, exportPng: exportPNG,
 };
+// checkbox items whose state isn't mirrored by a toolbar button
+const MENU_CHECKS = { grid: () => !document.body.classList.contains('hide-grid') };
+
+// Tools menu mirrors the tool rail (so tools stay reachable when the rail is hidden)
+{
+  const keyOf = Object.fromEntries(Object.entries(TOOL_KEYS).map(([k, t]) => [t, k.toUpperCase()]));
+  for (const n of $('toolrail').children) {
+    if (!n.dataset.tool) { $('toolsMenu').append(document.createElement('hr')); continue; }
+    const b = document.createElement('button');
+    b.setAttribute('role', 'menuitemradio');
+    b.dataset.pickTool = n.dataset.tool;
+    b.append(n.getAttribute('aria-label').replace(/ tool$/, ''));
+    const kbd = document.createElement('kbd');
+    kbd.textContent = keyOf[n.dataset.tool];
+    b.append(kbd);
+    $('toolsMenu').append(b);
+  }
+}
 const menubar = $('menubar');
 let openMenu = null;
 function setMenu(m) {
@@ -2313,6 +2427,10 @@ function setMenu(m) {
     it.disabled = target.disabled;
     if (it.getAttribute('role') === 'menuitemcheckbox') it.setAttribute('aria-checked', target.getAttribute('aria-pressed'));
   }
+  for (const it of m.querySelectorAll('[data-check]'))
+    it.setAttribute('aria-checked', String(MENU_CHECKS[it.dataset.check]()));
+  for (const it of m.querySelectorAll('[data-pick-tool]'))
+    it.setAttribute('aria-checked', String(state.tool === it.dataset.pickTool));
   for (const it of m.querySelectorAll('[data-panel]'))
     it.setAttribute('aria-checked', String(!hiddenPanels.includes(it.dataset.panel)));
 }
@@ -2325,6 +2443,7 @@ menubar.addEventListener('click', e => {
   if (item.dataset.click) $(item.dataset.click).click();
   else if (item.dataset.act) MENU_ACTS[item.dataset.act]();
   else if (item.dataset.panel) togglePanel(item.dataset.panel);
+  else if (item.dataset.pickTool) setTool(item.dataset.pickTool);
 });
 menubar.addEventListener('pointerover', e => {
   const title = e.target.closest('.menu-title');
