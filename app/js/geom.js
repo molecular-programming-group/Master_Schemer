@@ -34,6 +34,14 @@ export const rot90 = (p, c, dir) => dir > 0
   ? [c[0] - (p[1] - c[1]), c[1] + (p[0] - c[0])]
   : [c[0] + (p[1] - c[1]), c[1] - (p[0] - c[0])];
 
+// Rotate p by `deg` degrees about c (y down: positive = clockwise on screen).
+export function rotatePt(p, c, deg) {
+  if (!deg) return [p[0], p[1]];
+  const a = deg * Math.PI / 180, cs = Math.cos(a), sn = Math.sin(a);
+  const dx = p[0] - c[0], dy = p[1] - c[1];
+  return [c[0] + dx * cs - dy * sn, c[1] + dx * sn + dy * cs];
+}
+
 // Mirror p about c along an axis: 'h' flips left-right, 'v' flips top-bottom.
 export const flipPt = (p, c, axis) => axis === 'h'
   ? [2 * c[0] - p[0], p[1]] : [p[0], 2 * c[1] - p[1]];
@@ -147,6 +155,62 @@ export function roundedPathD(pts, radius) {
   d += ` L${last[0]} ${last[1]}`;
   return d;
 }
+
+// A smooth curve through every vertex: a centripetal Catmull-Rom spline (no
+// cusps or self-loops when vertices are unevenly spaced), as cubic Bézier spans
+// [p1, c1, c2, p2]. Open ends continue straight through a reflected phantom
+// vertex; `closed` wraps around to the first vertex.
+export function smoothSpans(pts, closed = false) {
+  const n = pts.length;
+  if (n < 2) return [];
+  const at = i => {
+    if (closed) return pts[(i % n + n) % n];
+    if (i < 0) return [2 * pts[0][0] - pts[1][0], 2 * pts[0][1] - pts[1][1]];
+    if (i >= n) return [2 * pts[n - 1][0] - pts[n - 2][0], 2 * pts[n - 1][1] - pts[n - 2][1]];
+    return pts[i];
+  };
+  const spans = [];
+  for (let i = 0; i < (closed ? n : n - 1); i++) {
+    const p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+    const a1 = Math.sqrt(dist(p0, p1)) || 1e-6, a2 = Math.sqrt(dist(p1, p2)) || 1e-6, a3 = Math.sqrt(dist(p2, p3)) || 1e-6;
+    const c1 = [0, 1].map(k => (a1 * a1 * p2[k] - a2 * a2 * p0[k] + (2 * a1 * a1 + 3 * a1 * a2 + a2 * a2) * p1[k]) / (3 * a1 * (a1 + a2)));
+    const c2 = [0, 1].map(k => (a3 * a3 * p1[k] - a2 * a2 * p3[k] + (2 * a3 * a3 + 3 * a3 * a2 + a2 * a2) * p2[k]) / (3 * a3 * (a3 + a2)));
+    spans.push([p1, c1, c2, p2]);
+  }
+  return spans;
+}
+
+const r3 = v => Math.round(v * 1000) / 1000 || 0;
+
+// SVG path data for the smooth curve through pts.
+export function smoothD(pts, closed = false) {
+  const sp = smoothSpans(pts, closed);
+  if (!sp.length) return `M${pts.map(p => p.join(' ')).join(' L')}`;
+  return `M${sp[0][0][0]} ${sp[0][0][1]}` + sp.map(([, c1, c2, q]) =>
+    ` C${r3(c1[0])} ${r3(c1[1])} ${r3(c2[0])} ${r3(c2[1])} ${q[0]} ${q[1]}`).join('') + (closed ? ' Z' : '');
+}
+
+// The same curve sampled as a dense polyline (about one point per 4 units), so
+// arc-length geometry — segments, labels, links, caps — follows what is drawn.
+export function smoothPts(pts, closed = false) {
+  const sp = smoothSpans(pts, closed);
+  if (!sp.length) return pts.map(p => [p[0], p[1]]);
+  const out = [[sp[0][0][0], sp[0][0][1]]];
+  for (const [p, c1, c2, q] of sp) {
+    const k = Math.max(4, Math.min(64, Math.ceil((dist(p, c1) + dist(c1, c2) + dist(c2, q)) / 4)));
+    for (let j = 1; j <= k; j++) {
+      const t = j / k, u = 1 - t;
+      const b = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t];
+      out.push([0, 1].map(i => r3(b[0] * p[i] + b[1] * c1[i] + b[2] * c2[i] + b[3] * q[i])));
+    }
+  }
+  return out;
+}
+
+// The polyline a strand is drawn along: its vertices, or the smooth curve
+// through them (el.smooth). Everything measured along a strand — segments
+// (t0/t1), labels, caps, ticks, links — goes through this.
+export const drawnPts = el => (el.smooth && el.pts.length > 2 ? smoothPts(el.pts) : el.pts);
 
 export function bboxOfPts(pts) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
