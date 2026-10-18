@@ -414,7 +414,9 @@ export const tools = {
         // a second click on a selected duplex (no drag) selects the strands it
         // joins, which are hidden inside it — see up()
         const cycle = duplexLink(el) && state.selection.length === 1 && isSelected(entry.id, undefined) ? el : null;
-        if (!isSelected(entry.id, entry.seg)) state.selection = [entry];
+        // (a domain of a strand in a multi-selection, or Ctrl+dragged, moves/clones the whole selection)
+        const inSel = entry.seg !== undefined && isSelected(entry.id, undefined) && (state.selection.length > 1 || e.ctrlKey || e.metaKey);
+        if (!isSelected(entry.id, entry.seg) && !inSel) state.selection = [entry];
         changed();
         // Ctrl+drag clones the selection and moves the copies
         if (e.ctrlKey || e.metaKey) {

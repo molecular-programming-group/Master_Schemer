@@ -56,7 +56,7 @@ async function run(name, story, { hide = ['library', 'notes'] } = {}) {
   let shot = 0, cur = [W / 2, H / 2];
   const t = {
     pg, W, H, DRY, errs,
-    wait: ms => pg.waitForTimeout(DRY ? 30 : ms),
+    wait: ms => pg.waitForTimeout(DRY ? Math.min(ms, 300) : ms), // (dry: still long enough for deferred clicks)
     snap: async label => { if (DRY) await pg.screenshot({ path: `${dir}/${String(++shot).padStart(2, '0')}_${label}.png` }); },
     // run fn(model, app-ish globals) in the page; args are JSON
     m: (fn, arg) => pg.evaluate(async ([src, arg]) => {
@@ -80,7 +80,7 @@ async function run(name, story, { hide = ['library', 'notes'] } = {}) {
     await t.wait(ms);
     await pg.evaluate(() => { document.getElementById('tuttitle').style.display = 'none'; });
   };
-  t.move = async (x, y, steps = 18) => { await pg.mouse.move(x, y, { steps: DRY ? 1 : steps }); cur = [x, y]; };
+  t.move = async (x, y, steps = 18) => { await pg.mouse.move(x, y, { steps: DRY ? Math.min(steps, 4) : steps }); cur = [x, y]; };
   t.center = async sel => { const bx = await pg.locator(sel).first().boundingBox(); if (!bx) throw new Error('no box: ' + sel); return [bx.x + bx.width / 2, bx.y + bx.height / 2]; };
   t.click = async (sel, pause = 350) => { const [x, y] = await t.center(sel); await t.move(x, y); await t.wait(200); await pg.mouse.click(x, y); await t.wait(pause); };
   t.dbl = async (sel, pause = 400) => { const [x, y] = await t.center(sel); await t.move(x, y); await t.wait(200); await pg.mouse.dblclick(x, y); await t.wait(pause); };
@@ -93,7 +93,8 @@ async function run(name, story, { hide = ['library', 'notes'] } = {}) {
   };
   t.key = async (k, pause = 250) => { await pg.keyboard.press(k); await t.wait(pause); };
   t.type = async (s, delay = 40) => { await pg.keyboard.type(s, { delay: DRY ? 0 : delay }); };
-  t.tool = k => t.key(k, 250);
+  t.blur = () => pg.evaluate(() => document.activeElement?.blur?.());
+  t.tool = async k => { await t.blur(); await t.key(k, 250); };
   // world ↔ screen
   t.W2S = (wx, wy) => pg.evaluate(async ([wx, wy]) => { const m = await import('/js/model.js'); const r = document.getElementById('canvas').getBoundingClientRect(); const v = m.state.view; return [r.left + v.tx + wx * v.s, r.top + v.ty + wy * v.s]; }, [wx, wy]);
   t.at = async (wx, wy, pause) => t.clickAt(...await t.W2S(wx, wy), pause);
@@ -137,7 +138,7 @@ async function run(name, story, { hide = ['library', 'notes'] } = {}) {
   t.wdrag = async (wpts, steps, mods) => { const s = []; for (const p of wpts) s.push(await t.W2S(...p)); await t.drag(s, steps, mods); };
   t.ctx = async (wx, wy, pause = 900) => { const [x, y] = await t.W2S(wx, wy); await t.move(x, y); await t.wait(200); await pg.mouse.click(x, y, { button: 'right' }); await t.wait(pause); await t.snap('ctx'); };
   t.ctxItem = async (text, pause = 500) => t.click(`#ctxMenu button:has-text("${text}"), .ctx-menu button:has-text("${text}")`, pause);
-  t.field = async (sel, value, delay = 45) => { await t.reveal(sel); await t.click(sel, 150); await pg.keyboard.press('Control+A'); await t.type(value, delay); await t.key('Enter', 300); };
+  t.field = async (sel, value, delay = 45) => { await t.reveal(sel); await t.click(sel, 150); await pg.keyboard.press('Control+A'); await t.type(value, delay); await t.key('Enter', 300); await t.blur(); };
   t.F = name => `#panel label.field:has(> span:text-is("${name}"))`; // a properties-panel row
   t.pick = async (name, value, pause = 900) => { // choose in a panel <select>, visibly
     const sel = `${t.F(name)} select`;
@@ -146,7 +147,7 @@ async function run(name, story, { hide = ['library', 'notes'] } = {}) {
   };
   t.check = async (name, pause = 700) => { const s = `#panel label:has-text("${name}") input[type=checkbox]`; await t.reveal(s); await t.click(s, pause); };
   t.fill = async (name, value, delay) => t.field(`${t.F(name)} input, ${t.F(name)} textarea`, value, delay);
-  t.swatch = i => t.click(`.swatches:not(:has(.slot)) .swatch >> nth=${i}`, 350);
+  t.swatch = async i => { const s = `.swatches:not(:has(.slot)) .swatch >> nth=${i}`; await t.reveal(s); await t.click(s, 350); };
 
   try {
     await story(t);
