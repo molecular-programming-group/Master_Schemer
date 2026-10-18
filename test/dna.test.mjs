@@ -74,3 +74,9 @@ test('snap8 euclid steps measure along diagonals', () => {
   assert.ok(Math.abs(Math.hypot(...p) / 2 - Math.round(Math.hypot(...p) / 2)) < 1e-3);
   assert.deepEqual(snap8([0, 0], [31, 2], 10), [30, 0]);
 });
+
+test('seqLetters: digits inside a name mean a name, not bases', async () => {
+  const { seqLetters } = await import('../app/js/dna.js');
+  assert.equal(seqLetters('GATA1'), '');
+  assert.equal(seqLetters("5′-ACGT TG-3′"), 'ACGTTG');
+});

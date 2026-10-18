@@ -3,13 +3,13 @@ import {
   state, COLORS, setOnChanged, beginChange, changed, touch, undo, redo, newId, addElement,
   deleteSelection, selectionSingle, byId, newDoc, loadDocJSON,
   isSemantic, resolveColor, resolveLabel, reorder, pruneGroups,
-  byGroup, childGroups, topLevelGroups, groupElementMembers,
+  byGroup, childGroups, topLevelGroups, groupElementMembers, remapSegLinks, domainKey, domainUses, syncDomains,
 } from './model.js';
 import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
   linkStrand, rungSeqs, refSeq, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, strandView, lookOf, dnaView, invalidateRenderCache,
-  FONTS, LINE_H, INLINE_TAGS, inlineHTML,
+  FONTS, LINE_H, INLINE_TAGS, inlineHTML, toon, outlined,
 } from './render.js';
 import { DEFAULT_BPG, seqOf, spacing, tintRef, uAt, worldPerA, gridPitch, naturalBases, seqLetters } from './dna.js';
 import MOLS from './mol-tex.js';
@@ -486,9 +486,13 @@ function whollySelectedGroups() {
     .map(g => g.id));
 }
 
+// The selection is exactly one group (as a click on a grouped object makes it).
+const isOneGroup = () => state.selection.some(s => s.seg === undefined) &&
+  [...whollySelectedGroups()].some(gid => groupElementMembers(gid).length === state.selection.length);
+
 function groupSelection() {
   const els = selectedElements();
-  if (els.length < 2) return;
+  if (els.length < 2 || isOneGroup()) return; // regrouping one group would only wrap it
   beginChange();
   const G = { id: newId(), name: `group ${state.doc.groups.length + 1}` };
   state.doc.groups.push(G);
@@ -544,6 +548,7 @@ function removeFromGroup(el) {
 // explicitly selected entries, or elements that span exactly two groups.
 function linkTargetsFromSelection() {
   const entries = state.selection;
+  if (entries.some(s => ['link', 'arrow'].includes(byId(s.id)?.type))) return null; // links join things, not links
   if (entries.length === 2) {
     return entries.map(s => (s.seg !== undefined ? { id: s.id, seg: s.seg } : { id: s.id }));
   }
@@ -621,14 +626,16 @@ try {
 
 window.addEventListener('keydown', e => {
   const t = e.target;
+  // Save works from anywhere, mid-typing included (else the browser saves the page)
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveJSON(e.shiftKey); return; }
+  if (document.querySelector('.modal-overlay')) return; // a dialog is up: its own keys only
   if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
   if (t instanceof HTMLElement && t.isContentEditable) return; // notes editor owns its keys
   if (e.key === ' ') { spaceHeld = true; document.body.classList.add('panning'); e.preventDefault(); return; }
   if ((e.ctrlKey || e.metaKey)) {
     const k = e.key.toLowerCase();
-    if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
-    else if (k === 'y') { e.preventDefault(); redo(); }
-    else if (k === 's') { e.preventDefault(); saveJSON(e.shiftKey); }
+    if (k === 'z') { e.preventDefault(); e.shiftKey ? redoDoc() : undoDoc(); }
+    else if (k === 'y') { e.preventDefault(); redoDoc(); }
     else if (k === 'c') { e.preventDefault(); copySelection(); }
     else if (k === 'v') { e.preventDefault(); pasteClipboard(); }
     else if (k === 'e') { e.preventDefault(); showExport(e.shiftKey ? 'png' : 'svg'); }
@@ -644,7 +651,7 @@ window.addEventListener('keydown', e => {
     else if (e.code === 'BracketLeft') { e.preventDefault(); reorder(e.shiftKey ? 'back' : 'down'); }
     return;
   }
-  const tool = TOOL_KEYS[e.key.toLowerCase()];
+  const tool = !e.altKey && TOOL_KEYS[e.key.toLowerCase()];
   if (tool) { setTool(tool); return; }
   switch (e.key) {
     case 'Delete': case 'Backspace': deleteSelection(); break;
@@ -663,7 +670,7 @@ window.addEventListener('keydown', e => {
       e.preventDefault();
       const dx = (e.key === 'ArrowLeft' ? -GRID : e.key === 'ArrowRight' ? GRID : 0);
       const dy = (e.key === 'ArrowUp' ? -GRID : e.key === 'ArrowDown' ? GRID : 0);
-      beginChange();
+      if (!e.repeat) beginChange(); // a held arrow key is one move
       for (const el of items) shiftEl(el, dx, dy);
       changed();
       break;
@@ -687,20 +694,6 @@ function setLabel(target, v) {
   target.label = v;
 }
 
-// A shared label can be bound to a memory colour slot: every element or segment
-// carrying the label then paints from that slot, colour and pattern alike. This
-// repaints all current users; new ones pick it up as they attach to the label.
-function applyLabelColorSlot(labelSlot) {
-  if (!labelSlot?.colorSlot) return;
-  const labelRef = `slot:${labelSlot.id}`, colorRef = `slot:${labelSlot.colorSlot}`;
-  for (const el of state.doc.elements) {
-    if (el.label === labelRef && el.color !== undefined) el.color = colorRef;
-    for (const seg of el.segments || []) if (seg.label === labelRef) seg.color = colorRef;
-  }
-  const paletteSlot = state.doc.palette.find(s => s.id === labelSlot.colorSlot);
-  if (paletteSlot) propagateSlot(paletteSlot); // push its pattern onto the new users
-}
-
 // ---- object sidebar (semantic registry) ----
 
 function displayName(el, i) {
@@ -722,7 +715,7 @@ const domainString = el => (el.segments || [])
   .slice().sort((a, b) => a.t0 - b.t0).map(s => s.string || '').join('');
 
 // Inline rename on double-click; single click selects.
-function sideItem({ depth, name, color, selected, onSelect, onRename, collapsible, collapsed, onToggle, dragRef, ctx }) {
+function sideItem({ depth, name, color, selected, onSelect, onRename, collapsible, collapsed, onToggle, dragRef, ctx, docEdit = true }) {
   const row = document.createElement('div');
   row.className = 'side-item';
   row.style.paddingLeft = `${8 + depth * 14}px`;
@@ -782,7 +775,9 @@ function sideItem({ depth, name, color, selected, onSelect, onRename, collapsibl
       if (done) return;
       done = true;
       const v = input.value;
-      if (commit && v !== name) { beginChange(); onRename(v); changed(); }
+      input.blur(); // else the sidebar, seeing a focused field, skips the redraw (mid-rename guard)
+      if (commit && v !== name && !docEdit) { onRename(v); refresh(); } // library names aren't document data
+      else if (commit && v !== name) { beginChange(); onRename(v); changed(); }
       else refresh();
     };
     input.addEventListener('blur', () => finish(true));
@@ -930,7 +925,7 @@ function renderSidebar() {
       selected: state.selection.some(s => s.id === card.id),
       onSelect: () => { state.selection = [{ id: card.id }]; refresh(); },
       onRename: v => { card.title = v; },
-      dragRef: { kind: 'el', id: card.id },
+      dragRef: { kind: 'el', id: card.id }, ctx: true,
     }, groupsHere.length + inside.length);
     row.classList.add('side-card');
     if (box) {
@@ -952,7 +947,69 @@ function renderSidebar() {
     p.textContent = 'Objects you draw with the model tools appear here. Promote an annotation to track it too.';
     body.appendChild(p);
   }
+  renderDomains();
   renderLibrary();
+}
+
+// ---- domains (named lines and segments, see model.domainKey) ----
+// One row per name: its colour, every use. Clicking selects all its uses (so the
+// palette colours the domain); double-click renames them all.
+function renderDomains() {
+  const body = $('domainsBody');
+  if (body.contains(document.activeElement)) return; // mid-rename
+  body.replaceChildren();
+  const byName = new Map();
+  for (const u of domainUses()) {
+    if (!byName.has(u.key.name)) byName.set(u.key.name, []);
+    byName.get(u.key.name).push(u);
+  }
+  document.body.classList.toggle('no-domains', !byName.size);
+  const plain = n => n.replace(/[$\\{}^_]/g, ''); // sort as read: $\alpha$ by "alpha"
+  for (const [name, uses] of [...byName].sort((p, q) => plain(p[0]).localeCompare(plain(q[0]), undefined, { numeric: true }))) {
+    const shared = state.doc.domains[name];
+    const base = uses.find(u => !u.key.comp) || uses[0];
+    const refs = uses.map(u => (u.seg !== undefined ? { id: u.el.id, seg: u.seg } : { id: u.el.id }));
+    const row = sideItem({
+      depth: 0, name,
+      color: resolveColor(shared?.color ?? base.obj.color ?? base.el.color),
+      selected: refs.every(r => state.selection.some(s => s.id === r.id && s.seg === r.seg)),
+      onSelect: () => { state.selection = refs; refresh(); },
+      onRename: v => renameDomain(name, v.trim()),
+    });
+    const comp = uses.find(u => u.key.comp);
+    if (comp) {
+      const c = document.createElement('span');
+      c.className = 'dom-comp';
+      c.innerHTML = `/ ${inlineHTML(resolveLabel(comp.obj.label))}`;
+      row.querySelector('.side-name').after(c);
+    }
+    const own = uses.filter(u => u.obj.ownColor).length;
+    if (own) {
+      const o = document.createElement('span');
+      o.className = 'dom-own';
+      o.textContent = `${own} own`;
+      o.title = `${own} use${own > 1 ? 's keep their' : ' keeps its'} own colour`;
+      row.appendChild(o);
+    }
+    const n = document.createElement('span');
+    n.className = 'lib-count';
+    n.textContent = uses.length;
+    row.appendChild(n);
+    row.title = `${shared ? 'Shared colour' : 'No shared colour yet'} — click to select every use, then pick a colour · double-click to rename all`;
+    body.appendChild(row);
+  }
+}
+
+// Rename every use of a domain (a* stays the complement of the new name); its
+// shared colour goes along, or gives way to the colour of a name it merges into.
+function renameDomain(from, to) {
+  if (!to || to === from) return;
+  for (const { obj, key } of domainUses()) {
+    if (key.name !== from) continue;
+    obj.label = !key.comp ? to : key.end && to.endsWith('$') ? to.slice(0, -1) + key.suf + '$' : `${to}*`;
+  }
+  const doms = state.doc.domains;
+  if (doms[from]) { doms[to] ??= doms[from]; delete doms[from]; }
 }
 
 // ---- asset library (persists across sessions, transferable as a file) ----
@@ -1037,33 +1094,26 @@ try {
   }
 } catch { /* storage blocked — skip seeding */ }
 
-function assetFromSelection() {
-  const ids = new Set();
-  for (const s of state.selection) {
-    if (s.seg !== undefined) continue;
-    const el = byId(s.id);
-    if (!el) continue;
-    ids.add(el.id);
-    if (el.type === 'card') for (const c of cardContents(el)) ids.add(c.id);
-    if (el.group) for (const m of state.doc.elements) if (m.group === el.group) ids.add(m.id);
+// Memory-slot refs ('slot:<id>' colours and labels) resolved to plain values, for
+// copies leaving the document or a slot going away: read from `palette`/`labels`;
+// refs to ids in `keep` stay live.
+function freezeRefs(objs, palette = state.doc.palette, labels = state.doc.labelSlots, keep = new Set()) {
+  const live = r => typeof r === 'string' && r.startsWith('slot:') && !keep.has(r.slice(5));
+  for (const o of objs.flatMap(el => [el, ...(el.segments || [])])) {
+    for (const k of ['color', 'fill', 'patternBg'])
+      if (live(o[k])) o[k] = palette.find(sl => `slot:${sl.id}` === o[k])?.color ?? resolveColor(o[k]);
+    if (live(o.label)) o.label = labels.find(sl => `slot:${sl.id}` === o.label)?.text ?? '';
   }
-  if (!ids.size) {
+}
+
+function assetFromSelection() {
+  const c = collectSelection();
+  if (!c) {
     $('hint').textContent = 'Select something first, then save it to the library.';
     return;
   }
-  const els = state.doc.elements.filter(el => ids.has(el.id))
-    .map(el => JSON.parse(JSON.stringify(el)));
-  // freeze palette/label slot refs — another document won't have these slots
-  for (const el of els) {
-    if (el.color !== undefined) el.color = resolveColor(el.color);
-    if (el.label) el.label = resolveLabel(el.label);
-    for (const seg of el.segments || []) {
-      seg.color = resolveColor(seg.color);
-      seg.label = resolveLabel(seg.label);
-    }
-  }
-  const groups = state.doc.groups.filter(g => els.some(el => el.group === g.id))
-    .map(g => ({ ...g }));
+  const { elements: els, groups } = c;
+  freezeRefs(els); // another document won't have these slots
   library.push({ id: newId(), name: `asset ${library.length + 1}`, elements: els, groups });
   saveLibrary();
   refresh();
@@ -1094,11 +1144,12 @@ function insertElements(srcElements, srcGroups, positioner) {
       el.from = idMap.get(el.from);
       el.to = idMap.get(el.to);
     } else if (el.type === 'link') {
-      // keep only if both endpoints came along; remap element refs, drop group refs
-      if (el.a?.id && !idMap.has(el.a.id)) return false;
-      if (el.b?.id && !idMap.has(el.b.id)) return false;
-      if (el.a?.id) el.a = { ...el.a, id: idMap.get(el.a.id) };
-      if (el.b?.id) el.b = { ...el.b, id: idMap.get(el.b.id) };
+      // keep only if both endpoints came along, then point it at the copies
+      for (const k of ['a', 'b']) {
+        const r = el[k];
+        if (!(r?.id ? idMap.has(r.id) : groupMap.has(r?.group))) return false;
+        el[k] = r.id ? { ...r, id: idMap.get(r.id) } : { group: groupMap.get(r.group) };
+      }
     }
     return true;
   });
@@ -1129,7 +1180,8 @@ let clipboard = null;
 let pasteCount = 0;
 
 // The selection as standalone copies: cards bring their contents, grouped
-// elements bring their whole group.
+// elements bring their whole group (and the groups it nests in), and links
+// whose ends all came along come too (a duplex between two copied strands).
 function collectSelection() {
   const ids = new Set();
   for (const s of state.selection) {
@@ -1140,11 +1192,16 @@ function collectSelection() {
     if (el.type === 'card') for (const c of cardContents(el)) ids.add(c.id);
     if (el.group) for (const m of state.doc.elements) if (m.group === el.group) ids.add(m.id);
   }
-  if (!ids.size) return null;
+  const gids = new Set();
+  for (const el of state.doc.elements) if (ids.has(el.id))
+    for (let g = el.group && byGroup(el.group); g && !gids.has(g.id); g = g.parent && byGroup(g.parent)) gids.add(g.id);
+  const along = r => (r?.id ? ids.has(r.id) : gids.has(r?.group));
+  for (const l of state.doc.elements) if (l.type === 'link' && along(l.a) && along(l.b)) ids.add(l.id);
   const els = state.doc.elements.filter(el => ids.has(el.id))
     .map(el => JSON.parse(JSON.stringify(el)));
-  const groups = state.doc.groups.filter(g => els.some(el => el.group === g.id)).map(g => ({ ...g }));
-  return { elements: els, groups };
+  if (!els.some(el => el.type !== 'link' && el.type !== 'arrow')) return null; // nothing that pastes on its own
+  const groups = state.doc.groups.filter(g => gids.has(g.id)).map(g => ({ ...g }));
+  return { elements: els, groups, palette: structuredClone(state.doc.palette), labels: structuredClone(state.doc.labelSlots) };
 }
 
 function copySelection() {
@@ -1157,7 +1214,11 @@ function copySelection() {
 }
 
 function cutSelection() {
-  if (copySelection()) { deleteSelection(); pasteCount = -1; } // paste lands where the cut was
+  if (!copySelection()) return;
+  // remove what was copied (a group member brings its whole group)
+  state.selection = clipboard.elements.filter(el => el.type !== 'link').map(el => ({ id: el.id }));
+  deleteSelection();
+  pasteCount = -1; // paste lands where the cut was
 }
 
 function duplicateSelection() {
@@ -1172,7 +1233,11 @@ function pasteClipboard() {
   if (!clipboard) return;
   beginChange();
   const off = GRID * ++pasteCount; // each paste steps further so copies don't stack
-  insertElements(clipboard.elements, clipboard.groups, solid => {
+  // slots this doc lacks (copied from another one) paste as their copied values
+  const els = structuredClone(clipboard.elements);
+  freezeRefs(els, clipboard.palette, clipboard.labels,
+    new Set([...state.doc.palette, ...state.doc.labelSlots].map(sl => sl.id)));
+  insertElements(els, clipboard.groups, solid => {
     for (const el of solid) shiftEl(el, off, off);
   });
   $('hint').textContent = 'Pasted.';
@@ -1200,7 +1265,7 @@ async function exportLibrary() {
 function mergeLibraryJSON(text) {
   const data = JSON.parse(text);
   if (!Array.isArray(data.assets)) throw new Error('not a library file');
-  library.push(...data.assets);
+  library.push(...data.assets.map(a => ({ ...a, id: newId() }))); // importing twice mustn't share ids
   saveLibrary();
   refresh();
   $('hint').textContent = `Imported ${data.assets.length} asset${data.assets.length === 1 ? '' : 's'}.`;
@@ -1286,6 +1351,7 @@ function renderLibrary() {
         if (libOpen.delete(cat)) libOpen.add(v.trim() || MY_ASSETS);
         saveLibrary();
       },
+      docEdit: false,
     });
     head.classList.add('lib-cat');
     const count = document.createElement('span');
@@ -1317,7 +1383,7 @@ function renderLibrary() {
       const row = sideItem({
         depth: 1, name: asset.name || 'asset', color: null, selected: false,
         onSelect: () => placeAsset(asset),
-        onRename: v => { asset.name = v; saveLibrary(); },
+        onRename: v => { asset.name = v; saveLibrary(); }, docEdit: false,
       });
       row.insertBefore(assetThumbnail(asset), row.querySelector('.side-name'));
       row.draggable = true;
@@ -1390,19 +1456,45 @@ function checkboxRow(text, get, set) {
   return lab;
 }
 
+// A view of el whose `color` is its fill, for the palette to paint (patterns pass through).
+const asFill = el => new Proxy(el, {
+  get: (o, k) => o[k === 'color' ? 'fill' : k],
+  set: (o, k, v) => { o[k === 'color' ? 'fill' : k] = v; return true; },
+});
+
+// A named domain's colour, for the palette to paint: writes go to the name
+// (doc.domains), so every use follows; reads fall back to this use. A new name
+// starts from this use's pattern, so colouring it doesn't strip one.
+function domainTarget(use) {
+  const name = domainKey(use.label).name, doms = state.doc.domains;
+  return new Proxy(use, {
+    get: (o, k) => (k === 'domain' ? name : doms[name]?.[k] ?? (k === 'color' || !doms[name] ? o[k] : undefined)),
+    set: (o, k, v) => {
+      doms[name] ||= Object.fromEntries(['pattern', 'patternBg', 'patternScale'].filter(p => o[p] !== undefined).map(p => [p, o[p]]));
+      doms[name][k] = v;
+      return true;
+    },
+    deleteProperty: (o, k) => { delete doms[name]?.[k]; return true; },
+  });
+}
+// a line or segment labelled as a domain is coloured through its name
+const viaDomain = o => (o && domainKey(o.label) && !o.ownColor && (o.type === 'path' || o.type === undefined) ? domainTarget(o) : o);
+
 // Every color target in the current selection (elements and segments).
 function colorTargets() {
   const out = [];
   for (const s of state.selection) {
     const el = byId(s.id);
     if (!el) continue;
-    if (s.seg !== undefined) { const seg = el.segments?.[s.seg]; if (seg) out.push(seg); }
+    if (s.seg !== undefined) { const seg = el.segments?.[s.seg]; if (seg) out.push(viaDomain(seg)); }
     else if (duplexLink(el)) {
       // a duplex wears its strands' colours; with one backbone's picker open, just that one
       const one = openPicker?.key.match(`^bb:${el.id}:([ab])$`)?.[1];
-      out.push(...new Set(one ? [backbone(el[one])] : [backbone(el.a), backbone(el.b)]));
+      out.push(...[...new Set(one ? [backbone(el[one])] : [backbone(el.a), backbone(el.b)])].map(viaDomain));
     }
+    else if (el.type === 'path') out.push(viaDomain(el));
     else if (el.color !== undefined) out.push(el);
+    else if (el.type === 'link') out.push(asFill(el)); // a link's colour is its fill
   }
   return out;
 }
@@ -1592,6 +1684,7 @@ function propagateSlot(slot) {
     push(el);
     for (const seg of el.segments || []) push(seg);
   }
+  for (const d of Object.values(state.doc.domains)) push(d); // their uses take it from there
 }
 
 // Paint a slot's colour — and, when it carries a pattern, a CSS approximation
@@ -1642,14 +1735,15 @@ function paletteSection() {
     Object.assign(hexv => {
       state.color = hexv;
       for (const t of colorTargets()) t.color = hexv;
+      syncDomains(); // a domain's other uses follow live
       render();
-    }, { begin: beginChange }),
+    }, { begin: () => { if (colorTargets().length) beginChange(); } }), // no selection: just the pen colour
     changed);
   sec.appendChild(fieldRow('Custom color', mainPick));
 
   // memory slots: elements store slot:<id>, so editing a slot recolors them all.
-  // Click selects; Apply pushes the slot onto the selection; Edit opens the popup.
-  // Slots are draggable to reorder.
+  // Click applies the slot (to the selection, else to what you draw next);
+  // double-click opens its editor. Slots are draggable to reorder.
   const slotsWrap = document.createElement('div');
   slotsWrap.className = 'swatches';
   const reorder = (fromId, toId) => {
@@ -1664,9 +1758,10 @@ function paletteSection() {
     const b = document.createElement('button');
     b.className = 'swatch slot';
     paintSwatch(b, slot);
-    b.title = `${slot.name || 'slot'} — click to select, drag to reorder`;
-    if (activeSlot === slot.id) b.setAttribute('aria-pressed', 'true');
-    b.addEventListener('click', () => { activeSlot = slot.id; renderPanel(); });
+    b.title = `${slot.name || 'slot'} — click to apply, double-click to edit, drag to reorder`;
+    if (currentColor() === `slot:${slot.id}`) b.setAttribute('aria-pressed', 'true');
+    b.addEventListener('click', () => { activeSlot = slot.id; applyColor(`slot:${slot.id}`, slot); });
+    b.addEventListener('dblclick', () => openSlotEditor(slot.id));
     b.draggable = true;
     b.addEventListener('dragstart', e => {
       e.dataTransfer.setData('text/slot-id', slot.id); e.dataTransfer.effectAllowed = 'move';
@@ -1700,14 +1795,17 @@ function paletteSection() {
 
   const slot = state.doc.palette.find(s => s.id === activeSlot);
   if (slot) {
-    const row = document.createElement('div');
-    row.className = 'btn-row';
-    row.append(
-      smallButton('Apply', () => applyColor(`slot:${slot.id}`, slot),
-        'Apply this slot to the selected object(s)'),
-      smallButton('Edit', () => openSlotEditor(slot.id),
-        'Open the slot editor to change its colour + pattern'));
-    sec.appendChild(fieldRow(`Slot: ${slot.name || 'slot'}`, row));
+    sec.appendChild(fieldRow(`Slot: ${slot.name || 'slot'}`, smallButton('Edit slot…', () => openSlotEditor(slot.id),
+      'Change this slot’s colour + pattern — everything using it follows')));
+  }
+  // say when a colour goes to whole domains, not just the selected pieces
+  const names = [...new Set(colorTargets().map(t => t.domain).filter(Boolean))];
+  if (names.length) {
+    const p = document.createElement('p');
+    p.className = 'muted domain-note';
+    p.innerHTML = `Colours every domain named ${names.slice(0, 3).map(n => `<b>${inlineHTML(n)}</b>`).join(', ')}` +
+      `${names.length > 3 ? '…' : ''} (complements a lighter shade).`;
+    sec.appendChild(p);
   }
   return sec;
 }
@@ -1773,6 +1871,7 @@ function showThemes() {
   list.querySelector('.theme-tile')?.focus();
 }
 window.addEventListener('keydown', e => { if (e.key === 'Escape' && $('themes-modal')) closeThemes(); });
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && slotModal) closeSlotEditor(); });
 
 // ---- slot editor popup ----
 // A modal (outside the panel) that edits the selected slot's colour + pattern.
@@ -1792,7 +1891,6 @@ function renderSlotModal() {
     overlay.id = 'slot-modal';
     overlay.className = 'modal-overlay';
     overlay.addEventListener('pointerdown', e => { if (e.target === overlay) closeSlotEditor(); });
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && slotModal) closeSlotEditor(); });
     document.body.appendChild(overlay);
   }
   overlay.innerHTML = '';
@@ -1813,7 +1911,7 @@ function renderSlotModal() {
   const nInput = boundInput(() => slot.name || '', v => { slot.name = v; }, { placeholder: 'slot name' });
   const slotPick = colorPicker(`slot:${slot.id}`,
     () => slot.color,
-    Object.assign(hexv => { slot.color = hexv; render(); }, { begin: beginChange }),
+    Object.assign(hexv => { slot.color = hexv; syncDomains(); render(); }, { begin: beginChange }),
     changed, renderSlotModal);
   const del = document.createElement('button');
   del.className = 'btn danger';
@@ -1822,10 +1920,9 @@ function renderSlotModal() {
     beginChange();
     // freeze current colour into every user of the slot before removing it
     const frozen = slot.color;
-    for (const el of state.doc.elements) {
-      if (el.color === `slot:${slot.id}`) el.color = frozen;
-      for (const seg of el.segments || []) if (seg.color === `slot:${slot.id}`) seg.color = frozen;
-    }
+    freezeRefs([...state.doc.elements, ...state.doc.palette, ...Object.values(state.doc.domains)], undefined, undefined,
+      new Set([...state.doc.palette, ...state.doc.labelSlots].map(sl => sl.id).filter(id => id !== slot.id)));
+    for (const l of state.doc.labelSlots) if (l.colorSlot === slot.id) delete l.colorSlot;
     state.doc.palette = state.doc.palette.filter(s => s !== slot);
     if (state.color === `slot:${slot.id}`) state.color = frozen;
     activeSlot = null;
@@ -2090,61 +2187,58 @@ function sectionTitle(text) {
 
 // Label editor with shared-label slots: attach the element to a slot and one
 // edit renames every element pointing at it.
-function labelFields(target, placeholder) {
+// domain: the target is a line or segment, so its label names a domain (see domainKey)
+function labelFields(target, placeholder, domain = false) {
   const frag = document.createDocumentFragment();
   const src = boundInput(() => resolveLabel(target.label || ''), v => setLabel(target, v), { placeholder });
   src.classList.add('fmt-src'); // the text toolbar formats its selection
   frag.appendChild(fieldRow('Label', src));
-  const sel = document.createElement('select');
-  const options = [
-    ['', '— not shared —'],
-    ...state.doc.labelSlots.map(s => [s.id, `“${(s.text || 'empty').slice(0, 22)}”`]),
-    ['+', 'new shared label…'],
-  ];
-  for (const [v, t] of options) {
-    const o = document.createElement('option');
-    o.value = v; o.textContent = t;
-    sel.appendChild(o);
-  }
-  const ref = typeof target.label === 'string' && target.label.startsWith('slot:')
-    ? target.label.slice(5) : '';
-  sel.value = ref;
-  sel.addEventListener('change', () => {
-    beginChange();
-    if (sel.value === '+') {
-      const slot = { id: newId(), text: resolveLabel(target.label || '') };
-      state.doc.labelSlots.push(slot);
-      target.label = `slot:${slot.id}`;
-    } else if (sel.value === '') {
-      target.label = resolveLabel(target.label || ''); // detach: freeze current text
-    } else {
-      target.label = `slot:${sel.value}`;
-      applyLabelColorSlot(state.doc.labelSlots.find(s => s.id === sel.value));
-    }
-    changed();
-  });
-  frag.appendChild(fieldRow('Shared label', sel));
+  const key = domain && domainKey(target.label);
+  if (!key) return frag;
+  frag.appendChild(checkboxRow('Colour shared by name', () => !target.ownColor, v => {
+    if (v) delete target.ownColor; else target.ownColor = true;
+  }));
+  const p = document.createElement('p');
+  p.className = 'muted';
+  p.innerHTML = target.ownColor ? 'This one keeps its own colour.'
+    : `Every <b>${inlineHTML(key.name)}</b> shares one colour, its complements a lighter shade — listed under Domains.`;
+  frag.appendChild(p);
+  return frag;
+}
 
-  // when the target is on a shared label, offer to bind that label to a memory
-  // colour slot — every element carrying the label then inherits its colour+pattern
-  const labelSlot = ref && state.doc.labelSlots.find(s => s.id === ref);
-  if (labelSlot) {
-    const csel = document.createElement('select');
-    for (const [v, t] of [['', '— none —'], ...state.doc.palette.map(s => [s.id, s.name || 'slot'])]) {
-      const o = document.createElement('option');
-      o.value = v; o.textContent = t;
-      csel.appendChild(o);
-    }
-    csel.value = labelSlot.colorSlot || '';
-    csel.addEventListener('change', () => {
+// A fill's colour: the picker, plus the document's memory slots, so a fill can
+// follow a slot (and so a theme) the way a stroke does. A slot's pattern comes
+// along where the fill takes patterns.
+function fillPicker(el, def, pattern = true) {
+  const box = document.createElement('div');
+  box.appendChild(colorPicker(`fill:${el.id}`,
+    () => { const h = resolveColor(el.fill); return /^#[0-9a-f]{6}$/i.test(h || '') ? h : def; },
+    Object.assign(hex => { el.fill = hex; render(); }, { begin: beginChange }),
+    changed));
+  if (!state.doc.palette.length) return box;
+  const row = document.createElement('div');
+  row.className = 'swatches fill-slots';
+  for (const slot of state.doc.palette) {
+    const b = document.createElement('button');
+    b.className = 'swatch';
+    paintSwatch(b, slot);
+    b.title = `${slot.name || 'Memory slot'} — follows the slot`;
+    b.setAttribute('aria-label', b.title);
+    if (el.fill === `slot:${slot.id}`) b.setAttribute('aria-pressed', 'true');
+    b.addEventListener('click', () => {
       beginChange();
-      if (csel.value) labelSlot.colorSlot = csel.value; else delete labelSlot.colorSlot;
-      applyLabelColorSlot(labelSlot);
+      el.fill = `slot:${slot.id}`;
+      if (pattern && slot.pattern && slot.pattern !== 'none') {
+        el.pattern = slot.pattern;
+        if (slot.patternBg) el.patternBg = slot.patternBg; else delete el.patternBg;
+        if (slot.patternScale != null) el.patternScale = slot.patternScale; else delete el.patternScale;
+      }
       changed();
     });
-    frag.appendChild(fieldRow('Label color slot', csel));
+    row.appendChild(b);
   }
-  return frag;
+  box.appendChild(row);
+  return box;
 }
 
 // Fill toggle + colour for closed shapes (rect/ellipse) and links.
@@ -2152,16 +2246,12 @@ function fillControl(el, { label = 'Fill', optional = true, pattern = true } = {
   const frag = document.createDocumentFragment();
   if (optional) {
     frag.appendChild(checkboxRow(label, () => !!el.fill, v => {
-      if (v) el.fill = resolveColor(el.color) || resolveColor(currentColor()) || '#c9c2b6';
+      if (v) el.fill = el.color || currentColor() || '#c9c2b6'; // a slot ref stays one: the fill follows the slot
       else delete el.fill;
     }));
   }
   if (el.fill || !optional) {
-    const pick = colorPicker(`fill:${el.id}`,
-      () => (/^#[0-9a-f]{6}$/i.test(el.fill || '') ? el.fill : '#c9c2b6'),
-      Object.assign(hex => { el.fill = hex; render(); }, { begin: beginChange }),
-      changed);
-    frag.appendChild(fieldRow(`${label} colour`, pick));
+    frag.appendChild(fieldRow(`${label} colour`, fillPicker(el, '#c9c2b6', pattern)));
     if (pattern) frag.appendChild(patternControls(el, `fill:${el.id}`));
   }
   return frag;
@@ -2236,7 +2326,7 @@ function setDNA(els, on) {
       (x.a?.id === el.id || x.b?.id === el.id));
     const other = l && byId(l.a.id === el.id ? l.b.id : l.a.id);
     el.dna = typeof other?.dna === 'number' ? other.dna : true;
-    el.dnaToon = el.dnaOutline = true; // new strands start toon + outline
+    el.dnaToon ??= true; el.dnaOutline ??= true; // new strands start toon + outline; a past choice stays
   }
 }
 
@@ -2316,7 +2406,7 @@ function fitToSequence() {
   const sel = selectedElements();
   const els = sel.length ? sel.filter(el => el.type === 'path')
     : state.doc.elements.filter(el => el.type === 'path' && dnaLayout(el).n !== naturalBases(polylineLength(el.pts), gridPitch(dnaBpg()))
-      && (seqLetters(el.seq) || (el.segments || []).some(s => seqLetters(s.string))));
+      && (seqLetters(el.seq) || (el.segments || []).some(s => seqOf(s.string))));
   if (!els.length) return;
   beginChange();
   for (const el of els) {
@@ -2332,7 +2422,9 @@ function fitToSequence() {
     }
     if (want < L) el.pts = subPath(el.pts, 0, want);
     else el.pts[el.pts.length - 1] = [r3(z[0] + (z[0] - y[0]) * (want - L) / leg), r3(z[1] + (z[1] - y[1]) * (want - L) / leg)];
+    const n0 = (el.segments || []).length;
     el.segments = resizeEndSegments(el.segments, L, polylineLength(el.pts), 1);
+    if (el.segments.kept.length < n0) remapSegLinks(el.id, el.segments.kept);
   }
   changed();
 }
@@ -2373,8 +2465,8 @@ function dnaStyleControls(els) {
   frag.appendChild(fieldRow('Model', mappedSelect({ space: 'Space-filling', ribbon: 'Ribbon + bases' },
     () => first.dnaSkin || 'space', v => setAll('dnaSkin', v === 'space' ? null : v))));
   frag.appendChild(fieldRow('Shading', mappedSelect({ soft: 'Soft (rendered)', toon: 'Toon (flat bands)' },
-    () => (first.dnaToon ? 'toon' : 'soft'), v => setAll('dnaToon', v === 'toon'))));
-  frag.appendChild(checkboxRow('Black outline', () => !!first.dnaOutline, v => setAll('dnaOutline', v)));
+    () => (toon(first) ? 'toon' : 'soft'), v => { for (const el of els) el.dnaToon = v === 'toon'; })));
+  frag.appendChild(checkboxRow('Black outline', () => outlined(first), v => { for (const el of els) el.dnaOutline = v; }));
   frag.appendChild(fieldRow('Colour by', mappedSelect(
     { strand: 'Strand colour', bases: 'Backbone + bases', sequence: 'Sequence (A C G T)' },
     () => first.dnaColor || 'strand', v => setAll('dnaColor', v === 'strand' ? null : v))));
@@ -2443,8 +2535,10 @@ function dnaControls(el) {
   const fixedN = lay.n - lay.free;
   frag.appendChild(fieldRow('Bases', basesInput(() => lay.n,
     v => { if (v === null) delete el.bases; else el.bases = Math.max(0, v - fixedN); },
-    { auto: el.bases === undefined, readOnly: !lay.freeLen })));
-  if (!lay.freeLen) {
+    { auto: el.bases === undefined, readOnly: !lay.freeLen || (el.bases === undefined && !!seqLetters(el.seq)) })));
+  if (lay.freeLen && el.bases === undefined && seqLetters(el.seq)) {
+    frag.appendChild(seqNote());
+  } else if (!lay.freeLen) {
     const p = document.createElement('p');
     p.className = 'muted';
     p.textContent = `All ${lay.n} bases are set by its domains and base pairing.`;
@@ -2516,7 +2610,7 @@ function segmentBases(el, i) {
 function seqNote() {
   const p = document.createElement('p');
   p.className = 'muted';
-  p.textContent = 'Set by the sequence in the String field — edit or clear it to change the count.';
+  p.textContent = 'Set by the sequence (a domain String or the strand Sequence) — edit or clear it to change the count.';
   return p;
 }
 const linkSeq = l => refSeq(l.a, byId(l.a.id)) || refSeq(l.b, byId(l.b.id));
@@ -2550,6 +2644,15 @@ const LINECAP_VALUES = { rounded: 'round', flat: 'butt', square: 'square' };
 function joinLines({ a, b }) {
   const merged = mergePaths(a.pts, a.segments || [], b.pts, b.segments || []);
   beginChange();
+  // domain links follow their segments into the joined line; whole-line links to b go
+  const na = a.segments?.length || 0, nb = b.segments?.length || 0;
+  state.doc.elements = state.doc.elements.filter(l => !(l.type === 'link' && [l.a, l.b].some(r => r?.id === b.id && r.seg === undefined)));
+  for (const l of state.doc.elements) if (l.type === 'link') for (const k of ['a', 'b']) {
+    const r = l[k];
+    if (r?.seg === undefined) continue;
+    if (r.id === a.id && merged.bFirst) l[k] = { ...r, seg: r.seg + nb };
+    else if (r.id === b.id) l[k] = { ...r, id: a.id, seg: r.seg + (merged.bFirst ? 0 : na) };
+  }
   a.pts = merged.pts;
   a.segments = merged.segments;
   state.doc.elements = state.doc.elements.filter(el => el !== b);
@@ -2672,11 +2775,12 @@ function renderPanel() {
     sec.appendChild(sectionTitle(`${n} objects`));
     const row = document.createElement('div');
     row.className = 'btn-row';
-    row.append(smallButton('Group', groupSelection, 'Bundle the selection into a named group (Ctrl+G)'));
-    if (state.selection.some(s => byId(s.id)?.group)) {
+    const oneGroup = isOneGroup();
+    if (!oneGroup) row.append(smallButton('Group', groupSelection, 'Bundle the selection into a named group (Ctrl+G)'));
+    if (whollySelectedGroups().size) {
       row.append(smallButton('Ungroup', ungroupSelection, 'Dissolve the selected group(s) (Ctrl+Shift+G)'));
     }
-    const linkT = linkTargetsFromSelection();
+    const linkT = !oneGroup && linkTargetsFromSelection();
     if (linkT) {
       const existing = findLink(linkT[0], linkT[1]);
       if (existing) {
@@ -2727,7 +2831,7 @@ function renderPanel() {
         v => { seg.linecap = LINECAP_VALUES[v]; })));
       sec.appendChild(patternControls(seg, `seg:${el.id}.${single.seg}`));
     }
-    sec.appendChild(labelFields(seg, 'e.g. domain a'));
+    sec.appendChild(labelFields(seg, 'e.g. domain a', true));
     sec.appendChild(labelDisplayFields(seg));
     sec.appendChild(fieldRow('String', boundInput(
       () => seg.string || '', v => { seg.string = v; },
@@ -2767,10 +2871,10 @@ function renderPanel() {
       const nameOf = ref => resolveLabel(backbone(ref).label || '') || resolveLabel(byId(ref.id).label || '')
         || (ref === el.a ? 'Strand A' : 'Strand B');
       for (const ref of [el.a, el.b]) {
-        const t = backbone(ref);
+        const t = viaDomain(backbone(ref));
         sec.appendChild(fieldRow(`${nameOf(ref)} backbone`, colorPicker(`bb:${el.id}:${ref === el.a ? 'a' : 'b'}`,
           () => (/^#[0-9a-f]{6}$/i.test(resolveColor(t.color) || '') ? resolveColor(t.color) : '#8a857c'),
-          Object.assign(hex => { t.color = hex; render(); }, { begin: beginChange }), changed)));
+          Object.assign(hex => { t.color = hex; syncDomains(); render(); }, { begin: beginChange }), changed)));
       }
       const look = [byId(el.a.id), byId(el.b.id)].filter((x, i, a) => a.indexOf(x) === i);
       sec.appendChild(sectionTitle(look.length > 1 ? 'Look (both strands)' : 'Look'));
@@ -2846,17 +2950,14 @@ function renderPanel() {
     if (el.type === 'card') {
       sec.appendChild(fieldRow('Title', boundInput(
         () => el.title, v => { el.title = v; }, { placeholder: 'section title' })));
-      sec.appendChild(fieldRow('Card color', colorPicker(`fill:${el.id}`,
-        () => (/^#[0-9a-f]{6}$/i.test(el.fill || '') ? el.fill : '#ffffff'),
-        Object.assign(hex => { el.fill = hex; render(); }, { begin: beginChange }),
-        changed)));
+      sec.appendChild(fieldRow('Card color', fillPicker(el, '#ffffff', false)));
       if (el.fill && el.fill !== '#ffffff') {
         sec.appendChild(smallButton('Reset card color', () => {
           beginChange(); delete el.fill; changed();
         }, 'Back to white'));
       }
     } else if (el.type !== 'text' || isSemantic(el)) {
-      sec.appendChild(labelFields(el, 'name this object'));
+      sec.appendChild(labelFields(el, 'name this object', el.type === 'path'));
       if (el.type !== 'text') sec.appendChild(labelDisplayFields(el));
     }
     if (el.type === 'text') {
@@ -2940,6 +3041,7 @@ function renderPanel() {
 
 const TAURI = window.__TAURI__;
 let currentFile = null; // Tauri: path string · browser: FileSystemFileHandle
+let docName = null; // the opened file's name, as Save's suggestion when there's no handle to it
 
 function download(name, text, type) {
   const a = document.createElement('a');
@@ -2966,7 +3068,7 @@ async function saveJSON(saveAs = false) {
       let handle = !saveAs && currentFile ? currentFile : null;
       if (!handle) {
         handle = await window.showSaveFilePicker({
-          suggestedName: 'scheme.schemer.json',
+          suggestedName: docName || 'scheme.schemer.json',
           types: [{ description: 'Master Schemer', accept: { 'application/json': ['.schemer.json', '.json'] } }],
         });
       }
@@ -2975,7 +3077,7 @@ async function saveJSON(saveAs = false) {
       await w.close();
       currentFile = handle;
     } else {
-      download('scheme.schemer.json', text, 'application/json');
+      download(docName || 'scheme.schemer.json', text, 'application/json');
     }
     state.dirty = false;
     rememberRecent(TAURI ? currentFile : null, currentFile?.name || 'scheme.schemer.json');
@@ -3072,7 +3174,7 @@ async function saveBlob(name, blob, f) {
 // Returns a PNG blob, null for nothing to export, or undefined if the webview
 // tainted the canvas (WebKit does for math foreignObjects).
 async function rasterizePNG(o, plain) {
-  const svgText = await exportSVGString({ ...o, plain });
+  const svgText = await exportSVGString({ ...o, plain, flat: !plain }); // flat: math as SVG, so the canvas takes it
   render(); // export rendered unculled; restore the culled view
   if (!svgText) return null;
   const url = URL.createObjectURL(new Blob([svgText], { type: 'image/svg+xml' }));
@@ -3111,7 +3213,7 @@ async function runExport(o, name) {
       blob = await rasterizePNG(opts, false);
       if (blob === undefined) {
         blob = await rasterizePNG(opts, true);
-        note = ' Math labels were left out — export SVG to keep them.';
+        note = ' Math labels and wrapped notes were left out — export SVG to keep them.';
       }
     }
     state.selection = keep;
@@ -3389,7 +3491,7 @@ function csvText() {
 $('newBtn').addEventListener('click', () => {
   if (!state.doc.elements.length || confirm('Replace the current scheme with a blank canvas? (Undo can bring it back.)')) {
     newDoc();
-    currentFile = null;
+    currentFile = docName = null;
     state.dirty = false;
     renderNotes();
   }
@@ -3399,7 +3501,7 @@ $('fileInput').addEventListener('change', async e => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
-  try { loadDocJSON(await file.text()); currentFile = null; state.dirty = false; renderNotes(); fitView(); rememberRecent(null, file.name); }
+  try { loadDocJSON(await file.text()); currentFile = null; docName = file.name; state.dirty = false; renderNotes(); fitView(); rememberRecent(null, file.name); }
   catch { $('hint').textContent = `Could not read ${file.name} — not a Master Schemer file.`; }
 });
 $('libInput').addEventListener('change', async e => {
@@ -3415,8 +3517,11 @@ $('copyBtn').addEventListener('click', copySelection);
 $('pasteBtn').addEventListener('click', pasteClipboard);
 $('exportBtn').addEventListener('click', () => showExport('svg'));
 $('csvBtn').addEventListener('click', () => showExport('csv'));
-$('undoBtn').addEventListener('click', undo);
-$('redoBtn').addEventListener('click', redo);
+// undo/redo bring back the notes too, so the editor shows what the doc now says
+const undoDoc = () => { undo(); renderNotes(); };
+const redoDoc = () => { redo(); renderNotes(); };
+$('undoBtn').addEventListener('click', undoDoc);
+$('redoBtn').addEventListener('click', redoDoc);
 
 // Menu bar: click a title to open; while one is open, hovering another title
 // switches to it. Items either carry the action's own id, proxy a click to an
@@ -3557,7 +3662,7 @@ function ctxItems() {
   const segOnly = sel.every(s => s.seg !== undefined);
   const linksOnly = n > 0 && els.every(e => e.type === 'link');
   // the selection is exactly one group (as a click on a grouped object makes it)
-  const oneGroup = !segOnly && [...whollySelectedGroups()].some(gid => groupElementMembers(gid).length === n);
+  const oneGroup = isOneGroup();
 
   // a domain: back to its line
   if (single?.seg !== undefined) {
@@ -3601,22 +3706,22 @@ function ctxItems() {
   if (join) add('Join Lines', () => joinLines(join));
   const paths = els.filter(e => e.type === 'path');
   if (paths.length) {
-    const allDNA = paths.every(p => ownLook(p) === 'dna');
+    const allDNA = paths.every(p => lookOf(p) === 'dna');
     add('Draw As', null, {
       sub: Object.entries(LOOKS).map(([k, label]) => ({
         label, act: edit(() => setLook(paths, k)), checked: paths.every(p => ownLook(p) === k),
       })),
     });
     if (allDNA) {
-      const all = k => paths.every(p => p[k]);
       const toggle = (k, v) => edit(() => { for (const p of paths) { if (v) p[k] = v; else delete p[k]; } });
+      const flip = (k, is) => { const v = !paths.every(is); return edit(() => { for (const p of paths) p[k] = v; }); };
       add('DNA Look', null, {
         sub: [
           { label: 'Space-filling', act: toggle('dnaSkin', null), checked: !paths.some(p => p.dnaSkin) },
           { label: 'Ribbon + bases', act: toggle('dnaSkin', 'ribbon'), checked: paths.every(p => p.dnaSkin === 'ribbon') },
           '-',
-          { label: 'Toon Shading', act: toggle('dnaToon', !all('dnaToon')), checked: all('dnaToon') },
-          { label: 'Black Outline', act: toggle('dnaOutline', !all('dnaOutline')), checked: all('dnaOutline') },
+          { label: 'Toon Shading', act: flip('dnaToon', toon), checked: paths.every(toon) },
+          { label: 'Black Outline', act: flip('dnaOutline', outlined), checked: paths.every(outlined) },
           '-',
           { label: 'Colour by Strand', act: toggle('dnaColor', null), checked: !paths.some(p => p.dnaColor) },
           { label: 'Backbone + Bases', act: toggle('dnaColor', 'bases'), checked: paths.every(p => p.dnaColor === 'bases') },
@@ -3732,9 +3837,11 @@ function openCtx(x, y) {
 // Right-click target → selection. hit: { id, seg } or null for empty canvas.
 function ctxSelect(hit) {
   if (!hit) { state.selection = []; refresh(); return; }
-  const inSel = state.selection.some(s => s.id === hit.id && (s.seg === hit.seg || s.seg === undefined));
-  if (inSel) return;
-  const el = byId(hit.id), top = hit.seg === undefined && el?.group && topGroup(el);
+  const has = r => state.selection.some(s => s.id === r?.id && (s.seg === r.seg || s.seg === undefined));
+  const el = byId(hit.id);
+  // a duplex is drawn over its strands: with both strands selected, the click meant them
+  if (has(hit) || (el?.type === 'link' && has(el.a) && has(el.b))) return;
+  const top = hit.seg === undefined && el?.group && topGroup(el);
   state.selection = top ? groupElementMembers(top.id).map(x => ({ id: x.id })) : [hit];
   refresh();
 }
@@ -3755,6 +3862,8 @@ svg.addEventListener('wheel', closeCtx, { passive: true });
 window.addEventListener('keydown', e => {
   if (!ctxMenu) return;
   if (e.key === 'Escape') { closeCtx(); e.stopPropagation(); e.preventDefault(); return; }
+  // any other shortcut acts on the canvas as it stands: the menu would be stale
+  if (!['ArrowDown', 'ArrowUp', 'Enter', ' ', 'Tab', 'Shift'].includes(e.key)) { closeCtx(); return; }
   if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
   e.preventDefault(); e.stopPropagation();
   const list = document.activeElement?.closest('.menu-list') || ctxMenu;
@@ -3888,10 +3997,15 @@ function updateNotesPlaceholder() {
     !notesEditor.textContent.trim() && !notesEditor.querySelector('.note-ref'));
 }
 
+// A burst of typing (no pause over a second) is one undo step; Ctrl+Z inside
+// the editor is still the editor's own.
+let notesTyped = 0;
 notesEditor.addEventListener('input', () => {
+  if (Date.now() - notesTyped > 1000) { beginChange(); $('undoBtn').disabled = false; } // snapshot still has the old notes
+  notesTyped = Date.now();
   state.doc.notes = serializeNotes();
   updateNotesPlaceholder();
-  touch(); // dirty + autosave, but no full re-render on every keystroke
+  touch(); // no full re-render on every keystroke
 });
 
 // paste as plain text so foreign HTML can't inject stray nodes into the notes

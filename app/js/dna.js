@@ -79,6 +79,7 @@ function interp(knots, x, i, j) {
   let k = 1;
   while (k < knots.length - 1 && knots[k][i] < x) k++;
   const a = knots[k - 1], b = knots[k];
+  if (!b) return a[j]; // a zero-length strand has a single knot
   const d = b[i] - a[i];
   return d ? a[j] + (b[j] - a[j]) * (x - a[i]) / d : a[j];
 }
@@ -144,9 +145,9 @@ export function midline(A, B, LA, LB, at, m = 64) {
 // ---- sequence colours ----
 
 // A field's text as a sequence: its bases (A C G T U N, upper-cased) with
-// spaces, digits, dashes and 5′/3′ marks dropped — or '' when it holds anything else.
+// spaces, dashes and 5′/3′ marks dropped (other digits, e.g. GATA1, mean a name) — or '' when it holds anything else.
 export function seqLetters(s) {
-  const t = (s || '').toUpperCase().replace(/[\s\d\-–—′'.]/g, '');
+  const t = (s || '').toUpperCase().replace(/[35]\s*[′']/g, '').replace(/[\s\-–—]/g, '');
   return /^[ACGTUN]+$/.test(t) ? t : '';
 }
 export const BASE_COLORS = { A: '#3a8a3e', C: '#2f6fd0', G: '#d59c12', T: '#c8352e' };

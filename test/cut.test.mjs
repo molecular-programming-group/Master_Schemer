@@ -76,3 +76,40 @@ test('splitDomain splits one domain, keeps the strand and other links', async ()
   assert.deepEqual(line.segments.slice(3).map(s => [s.t0, s.t1]), [[50, 55], [55, 60]]);
   assert.equal(splitDomain(line, 50.5), null); // too close to a boundary
 });
+
+test('deleting domains removes those and re-points links at the survivors', async () => {
+  const { deleteSelection } = await import('../app/js/model.js');
+  const seg = (t0, t1, label) => ({ t0, t1, label });
+  state.doc = { version: 3, elements: [
+    { type: 'path', id: 'L', pts: [[0, 0], [90, 0]], segments: [seg(0, 30, 'A'), seg(30, 60, 'B'), seg(60, 90, 'C')] },
+    { type: 'path', id: 'M', pts: [[0, 9], [90, 9]], segments: [] },
+    { type: 'link', id: 'kC', a: { id: 'L', seg: 2 }, b: { id: 'M' } },
+    { type: 'link', id: 'kA', a: { id: 'L', seg: 0 }, b: { id: 'M' } },
+  ], palette: [], groups: [], labelSlots: [] };
+  state.selection = [{ id: 'L', seg: 0 }, { id: 'L', seg: 1 }];
+  deleteSelection();
+  assert.deepEqual(byId('L').segments.map(s => s.label), ['C']);
+  assert.deepEqual(byId('kC').a, { id: 'L', seg: 0 }); // follows C to its new index
+  assert.equal(byId('kA'), undefined); // its domain went
+});
+
+test('cutting a strand shares out its sequences instead of copying them', () => {
+  state.doc = { version: 3, elements: [{
+    type: 'path', id: 'S', pts: [[0, 0], [100, 0]], seq: 'AAAAACCCCCGGGGGTTTTT',
+    segments: [{ t0: 20, t1: 60, string: 'ACGTACGT' }],
+  }], palette: [], groups: [], labelSlots: [] };
+  const [a, b] = cutPath(byId('S'), 40, 10);
+  assert.equal(a.seq + '|' + b.seq, 'AAAAACCCCC|GGGGGTTTTT');
+  assert.equal(a.segments[0].string + '|' + b.segments[0].string, 'ACGT|ACGT');
+});
+
+test('domains by name: one colour per name, complements lighter, own colours kept', async () => {
+  const { changed, domainKey } = await import('../app/js/model.js');
+  assert.deepEqual([domainKey('a*').name, domainKey('$x^*$').name, domainKey('$x^*$').comp], ['a', '$x$', true]);
+  const seg = (t0, label, extra) => ({ t0, t1: t0 + 10, label, color: '#000000', ...extra });
+  state.doc = { version: 3, palette: [], groups: [], labelSlots: [], domains: { a: { color: '#ff0000' } }, elements: [
+    { type: 'path', id: 'P', pts: [[0, 0], [90, 0]], segments: [seg(0, 'a'), seg(20, 'a*'), seg(40, 'a', { ownColor: true }), seg(60, 'b')] },
+  ] };
+  changed();
+  assert.deepEqual(byId('P').segments.map(s => s.color), ['#ff0000', '#ff7373', '#000000', '#000000']);
+});

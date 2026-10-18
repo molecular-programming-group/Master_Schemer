@@ -160,6 +160,7 @@ export function bboxOfPts(pts) {
 // Fuse two paths that share an endpoint. Returns { pts, segments } with the
 // second path's segments re-based onto the merged arc length, or null if no
 // endpoint pair coincides. Segment objects are copied, not mutated.
+// (bFirst: the result runs b then a, so b's segments come first.)
 export function mergePaths(aPts, aSegs, bPts, bSegs) {
   const rev = pts => pts.slice().reverse();
   const flipSegs = (segs, len) =>
@@ -173,7 +174,7 @@ export function mergePaths(aPts, aSegs, bPts, bSegs) {
   else if (eq(A[0], B[0])) { A = rev(A); sA = flipSegs(sA, lenA); }
   else if (eq(A[0], B[B.length - 1])) {
     [A, B] = [B, A]; [sA, sB] = [sB, sA];
-    return { pts: simplify([...A, ...B.slice(1)]), segments: [...sA.map(s => ({ ...s })), ...shiftSegs(sB, lenB)] };
+    return { pts: simplify([...A, ...B.slice(1)]), segments: [...sA.map(s => ({ ...s })), ...shiftSegs(sB, lenB)], bFirst: true };
   } else return null;
   return { pts: simplify([...A, ...B.slice(1)]), segments: [...sA.map(s => ({ ...s })), ...shiftSegs(sB, lenA)] };
 }
@@ -224,11 +225,13 @@ export function splitSegments(segs, tc, total) {
 //  - dragging the START vertex: every segment shifts by the length change (the
 //    origin moved), except one already anchored at the start, which stays at 0.
 // Either way a segment squeezed outside the new bounds is dropped. `end` is
-// truthy for the last vertex, falsy for the first.
+// truthy for the last vertex, falsy for the first. The result's `kept` lists the
+// input index of each surviving segment (for remapping links: model.remapSegLinks).
 export function resizeEndSegments(segs, oldTotal, newTotal, end) {
   const d = newTotal - oldTotal;
-  const out = [];
-  for (const s of segs || []) {
+  const out = [], kept = [];
+  Object.defineProperty(out, 'kept', { value: kept }); // non-enumerable: out stays a plain list
+  for (const [i, s] of (segs || []).entries()) {
     let t0 = s.t0, t1 = s.t1;
     if (end) {
       if (Math.abs(t1 - oldTotal) < 0.5) t1 = newTotal; // end-anchored: track the end
@@ -238,7 +241,7 @@ export function resizeEndSegments(segs, oldTotal, newTotal, end) {
     }
     t0 = Math.max(0, Math.min(t0, newTotal));
     t1 = Math.max(0, Math.min(t1, newTotal));
-    if (t1 - t0 > 0.01) out.push({ ...s, t0, t1 });
+    if (t1 - t0 > 0.01) { out.push({ ...s, t0, t1 }); kept.push(i); }
   }
   return out;
 }

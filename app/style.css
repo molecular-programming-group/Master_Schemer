@@ -73,6 +73,8 @@ body.hide-toolbar #ctrlbar, body.hide-textbar #textbar,
 body.hide-tools #toolrail,
 body.hide-objects .side-head-obj, body.hide-objects #sidebarBody,
 body.hide-library .side-head-lib, body.hide-library #libraryBody,
+body.hide-objects .side-head-dom, body.hide-objects #domainsBody,
+body.no-domains .side-head-dom, body.no-domains #domainsBody,
 body.hide-color .sec-color, body.hide-props .sec-prop,
 body.hide-notes #notesPanel { display: none; }
 body.hide-objects .side-head-lib { border-top: none; margin-top: 0; }
@@ -325,6 +327,11 @@ body.show-keys .tool-btn[data-key]::before {
 .side-empty { padding: 4px 8px; font-size: 12px; }
 
 .side-head-lib { border-top: 1px solid var(--line); margin-top: 10px; }
+.side-head-dom { border-top: 1px solid var(--line); margin-top: 10px; }
+#domainsBody { display: flex; flex-direction: column; padding: 0 6px 4px; }
+.dom-comp { color: var(--muted); margin-left: 4px; white-space: nowrap; }
+.dom-own { font-size: 10px; color: var(--muted); margin-left: 4px; }
+.domain-note { margin: 6px 0 0; font-size: 11.5px; }
 
 #libraryBody { display: flex; flex-direction: column; padding: 0 6px 12px; }
 
@@ -352,6 +359,8 @@ body.show-keys .tool-btn[data-key]::before {
 /* ---------- canvas ---------- */
 
 #canvasWrap { grid-area: canvas; position: relative; background: #ffffff; overflow: hidden; }
+/* the canvas is white paper in either theme: its text keeps the light-theme inks */
+#canvasWrap { --ink: oklch(0.24 0.012 75); --muted: oklch(0.49 0.015 75); --line: oklch(0.885 0.008 75); color: var(--ink); }
 
 #canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
 
@@ -584,6 +593,7 @@ body.panning #canvas { cursor: grabbing !important; }
 .field input[type="range"] { accent-color: var(--primary); }
 
 .swatches { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.fill-slots { margin-top: 6px; grid-template-columns: repeat(7, 1fr); gap: 4px; }
 
 .swatch {
   width: 100%;

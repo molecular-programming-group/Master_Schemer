@@ -1,15 +1,15 @@
 // Tool state machines. app.js routes pointer events here with world coords.
 import {
   state, byId, beginChange, changed, addElement, isSelected, cloneElements, resolveColor,
-  byGroup, groupElementMembers, cutPath, splitDomain,
+  byGroup, groupElementMembers, cutPath, splitDomain, remapSegLinks,
 } from './model.js';
 import {
   GRID, snap, snapPt, snapHalf, snapHalfPt, eq, dirOf, snap8, simplify, polylineLength,
   nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex, bladeCross,
   resizeEndSegments,
 } from './geom.js';
-import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle, dnaBpg, strandView } from './render.js';
-import { gridPitch } from './dna.js';
+import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink, textStyle, dnaBpg, strandView, dnaLayout } from './render.js';
+import { gridPitch, uAt } from './dna.js';
 
 const $ = id => document.getElementById(id);
 const preview = () => $('layer-preview');
@@ -40,13 +40,15 @@ const squareOff = (a, b) => {
 
 // Snapshot-once-per-drag: history entry is pushed on the first real mutation.
 function began() {
-  if (!drag.began) { beginChange(); drag.began = true; }
+  if (!drag.began) { drag.future = state.future; beginChange(); drag.began = true; }
 }
 
 // Escape / tool-switch cancel. Rolls back any in-drag mutation.
 export function cancelActive() {
-  if (drag?.began) {
+  const undoIt = drag?.began;
+  if (undoIt) {
     state.doc = JSON.parse(state.history.pop());
+    if (drag.future) state.future = drag.future; // as if the drag never happened
   }
   drag = null;
   clearPreview();
@@ -54,6 +56,14 @@ export function cancelActive() {
 }
 
 export const isDragging = () => drag !== null;
+
+// After a vertex drag: drop duplicate neighbours, and undo the drag outright if
+// the line collapsed to a single point.
+function settlePts(el) {
+  el.pts = el.pts.filter((p, i) => i === 0 || !eq(p, el.pts[i - 1]));
+  if (el.pts.length < 2) { cancelActive(); return false; } // (it moved, so drag.began)
+  return true;
+}
 
 // ---- inline text editing (HTML overlay over the canvas) ----
 
@@ -438,8 +448,10 @@ export const tools = {
       if (drag.mode === 'endresize') {
         began();
         const el = drag.el;
-        el.pts[drag.i] = snapHalfPt(wp);
+        const nb = el.pts[drag.end ? drag.i - 1 : 1];
+        el.pts[drag.i] = state.baseSnap && nb ? legSnap(nb, wp) : snapHalfPt(wp);
         el.segments = resizeEndSegments(drag.origSegs, drag.origTotal, polylineLength(el.pts), drag.end);
+        drag.kept = el.segments.kept;
         changed();
         return;
       }
@@ -532,9 +544,10 @@ export const tools = {
       if (!drag) return;
       if (drag.mode === 'extend') { endExtend(); return; }
       if (drag.mode === 'endresize') {
-        const el = drag.el;
+        const { el, kept, origSegs } = drag;
+        if (!settlePts(el)) return;
         drag = null;
-        el.pts = el.pts.filter((p, i) => i === 0 || !eq(p, el.pts[i - 1])); // drop dup neighbours
+        if (kept && kept.length < origSegs.length) remapSegLinks(el.id, kept);
         changed();
         return;
       }
@@ -691,7 +704,8 @@ export const tools = {
     move(e, wp) {
       if (!drag) return;
       began();
-      drag.el.pts[drag.i] = snapHalfPt(wp);
+      const nb = drag.el.pts[drag.i - 1] || drag.el.pts[drag.i + 1];
+      drag.el.pts[drag.i] = state.baseSnap && nb ? legSnap(nb, wp) : snapHalfPt(wp);
       changed();
     },
     up() {
@@ -699,9 +713,8 @@ export const tools = {
       // ponytail: segment arc-length ranges are not remapped when a vertex
       // moves — re-drag segment ends afterwards if they shifted
       const el = drag.el;
+      if (!settlePts(el)) return;
       drag = null;
-      // drop exact duplicate neighbors created by dragging onto a neighbor
-      el.pts = el.pts.filter((p, i) => i === 0 || !eq(p, el.pts[i - 1]));
       changed();
     },
   },
@@ -915,7 +928,8 @@ export const tools = {
       const { locked, t } = drag;
       drag = null;
       clearPreview();
-      if (locked && t !== null) (e.shiftKey ? splitDomain : cutPath)(locked, t); else changed();
+      if (locked && t !== null) e.shiftKey ? splitDomain(locked, t) : cutPath(locked, t, Math.round(uAt(dnaLayout(locked).knots, t)));
+      else changed();
     },
   },
 
@@ -943,7 +957,8 @@ export const tools = {
       }, preview());
     },
     up(e, wp) {
-      const a = drag?.a, b = drag?.b;
+      if (!drag) return; // right-click, or Esc mid-drag
+      const a = drag.a, b = drag.b;
       drag = null;
       clearPreview();
       if (a && b && Math.abs(b[0] - a[0]) >= 2 * GRID) {

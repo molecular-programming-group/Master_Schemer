@@ -194,8 +194,6 @@ export function dashArray(dash, w) {
   return null;
 }
 
-export const LINECAPS = ['round', 'butt', 'square'];
-
 // A segment's drawn thickness: its own width if tuned, else a touch above the
 // parent line (the historical +2.5). Shared by the segment stroke, the cap
 // alignment, and the selection highlight.
@@ -347,7 +345,7 @@ function drawLabel(g, divs, measures, owner, anchor, opts) {
   if (!text) return;
   const off = owner.labelOff || [0, 0];
   const p = [anchor[0] + off[0], anchor[1] + off[1]];
-  if (opts.follow && !hasMath(text)) { contourLabel(g, text, p, opts); return; }
+  if (opts.follow && !hasMath(text) && polylineLength(opts.follow) > 0) { contourLabel(g, text, p, opts); return; }
   if (hasMath(text)) {
     const div = document.createElement('div');
     div.className = 'math-label';
@@ -357,8 +355,9 @@ function drawLabel(g, divs, measures, owner, anchor, opts) {
     div.style.color = opts.color;
     div.innerHTML = richHTML(text);
     divs.push(div);
-    const hit = svgEl('rect', {
+    const hit = svgEl('rect', { // also where export puts the label (data-tex)
       fill: 'transparent', 'data-labelfor': opts.id, style: 'cursor:move',
+      'data-tex': text, 'data-size': opts.size, 'data-color': opts.color,
       ...(opts.segi !== undefined ? { 'data-segi': opts.segi } : {}),
     }, g);
     measures.push(() => { // div is centered on p (translate -50% -50%)
@@ -447,13 +446,9 @@ function renderArrow(el) {
     x1: p1[0], y1: p1[1], x2: p2[0], y2: p2[1],
     stroke: '#55504a', 'stroke-width': 1.75, 'marker-end': 'url(#arrowHead)',
   }, g);
-  if (el.label && !el.labelHide) {
-    const off = el.labelOff || [0, 0];
-    haloText(g, (p1[0] + p2[0]) / 2 + off[0], (p1[1] + p2[1]) / 2 - 8 + off[1],
-      resolveLabel(el.label), 12.5, '#55504a', 500,
-      { 'text-anchor': 'middle', 'data-labelfor': el.id, style: 'cursor:move' });
-  }
-  return { node: g };
+  const divs = [], measures = [];
+  drawLabel(g, divs, measures, el, [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2 - 8], { size: 12.5, color: '#55504a', id: el.id });
+  return { node: g, divs, measures };
 }
 
 function renderPath(el) {
@@ -482,7 +477,7 @@ function renderPath(el) {
   (el.segments || []).forEach((seg, i) => {
     const sp = subPath(el.pts, seg.t0, seg.t1);
     const sa = ptsAttr(sp);
-    const segColor = resolveColor(seg.color);
+    const segColor = resolveColor(seg.color ?? el.color);
     const scap = seg.linecap || 'round';
     if (unpaired(seg.t0, seg.t1)) {
       svgEl('polyline', {
@@ -513,7 +508,7 @@ function renderPath(el) {
   const capStyle = end => {
     const seg = (el.segments || []).find(s => (end ? s.t1 >= len - 0.5 : s.t0 <= 0.5));
     return seg
-      ? { w: segWidth(seg, w), paint: paintOf(seg, resolveColor(seg.color)) }
+      ? { w: segWidth(seg, w), paint: paintOf(seg, resolveColor(seg.color ?? el.color)) }
       : { w, paint: color };
   };
   const c0 = capStyle(0), c1 = capStyle(1);
@@ -621,7 +616,7 @@ function molThreaded(el, m) {
   const { sc, ox, oy } = molFit(el, m);
   const y = oy + m.axis * sc, r = DIAMETER_A / 2 * sc;
   return state.doc.elements.some(d => {
-    if (d.type !== 'path' || !d.dna) return false;
+    if (d.type !== 'path' || lookOf(d) !== 'dna') return false;
     const b = elementBBox(d);
     return b[0] < ox + m.w * sc && b[2] > ox && b[1] < y + r && b[3] > y - r;
   });
@@ -814,8 +809,10 @@ const shownDNA = el => lookOf(el) === 'dna';
 // View → Mark 3′ Ends (display only).
 export const dnaView = { ends: false };
 // a plain line shown as a molecule by View → Draw Strands looks like a new one: toon + outline
-const toon = el => (el.dna ? !!el.dnaToon : true);
-const outlined = el => (el.dna ? !!el.dnaOutline : true);
+// Unset, a strand drawn as DNA by its own setting is soft and unoutlined (as
+// older files were saved), one shown as DNA by the View menu is toon + outlined.
+export const toon = el => el.dnaToon ?? !el.dna;
+export const outlined = el => el.dnaOutline ?? !el.dna;
 export const diam = el => (typeof el.dna === 'number' ? el.dna : naturalD(dnaBpg()));
 
 const dnaEnd = ref => {
@@ -858,10 +855,12 @@ export function duplexBases(l) {
 }
 // Spans of a strand with a fixed base count: paired domains (from duplex links,
 // listed first so they win over a segment's own count) and counted segments.
-// ponytail: scans every element per DNA strand; index links by strand if docs get big.
+// During a render, duplexOf indexes strand id → its duplex links (built once per
+// frame: a scan per strand per frame made panning big docs crawl); outside one, scan.
+let duplexOf = null;
 function dnaFixed(el) {
   const fixed = [];
-  for (const l of state.doc.elements) {
+  for (const l of duplexOf ? duplexOf.get(el.id) || [] : state.doc.elements) {
     if (!duplexLink(l)) continue;
     for (const role of ['a', 'b']) {
       if (l[role].id !== el.id) continue;
@@ -894,7 +893,7 @@ function seqAt(e, lay, i) {
     const seq = seqOf(s.string);
     if (!seq) continue;
     const j = i - Math.round(uAt(lay.knots, s.t0));
-    if (j >= 0 && j < Math.round(uAt(lay.knots, s.t1) - uAt(lay.knots, s.t0))) return seq[j % seq.length];
+    if (j >= 0 && j < Math.round(uAt(lay.knots, s.t1) - uAt(lay.knots, s.t0))) return seq[j] || '';
   }
   return seqLetters(e.seq)[i] || '';
 }
@@ -1049,7 +1048,7 @@ function drawSeqStrand(g, el) {
     const d = endDir(el.pts, 1), z = el.pts[el.pts.length - 1];
     svgEl('text', { x: z[0] + d[0] * pitch * 1.5, y: z[1] + d[1] * pitch * 1.5, 'font-size': pitch * 1.2, 'font-weight': 600,
       'text-anchor': d[0] < -0.5 ? 'end' : d[0] > 0.5 ? 'start' : 'middle', 'dominant-baseline': 'central',
-      fill: '#b5561d' }, g)
+      fill: '#b5561d', 'data-ph': '1' }, g) // a screen-only warning: not exported
       .textContent = `${off > 0 ? '+' : '−'}${Math.abs(off)} nt`;
   }
 }
@@ -1099,7 +1098,9 @@ function drawDuplex(g, l) {
 
 // Everything a DNA strand's or duplex's pixels depend on beyond its own JSON.
 function dnaKey(el) {
-  const links = el.type === 'link' ? [el] : dnaFixed(el).filter(f => f.link).map(f => f.link);
+  const linksOf = e => (e ? dnaFixed(e).filter(f => f.link).map(f => f.link) : []);
+  // a duplex sits where its strands' other duplexes leave it, so those count too
+  const links = el.type === 'link' ? [el, ...linksOf(byId(el.a.id)), ...linksOf(byId(el.b.id))] : linksOf(el);
   return dnaBpg() + JSON.stringify(links.map(l => [l, byId(l.a.id), byId(l.b.id)]));
 }
 
@@ -1158,7 +1159,11 @@ function renderLink(el) {
 export function rungSeqs(l) {
   const ea = byId(l.a.id), eb = byId(l.b.id);
   const qa = refSeq(l.a, ea), qb = refSeq(l.b, eb);
-  const n = qa.length || qb.length || l.bases || defaultBases(linkStrand(l.a), linkStrand(l.b));
+  // between letter-view strands the rungs meet the letters: the DNA grid count
+  const grid = () => { const [a0, a1] = refSpan(l.a, ea), [b0, b1] = refSpan(l.b, eb);
+    return naturalBases(Math.min(a1 - a0, b1 - b0), gridPitch(dnaBpg())); };
+  const n = qa.length || qb.length || l.bases
+    || (seqStrand(ea) || seqStrand(eb) ? grid() : defaultBases(linkStrand(l.a), linkStrand(l.b)));
   const letters = q => Array.from({ length: n }, (_, i) => (q[i] && q[i] !== 'N' ? q[i] : null));
   return { n, sa: letters(qa), sb: letters(qb), fromSeq: !!(qa || qb) };
 }
@@ -1172,12 +1177,12 @@ const RENDERERS = {
 // ---- node cache ----
 
 const nodeCache = new Map(); // id → { key, node, divs }
+const badEls = new Set(); // ids already reported as undrawable
 
 // Cache key: the element's full JSON, plus whatever external data its pixels
 // depend on (palette/label slots for 'slot:' refs, endpoint cards for arrows).
 function elKey(el, salt) {
   let key = JSON.stringify(el);
-  if (key.includes('slot:')) key += salt;
   if (el.type === 'arrow') {
     const a = byId(el.from), b = byId(el.to);
     key += a && b ? `|${a.x},${a.y},${a.w},${a.h}|${b.x},${b.y},${b.w},${b.h}` : '|x';
@@ -1190,6 +1195,7 @@ function elKey(el, salt) {
   if (shownDNA(el) || (el.type === 'link' && duplexLink(el))) key += dnaKey(el);
   if (seqStrand(el)) key += '|seq' + dnaBpg();
   if (MOLS[el.mol]) key += molThreaded(el, MOLS[el.mol]);
+  if (key.includes('slot:')) key += salt; // last: strands folded in above may use slots too
   return key;
 }
 
@@ -1421,15 +1427,25 @@ export function renderNow(cull = true) {
   const salt = JSON.stringify(state.doc.palette) + JSON.stringify(state.doc.labelSlots || []);
   const cardNodes = [], backNodes = [], underNodes = [], linkNodes = [], drawNodes = [], divs = [], measures = [];
   const seen = new Set();
+  duplexOf = new Map();
+  for (const l of state.doc.elements) if (duplexLink(l)) for (const r of [l.a, l.b]) {
+    if (!duplexOf.has(r.id)) duplexOf.set(r.id, []);
+    if (!duplexOf.get(r.id).includes(l)) duplexOf.get(r.id).push(l);
+  }
   for (const el of state.doc.elements) {
     const renderer = RENDERERS[el.type];
     if (!renderer) continue;
     seen.add(el.id); // keep every live element's cache entry; only cull from the DOM
-    if (cull && !onScreen(el) && !selected(el.id)) continue;
-    const key = elKey(el, salt);
-    let entry = nodeCache.get(el.id);
-    if (!entry || entry.key !== key) {
-      entry = renderer(el);
+    let entry = nodeCache.get(el.id), key;
+    try { // one malformed element (a hand-edited file, a collapsed line) mustn't stop the canvas
+      if (cull && !onScreen(el) && !selected(el.id)) continue;
+      key = elKey(el, salt);
+      if (!entry || entry.key !== key) entry = renderer(el);
+    } catch (err) {
+      if (!badEls.has(el.id)) { badEls.add(el.id); console.error(`can't draw ${el.type} ${el.id}:`, err); }
+      continue;
+    }
+    if (entry.key !== key) {
       entry.key = key;
       entry.under?.setAttribute('data-id', el.id); // so a selection-only export can drop it
       nodeCache.set(el.id, entry);
@@ -1442,6 +1458,7 @@ export function renderNow(cull = true) {
     if (entry.under) underNodes.push(entry.under); // molecule outlines, beneath every molecule
     if (entry.divs) divs.push(...entry.divs);
   }
+  duplexOf = null; // (each element's errors are caught above, so this always runs)
   for (const id of [...nodeCache.keys()]) {
     if (!seen.has(id)) { nodeCache.delete(id); richBoxes.delete(id); }
   }
@@ -1510,21 +1527,108 @@ function exportRichText(el) {
   return g;
 }
 
-// Math label → centered foreignObject at the element's label anchor.
-function exportMathLabel(el) {
-  const b = elementBBox(el);
-  const off = el.labelOff || [0, 0];
-  const cx = (b[0] + b[2]) / 2 + off[0], top = b[1] - 9 + off[1];
-  const fo = svgEl('foreignObject', {
-    x: cx - 150, y: top - 12, width: 300, height: 40, style: 'overflow:visible',
-  });
+// Math label → foreignObject over the hit rect drawLabel sized to it on screen.
+function exportMathLabel(r) {
+  const [x, y, w, h] = ['x', 'y', 'width', 'height'].map(k => +r.getAttribute(k) || 0);
+  const fo = svgEl('foreignObject', { x: x - 20, y, width: w + 40, height: h, style: 'overflow:visible' });
   const div = document.createElement('div');
   div.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
-  div.style.cssText =
-    `display:flex;justify-content:center;font:600 12.5px ${FONT};color:${resolveColor(el.color) || '#2b2622'};`;
-  div.innerHTML = richHTML(resolveLabel(el.label));
+  div.style.cssText = `display:flex;justify-content:center;align-items:center;height:100%;white-space:nowrap;` +
+    `font:600 ${r.dataset.size}px ${FONT};color:${r.dataset.color};`;
+  div.innerHTML = richHTML(r.dataset.tex);
   fo.appendChild(div);
   return fo;
+}
+
+// An HTML overlay (rich note, math label) redrawn as plain SVG, in world units,
+// from where the browser laid it out on screen: each line of text a <text> with
+// a position per glyph, KaTeX's rules (fraction bars) as rects and its inline
+// SVGs (roots, tall delimiters) copied in their clip boxes. A canvas refuses an
+// SVG holding foreignObject, so this is what lets PNG export keep math.
+// ponytail: borders, colour and text-decoration only — no backgrounds or shadows.
+function flattenHTML(div) {
+  const g = svgEl('g');
+  const wrap = $('canvasWrap'), wr = wrap.getBoundingClientRect(), { tx, ty, s } = state.view;
+  const ox = wr.left + wrap.clientLeft + tx, oy = wr.top + wrap.clientTop + ty;
+  const wx = x => (x - ox) / s, wy = y => (y - oy) / s;
+  const ctx = document.createElement('canvas').getContext('2d'), ascents = new Map();
+  const ascent = font => { // the share of a text box above the baseline
+    if (!ascents.has(font)) {
+      ctx.font = font;
+      const m = ctx.measureText('Hg'), a = m.fontBoundingBoxAscent, d = m.fontBoundingBoxDescent;
+      ascents.set(font, a + d > 0 ? a / (a + d) : 0.8);
+    }
+    return ascents.get(font);
+  };
+  const deco = el => { // text-decoration isn't inherited in the computed style: gather it
+    const out = new Set();
+    for (let e = el; e && e !== div.parentElement; e = e.parentElement)
+      for (const k of getComputedStyle(e).textDecorationLine.split(' ')) if (k !== 'none') out.add(k);
+    return [...out].join(' ');
+  };
+  const range = document.createRange();
+  const walk = document.createTreeWalker(div, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+  for (let n = walk.currentNode; n; n = walk.nextNode()) {
+    if (n.nodeType === Node.ELEMENT_NODE) {
+      if (n.closest('.katex-mathml')) continue; // KaTeX's hidden MathML copy
+      const cs = getComputedStyle(n);
+      if (n instanceof SVGElement) {
+        if (n.tagName !== 'svg' || n.parentElement.closest('svg')) continue;
+        const r = n.getBoundingClientRect();
+        let c = r; // clipped by the nearest overflow-hidden box (KaTeX's long sqrt tails)
+        for (let e = n.parentElement; e && e !== div.parentElement; e = e.parentElement)
+          if (getComputedStyle(e).overflow !== 'visible') { c = e.getBoundingClientRect(); break; }
+        const x0 = Math.max(r.left, c.left), y0 = Math.max(r.top, c.top);
+        const x1 = Math.min(r.right, c.right), y1 = Math.min(r.bottom, c.bottom);
+        if (x1 <= x0 || y1 <= y0) continue;
+        const box = svgEl('svg', { x: wx(x0), y: wy(y0), width: (x1 - x0) / s, height: (y1 - y0) / s }, g);
+        const copy = n.cloneNode(true);
+        Object.entries({ x: (r.left - x0) / s, y: (r.top - y0) / s, width: r.width / s, height: r.height / s })
+          .forEach(([k, v]) => copy.setAttribute(k, v));
+        copy.setAttribute('style', `fill:${cs.fill};stroke:${cs.stroke};stroke-width:${cs.strokeWidth}`);
+        box.appendChild(copy);
+        continue;
+      }
+      for (const side of ['Top', 'Bottom']) {
+        const w = parseFloat(cs[`border${side}Width`]);
+        if (!w || cs[`border${side}Style`] === 'none') continue;
+        const r = n.getBoundingClientRect();
+        svgEl('rect', { x: wx(r.left), y: side === 'Top' ? wy(r.top) : wy(r.bottom) - w,
+          width: r.width / s, height: w, fill: cs[`border${side}Color`] }, g);
+      }
+      continue;
+    }
+    const el = n.parentElement;
+    if (!el || el.closest('.katex-mathml') || el.closest('svg')) continue;
+    const cs = getComputedStyle(el);
+    const font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const attrs = {
+      'font-family': cs.fontFamily, 'font-size': parseFloat(cs.fontSize), 'font-weight': cs.fontWeight,
+      'font-style': cs.fontStyle, fill: cs.color, ...(deco(el) ? { 'text-decoration': deco(el) } : {}),
+    };
+    let run = null; // glyphs on one line
+    const flush = () => {
+      if (!run) return;
+      svgEl('text', { ...attrs, x: run.xs.join(' '), y: run.y + run.h * ascent(font) }, g).textContent = run.text;
+      run = null;
+    };
+    const t = n.data;
+    for (let i = 0; i < t.length; i++) {
+      if (/\s/.test(t[i])) continue; // spaces are just gaps between placed glyphs
+      const len = t.codePointAt(i) > 0xffff ? 2 : 1;
+      range.setStart(n, i); range.setEnd(n, i + len);
+      const r = [...range.getClientRects()].find(q => q.width > 0);
+      if (r) {
+        const y = wy(r.top), h = r.height / s;
+        if (run && Math.abs(y - run.y) > h * 0.3) flush(); // wrapped onto the next line
+        run ||= { y, h, xs: [], text: '' };
+        run.xs.push(wx(r.left)); run.text += t.slice(i, i + len);
+      }
+      i += len - 1;
+    }
+    flush();
+  }
+  return g;
 }
 
 // KaTeX CSS with its woff2 fonts baked in as data: URIs, so exported SVGs render
@@ -1550,10 +1654,11 @@ async function katexCSS() {
 }
 
 // plain: skip KaTeX CSS + math foreignObjects — a lighter SVG for thumbnails
-// that a canvas can rasterize without being tainted (WebKit taints on foreignObject).
+// that a canvas can rasterize without being tainted (browsers taint on foreignObject).
+// flat: rich text and math as plain SVG (flattenHTML) — rasterizes, math and all.
 // Options: `only` (a Set of ids) exports just those elements, framed to them;
 // `grid` draws the dot grid; `transparent` leaves out the background.
-export async function exportSVGString({ plain = false, only = null, grid = false, transparent = false } = {}) {
+export async function exportSVGString({ plain = false, flat = false, only = null, grid = false, transparent = false } = {}) {
   renderNow(false); // export clones the live layers — force every element in, unculled
   const box = contentBBox(only ? state.doc.elements.filter(el => only.has(el.id)) : undefined);
   if (!box) return null;
@@ -1585,13 +1690,12 @@ export async function exportSVGString({ plain = false, only = null, grid = false
   for (const el of plain ? [] : state.doc.elements) {
     const clone = out.querySelector(`[data-id="${el.id}"]`);
     if (!clone) continue;
-    if (el.type === 'text' && isRichText(el)) {
-      clone.replaceChildren(...exportRichText(el).childNodes);
-    } else if (el.label && !el.labelHide && hasMath(resolveLabel(el.label))) {
-      clone.appendChild(exportMathLabel(el));
-    }
+    if (flat) for (const div of nodeCache.get(el.id)?.divs || []) clone.appendChild(flattenHTML(div));
+    else if (el.type === 'text' && isRichText(el)) clone.replaceChildren(...exportRichText(el).childNodes);
   }
-  out.querySelectorAll('[data-hit], [data-ph]').forEach(n => n.remove());
+  out.querySelectorAll('rect[data-tex]').forEach(r => (plain || flat ? r.remove() : r.replaceWith(exportMathLabel(r))));
+  // letter-view strands: the letters only (the far-zoom line is a screen stand-in)
+  out.querySelectorAll('[data-hit], [data-ph], .seq-far').forEach(n => n.remove());
   if (only) out.querySelectorAll('[data-id]').forEach(n => { if (!only.has(n.dataset.id)) n.remove(); });
   return new XMLSerializer().serializeToString(out);
 }

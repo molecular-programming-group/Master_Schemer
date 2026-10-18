@@ -2,6 +2,7 @@
 
 import { polylineLength, subPath, splitSegments } from './geom.js';
 import { defaultPalette } from './themes.js';
+import { seqOf, seqLetters } from './dna.js';
 
 export const COLORS = [
   { name: 'Ink',     hex: '#2b2622' },
@@ -43,8 +44,53 @@ export function resolveLabel(l) {
   return l;
 }
 
-export const groupMembers = gid =>
-  state.doc.elements.filter(el => el.group === gid);
+// ---- domains by name ----
+// A domain is a name: every line or segment labelled "a" is domain a, and "a*"
+// (or $x^*$) its complement. A colour set on a name (doc.domains[name]) paints
+// every use — the complement a lighter shade of it — unless a use opts out
+// (ownColor). syncDomains writes that colour onto the uses on every change, so
+// rendering, export and copy/paste just see ordinary colours.
+
+// A label read as a domain name: { name, comp } plus the parts a rename keeps.
+export function domainKey(label) {
+  const t = (resolveLabel(label) || '').trim();
+  if (!t) return null;
+  const m = t.match(/^(.+?)(\^\{\*\}|\^\*|\*)(\$?)$/);
+  return m ? { name: m[1] + m[3], comp: true, pre: m[1], suf: m[2], end: m[3] } : { name: t, comp: false };
+}
+
+// Every line and segment that is a domain, with its key: [{ el, obj, seg?, key }].
+export function domainUses() {
+  const out = [];
+  for (const el of state.doc.elements) {
+    if (el.type !== 'path') continue;
+    const k = domainKey(el.label);
+    if (k) out.push({ el, obj: el, key: k });
+    (el.segments || []).forEach((sg, i) => { const ks = domainKey(sg.label); if (ks) out.push({ el, obj: sg, seg: i, key: ks }); });
+  }
+  return out;
+}
+
+// A colour mixed toward white by k (the complement's lighter shade).
+const lighter = (hex, k = 0.45) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return '#' + [16, 8, 0].map(sh => Math.round(((n >> sh) & 255) * (1 - k) + 255 * k).toString(16).padStart(2, '0')).join('');
+};
+
+const PATTERN_KEYS = ['pattern', 'patternBg', 'patternScale'];
+export function syncDomains() {
+  const doms = state.doc.domains;
+  if (!doms || !Object.keys(doms).length) return;
+  for (const { obj, key } of domainUses()) {
+    const d = doms[key.name];
+    if (!d?.color || obj.ownColor) continue;
+    const c = key.comp ? lighter(resolveColor(d.color)) : d.color;
+    if (obj.color !== c) obj.color = c;
+    for (const k of PATTERN_KEYS) if (d[k] === undefined) delete obj[k]; else obj[k] = d[k];
+  }
+}
 
 // Groups nest: a group carries an optional `parent` group id. These walk the
 // tree — child groups of gid, and every element that lives anywhere under gid.
@@ -66,7 +112,7 @@ export function groupIsEmpty(gid) {
 }
 
 export const state = {
-  doc: { version: 3, elements: [], palette: defaultPalette(), groups: [], labelSlots: [], notes: '' },
+  doc: { version: 3, elements: [], palette: defaultPalette(), groups: [], labelSlots: [], domains: {}, notes: '' },
   // selection entries: { id } for an element, { id, seg: i } for a path segment
   selection: [],
   tool: 'select',
@@ -81,11 +127,9 @@ export const state = {
   dirty: false, // unsaved changes since the last file save (drives the close prompt)
 };
 
-const AUTOSAVE_KEY = 'master-schemer-doc';
 const HISTORY_MAX = 100;
 let idCounter = 0;
 let onChanged = () => {};
-let autosaveTimer = null;
 
 export const setOnChanged = fn => { onChanged = fn; };
 
@@ -98,40 +142,34 @@ export function beginChange() {
   state.history.push(JSON.stringify(state.doc));
   if (state.history.length > HISTORY_MAX) state.history.shift();
   state.future = [];
+  state.dirty = true;
 }
 
-// Mark the doc dirty and schedule an autosave, WITHOUT triggering a re-render.
-// Used for changes that repaint themselves (notes typing), so a keystroke
-// doesn't rebuild the whole canvas/panel. load/new/save clear dirty again.
+// Mark the doc dirty WITHOUT triggering a re-render, for changes that repaint
+// themselves (notes typing) and so skip history. load/new/save clear dirty again.
 export function touch() {
   state.dirty = true;
-  clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(() => {
-    try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(state.doc)); } catch { /* full/blocked */ }
-  }, 300);
 }
 
-// Call after mutating the doc.
+// Call after mutating the doc (or the selection); beginChange marks it dirty.
 export function changed() {
-  touch();
+  // the drawing colour can't point at a slot this doc no longer has (new, open, undo)
+  if (String(state.color).startsWith('slot:') && !state.doc.palette.some(sl => `slot:${sl.id}` === state.color)) state.color = INK;
+  syncDomains();
   onChanged();
 }
 
-export function undo() {
-  if (!state.history.length) return;
-  state.future.push(JSON.stringify(state.doc));
-  state.doc = JSON.parse(state.history.pop());
+// Undo/redo swap whole docs (notes included: the notes editor re-reads them).
+function swapDoc(from, to) {
+  if (!from.length) return;
+  to.push(JSON.stringify(state.doc));
+  state.doc = JSON.parse(from.pop());
   state.selection = [];
+  state.dirty = true;
   changed();
 }
-
-export function redo() {
-  if (!state.future.length) return;
-  state.history.push(JSON.stringify(state.doc));
-  state.doc = JSON.parse(state.future.pop());
-  state.selection = [];
-  changed();
-}
+export const undo = () => swapDoc(state.history, state.future);
+export const redo = () => swapDoc(state.future, state.history);
 
 export function addElement(el) {
   el.id = el.id || newId();
@@ -145,9 +183,13 @@ export function deleteSelection() {
   // Segment selections remove just the segment; element selections remove the
   // element plus any arrows referencing a deleted card.
   const segSel = state.selection.filter(s => s.seg !== undefined);
-  for (const s of segSel) {
-    const el = byId(s.id);
-    if (el?.segments) el.segments.splice(s.seg, 1);
+  for (const id of new Set(segSel.map(s => s.id))) {
+    const el = byId(id);
+    if (!el?.segments) continue;
+    const gone = new Set(segSel.filter(s => s.id === id).map(s => s.seg));
+    const kept = el.segments.map((_, i) => i).filter(i => !gone.has(i));
+    el.segments = kept.map(i => el.segments[i]);
+    remapSegLinks(id, kept);
   }
   const ids = new Set(state.selection.filter(s => s.seg === undefined).map(s => s.id));
   // arrows to a deleted card, and links touching a deleted element, go too
@@ -158,6 +200,17 @@ export function deleteSelection() {
   pruneGroups();
   state.selection = [];
   changed();
+}
+
+// Links name segments by index: after a strand's segment list is edited, `kept`
+// lists the old index of each surviving segment in its new order. Links to a
+// segment that went are removed; the rest follow their segment.
+export function remapSegLinks(id, kept) {
+  const to = new Map(kept.map((o, n) => [o, n]));
+  const ok = r => r?.id !== id || r.seg === undefined || to.has(r.seg);
+  state.doc.elements = state.doc.elements.filter(x => x.type !== 'link' || (ok(x.a) && ok(x.b)));
+  for (const x of state.doc.elements) if (x.type === 'link') for (const k of ['a', 'b'])
+    if (x[k]?.id === id && x[k].seg !== undefined) x[k] = { ...x[k], seg: to.get(x[k].seg) };
 }
 
 // Groups with no remaining members (elements or child groups) disappear;
@@ -174,6 +227,9 @@ export function pruneGroups() {
   // heal dangling parent pointers
   for (const g of groups) if (g.parent && !groups.some(p => p.id === g.parent)) delete g.parent;
   state.doc.groups = groups;
+  // and links between groups go with their groups
+  state.doc.elements = state.doc.elements.filter(l => !(l.type === 'link' &&
+    [l.a, l.b].some(r => r?.group && !groups.some(g => g.id === r.group))));
 }
 
 export const isSelected = (id, seg) =>
@@ -236,19 +292,29 @@ export function cloneElements(ids) {
 // the complete cap pair on both ends. Segments are sliced at tc, and any link
 // that referenced the parent is removed. Returns the two children, or null if
 // the cut lands too close to an end.
-export function cutPath(el, tc) {
+// A strand Sequence is shared out at base index k (the caller's DNA layout; by
+// default in proportion to length), a domain sequence straddling the cut likewise.
+export function cutPath(el, tc, k) {
   if (el?.type !== 'path') return null;
   const total = polylineLength(el.pts);
   if (tc <= 0.5 || tc >= total - 0.5) return null;
   beginChange();
   const [segsA, segsB] = splitSegments(el.segments, tc, total);
-  const mk = (pts, segments) => {
+  const mid = (el.segments || []).find(s => s.t0 < tc && tc < s.t1);
+  if (mid && segsA.length && segsB.length) {
+    splitString(segsA[segsA.length - 1], mid, (tc - mid.t0) / (mid.t1 - mid.t0), true);
+    splitString(segsB[0], mid, (tc - mid.t0) / (mid.t1 - mid.t0), false);
+  }
+  const q = seqLetters(el.seq);
+  k ??= Math.round(q.length * tc / total);
+  const mk = (pts, segments, seq) => {
     const c = JSON.parse(JSON.stringify(el)); // deep-copy so children never share refs
     delete c.bases; // a DNA strand's free base count doesn't split meaningfully: back to auto
+    if (q) c.seq = seq;
     return Object.assign(c, { id: newId(), pts, segments });
   };
-  const a = mk(subPath(el.pts, 0, tc), segsA);
-  const b = mk(subPath(el.pts, tc, total), segsB);
+  const a = mk(subPath(el.pts, 0, tc), segsA, q.slice(0, k));
+  const b = mk(subPath(el.pts, tc, total), segsB, q.slice(k));
   const i = state.doc.elements.indexOf(el);
   state.doc.elements.splice(i, 1, a, b); // children take the parent's paint slot
   state.doc.elements = state.doc.elements.filter(x =>
@@ -256,6 +322,20 @@ export function cutPath(el, tc) {
   state.selection = [{ id: a.id }, { id: b.id }];
   changed();
   return [a, b];
+}
+
+// Half h of domain s split at fraction f takes its share of a sequence String;
+// a half too short to read as a sequence (seqOf) keeps its count in `bases`,
+// and a set base count is shared out the same way.
+function splitString(h, s, f, first) {
+  const q = seqOf(s.string);
+  if (!q) {
+    if (s.bases !== undefined) { const k = Math.round(s.bases * f); h.bases = first ? k : s.bases - k; }
+    return;
+  }
+  const k = Math.round(q.length * f);
+  h.string = first ? q.slice(0, k) : q.slice(k);
+  if (h.string.length < 4) h.bases = h.string.length; else delete h.bases;
 }
 
 // Split only the domain under arc length tc and leave the strand whole: a nick's
@@ -279,11 +359,8 @@ export function splitDomain(el, tc) {
   const half = (t0, t1, n) => {
     const h = { ...s, t0, t1 };
     delete h.bases; // back to auto, like a cut strand
-    if (s.label) h.label = s.label + n;
-    if (/^[ACGTU]+$/i.test(s.string || '')) {
-      const k = Math.round(s.string.length * (tc - s.t0) / (s.t1 - s.t0));
-      h.string = n === 1 ? s.string.slice(0, k) : s.string.slice(k);
-    }
+    if (s.label) h.label = resolveLabel(s.label) + n;
+    splitString(h, s, (tc - s.t0) / (s.t1 - s.t0), n === 1);
     return h;
   };
   const a = half(s.t0, tc, 1), b = half(tc, s.t1, 2);
@@ -320,18 +397,48 @@ export function reorder(dir) {
   changed();
 }
 
+// An element with the geometry its type needs (a damaged or hand-made file may lack it).
+const num = (...v) => v.every(Number.isFinite);
+function drawable(el) {
+  if (!el || typeof el !== 'object') return false;
+  switch (el.type) {
+    case 'path': case 'ink': case 'aline':
+      return Array.isArray(el.pts) && el.pts.length >= 2 && el.pts.every(p => Array.isArray(p) && num(p[0], p[1]));
+    case 'card': case 'rect': return num(el.x, el.y, el.w, el.h);
+    case 'ellipse': return num(el.cx, el.cy, el.rx, el.ry);
+    case 'text': return num(el.x, el.y) && typeof el.text === 'string';
+    default: return true;
+  }
+}
+
 function migrate(doc) {
   doc.palette ||= [];
   doc.groups ||= [];
   doc.labelSlots ||= [];
+  doc.domains ||= {};
   doc.notes ||= '';
+  // shared labels (older files) become plain names, which now share by themselves;
+  // a shared label's colour slot becomes its domain's colour
+  const text = l => doc.labelSlots.find(sl => `slot:${sl.id}` === l)?.text ?? '';
+  for (const sl of doc.labelSlots) {
+    const k = sl.colorSlot && domainKey(sl.text);
+    if (k && !doc.domains[k.name]) doc.domains[k.name] = { color: `slot:${sl.colorSlot}` };
+  }
+  for (const o of doc.elements.flatMap(el => [el, ...(el.segments || [])]))
+    if (typeof o.label === 'string' && o.label.startsWith('slot:')) o.label = text(o.label);
+  doc.labelSlots = [];
+  doc.elements = doc.elements.filter(drawable); // a damaged element is dropped, not loaded to break the app
+  for (const el of doc.elements) { // fields the editor assumes, missing from hand-made files
+    if (el.type === 'path') el.segments ||= [];
+    if (el.type === 'text') el.size ||= 14;
+  }
   doc.version = 3;
   return doc;
 }
 
 export function newDoc() {
   beginChange();
-  state.doc = { version: 3, elements: [], palette: defaultPalette(), groups: [], labelSlots: [], notes: '' };
+  state.doc = { version: 3, elements: [], palette: defaultPalette(), groups: [], labelSlots: [], domains: {}, notes: '' };
   state.selection = [];
   changed();
 }
@@ -339,15 +446,12 @@ export function newDoc() {
 export function loadDocJSON(text) {
   const doc = JSON.parse(text);
   if (!Array.isArray(doc.elements)) throw new Error('not a Master Schemer document');
-  beginChange();
-  state.doc = migrate(doc);
-  state.selection = [];
-  changed();
-}
-
-export function restoreAutosave() {
-  try {
-    const text = localStorage.getItem(AUTOSAVE_KEY);
-    if (text) state.doc = migrate(JSON.parse(text));
-  } catch { /* corrupt autosave: start fresh */ }
+  // a fresh history: undoing into the previous doc would let Save write it over this file
+  const prev = { doc: state.doc, history: state.history, future: state.future, selection: state.selection };
+  Object.assign(state, { doc: migrate(doc), history: [], future: [], selection: [] });
+  try { changed(); } catch (e) { // a file that can't be drawn: put the old doc back
+    Object.assign(state, prev);
+    changed();
+    throw e;
+  }
 }
