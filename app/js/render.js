@@ -346,6 +346,7 @@ function drawLabel(g, divs, measures, owner, anchor, opts) {
   if (!text) return;
   const off = owner.labelOff || [0, 0];
   const p = [anchor[0] + off[0], anchor[1] + off[1]];
+  if (opts.follow && !hasMath(text)) { contourLabel(g, text, p, opts); return; }
   if (hasMath(text)) {
     const div = document.createElement('div');
     div.className = 'math-label';
@@ -371,6 +372,41 @@ function drawLabel(g, divs, measures, owner, anchor, opts) {
     'data-labelfor': opts.id, ...(opts.segi !== undefined ? { 'data-segi': opts.segi } : {}),
     style: 'cursor:move',
   });
+}
+
+// A copy of a polyline shifted sideways by d (along the same normal labelPos uses).
+function offsetPolyline(pts, d) {
+  const nrm = (a, b) => { const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1; return [(b[1] - a[1]) / l, -(b[0] - a[0]) / l]; };
+  return pts.map((p, i) => {
+    const n0 = i > 0 && nrm(pts[i - 1], p), n1 = i < pts.length - 1 && nrm(p, pts[i + 1]);
+    const n = n0 && n1 ? [n0[0] + n1[0], n0[1] + n1[1]] : n0 || n1;
+    const l = Math.hypot(n[0], n[1]) || 1;
+    return [p[0] + n[0] / l * d, p[1] + n[1] / l * d];
+  });
+}
+
+// A label that follows its strand (el.labelsFollow): the text rides a copy of the
+// strand's path (opts.follow) set off by the label's distance from it, centred,
+// so it bends with the strand. Dragging the label moves that distance. Math
+// labels are HTML overlays and stay straight.
+// ponytail: text longer than its path is cut off at the path end, and a tight
+// inside bend bunches the letters.
+function contourLabel(g, text, p, opts) {
+  const pts = opts.follow, L = polylineLength(pts), m = pointAt(pts, L / 2);
+  const a = pointAt(pts, Math.max(0, L / 2 - 4)), b = pointAt(pts, L / 2 + 4);
+  const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  const d = ((p[0] - m[0]) * (b[1] - a[1]) - (p[1] - m[1]) * (b[0] - a[0])) / l;
+  let line = offsetPolyline(pts, d);
+  if (line[line.length - 1][0] < line[0][0]) line = line.reverse(); // read left to right
+  const id = `lp-${opts.id}-${opts.segi ?? 'el'}`;
+  svgEl('path', { id, d: 'M' + line.map(q => `${q[0]} ${q[1]}`).join(' L'), fill: 'none', stroke: 'none' }, g);
+  const t = haloText(g, 0, 0, '', opts.size, opts.color, 600, {
+    'text-anchor': 'middle', 'dominant-baseline': 'middle',
+    'data-labelfor': opts.id, ...(opts.segi !== undefined ? { 'data-segi': opts.segi } : {}),
+    style: 'cursor:move',
+  });
+  t.textContent = '';
+  appendRuns(svgEl('textPath', { href: `#${id}`, startOffset: '50%' }, t), text, opts.size);
 }
 
 function renderCard(el) {
@@ -458,8 +494,18 @@ function renderPath(el) {
       'stroke-linejoin': scap === 'round' ? 'round' : 'miter', 'stroke-linecap': scap, 'data-seg': i,
     }, g);
     drawLabel(g, divs, measures, seg, labelPos(el.pts, (seg.t0 + seg.t1) / 2, labelOff, 1),
-      { size: 12, color: segColor, id: el.id, segi: i });
+      { size: 12, color: segColor, id: el.id, segi: i, follow: el.labelsFollow && sp });
   });
+  if (plain && el.ticks) { // a short grey dash across the strand at each domain junction
+    const ts = new Set();
+    for (const s of el.segments || []) for (const t of [s.t0, s.t1]) if (t > 0.5 && t < len - 0.5) ts.add(+t.toFixed(2));
+    for (const t of ts) {
+      const [x, y] = pointAt(el.pts, t), a = pointAt(el.pts, Math.max(0, t - 2)), b = pointAt(el.pts, t + 2);
+      const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, h = w + 2;
+      const nx = (b[1] - a[1]) / l * h, ny = -(b[0] - a[0]) / l * h;
+      svgEl('line', { x1: x - nx, y1: y - ny, x2: x + nx, y2: y + ny, stroke: '#8f8f8f', 'stroke-width': Math.max(1, w * 0.45) }, g);
+    }
+  }
   // a cap at an endpoint covered by a segment takes that segment's width (so it
   // aligns with the thicker segment edge, no tip discontinuity) AND its paint —
   // an end-reaching coloured or patterned segment carries into its arrowhead/harpoon
@@ -479,7 +525,7 @@ function renderPath(el) {
       { stroke: c1.paint, 'stroke-width': Math.max(1.2, D * 0.08), opacity: 0.7 });
   }
   drawLabel(g, divs, measures, el, labelPos(el.pts, len / 2, dna ? labelOff - 2 : 14, -1),
-    { size: 12.5, color, id: el.id });
+    { size: 12.5, color, id: el.id, follow: el.labelsFollow && el.pts });
   return { node: g, divs, measures, under };
 }
 
@@ -985,7 +1031,7 @@ function renderLink(el) {
     const color = resolveColor(el.fill) || '#2b2622';
     for (const [p, q] of basePairRungs(A, B, el.bases || defaultBases(A, B))) {
       if (el.rung === 'dot') { // one dot midway: a base pair in dotted duplex notation
-        svgEl('circle', { cx: (p[0] + q[0]) / 2, cy: (p[1] + q[1]) / 2, r: 1.6, fill: color }, g);
+        svgEl('circle', { cx: (p[0] + q[0]) / 2, cy: (p[1] + q[1]) / 2, r: el.rungSize || 1.6, fill: color }, g);
         continue;
       }
       // 'tick': alignment-style dash, a quarter of the gap clear of each strand

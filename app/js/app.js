@@ -2126,6 +2126,17 @@ function setLook(els, look) {
     setDNA([el], look === 'dna');
   }
 }
+// Per-strand drawing toggles (one strand or several): junction ticks (plain lines
+// only) and labels that follow the strand's contour.
+function strandToggles(paths, lines) {
+  const frag = document.createDocumentFragment();
+  const toggle = (text, key) => frag.appendChild(checkboxRow(text, () => paths.every(p => p[key]), v => {
+    for (const p of paths) { if (v) p[key] = true; else delete p[key]; }
+  }));
+  if (lines) toggle('Ticks at domain junctions', 'ticks');
+  toggle('Labels follow the strand', 'labelsFollow');
+  return frag;
+}
 // While View → Draw Strands overrides every strand, say so where its own setting is edited.
 function lookNote() {
   const p = document.createElement('p');
@@ -2440,6 +2451,7 @@ function renderPanel() {
         () => el.corner || 0,
         v => { if (v) el.corner = v; else delete el.corner; },
         { min: 0, max: 8 * GRID, step: GRID / 2 })));
+      styleSec.appendChild(strandToggles([el], look === 'line'));
     }
     if (el.type === 'rect') {
       styleSec.appendChild(fieldRow('Corner radius', numberControl(
@@ -2506,6 +2518,7 @@ function renderPanel() {
         mappedSelect(looks.size > 1 ? { '': 'Mixed', ...LOOKS } : LOOKS, () => (looks.size > 1 ? '' : [...looks][0]),
           v => { if (v) setLook(paths, v); })));
       if (strandView.mode !== 'own') sec.appendChild(lookNote());
+      sec.appendChild(strandToggles(paths, paths.some(p => ownLook(p) === 'line')));
       if (paths.every(p => p.dna)) {
         sec.appendChild(fieldRow('Diameter', sliderNum(() => +diam(paths[0]).toFixed(1),
           v => { for (const p of paths) p.dna = v; }, { min: 4, max: 80, step: 0.5 })));
@@ -2615,6 +2628,8 @@ function renderPanel() {
       sec.appendChild(fieldRow('Base pair look', mappedSelect(
         { line: 'Rung', dot: 'Dot', tick: 'Tick with gap' },
         () => el.rung || 'line', v => { if (v === 'line') delete el.rung; else el.rung = v; })));
+      if (el.rung === 'dot') sec.appendChild(fieldRow('Dot size', sliderNum(() => el.rungSize || 1.6,
+        v => { if (v === 1.6) delete el.rungSize; else el.rungSize = v; }, { min: 0.5, max: 8, step: 0.1 })));
       sec.appendChild(fillControl(el, { optional: false, label: 'Base pair', pattern: false }));
       sec.appendChild(deleteButton());
       panel.appendChild(sec);
