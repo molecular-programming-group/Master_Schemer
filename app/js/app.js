@@ -9,7 +9,7 @@ import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength } from './geo
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView, alineD,
   linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, dnaView, invalidateRenderCache,
-  FONTS, LINE_H, INLINE_TAGS,
+  FONTS, LINE_H, INLINE_TAGS, hasMath, labelHTML,
 } from './render.js';
 import { DEFAULT_BPG, spacing, uAt } from './dna.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
@@ -688,6 +688,11 @@ function applyLabelColorSlot(labelSlot) {
 
 // ---- object sidebar (semantic registry) ----
 
+// Labels with $…$ show typeset; renaming still edits the raw text.
+const setLabelText = (node, text) => {
+  if (hasMath(text)) node.innerHTML = labelHTML(text); else node.textContent = text;
+};
+
 function displayName(el, i) {
   if (el.type === 'card') return el.title || 'Untitled card';
   const label = resolveLabel(el.label || '');
@@ -737,7 +742,7 @@ function sideItem({ depth, name, color, selected, onSelect, onRename, collapsibl
   }
   const label = document.createElement('span');
   label.className = 'side-name';
-  label.textContent = name;
+  setLabelText(label, name);
   row.appendChild(label);
   if (!onRename) {
     row.addEventListener('click', onSelect);
@@ -1936,10 +1941,10 @@ function kindBadge(single, n) {
   tag.className = 'kind-class';
   tag.textContent = cls === 'mixed' ? 'Mixed selection' : CLASS_NAME[cls];
   const k = document.createElement('strong');
-  k.textContent = kind;
+  setLabelText(k, kind);
   const d = document.createElement('span');
   d.className = 'kind-detail';
-  d.textContent = detail;
+  setLabelText(d, detail);
   box.append(tag, k, d);
   return box;
 }

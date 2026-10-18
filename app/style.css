@@ -291,6 +291,8 @@ input, textarea { user-select: text; -webkit-user-select: text; }
   white-space: nowrap;
 }
 
+.side-name .katex, .kind-badge .katex { font-size: 1.1em; }
+
 .side-rename {
   font: inherit;
   width: 100%;

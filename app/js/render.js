@@ -120,6 +120,10 @@ function noteTex(tex, el) {
   return el?.bold ? `\\boldsymbol{${tex}}` : tex;
 }
 
+// One-line labels (sidebar rows, the selection badge): $…$ as KaTeX, the rest as text.
+export const labelHTML = text => text.split(/\$([^$]+)\$/)
+  .map((part, i) => i % 2 ? katexHTML(part) : esc(part)).join('');
+
 export function richHTML(text, el) {
   return text.split('\n').map(line =>
     line.split(/\$([^$]+)\$/)
