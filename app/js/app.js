@@ -2499,6 +2499,23 @@ $('notesHide').addEventListener('click', () => setNotesHidden(true));
 $('notesToggle').addEventListener('click', () =>
   setNotesHidden(!document.body.classList.contains('notes-hidden')));
 
+// ---- appearance (a UI pref, like the notes panel) ----
+// Unset follows the OS; once toggled, the choice sticks.
+
+const THEME_KEY = 'master-schemer-theme';
+function setTheme(dark, remember) {
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  $('themeToggle').setAttribute('aria-pressed', String(dark));
+  if (remember) try { localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light'); } catch { /* full */ }
+}
+$('themeToggle').addEventListener('click', () =>
+  setTheme(document.documentElement.dataset.theme !== 'dark', true));
+{
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch { /* blocked */ }
+  setTheme(saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches, false);
+}
+
 // ---- boot ----
 
 // Start every session on a fresh blank canvas (autosave still writes, so a
