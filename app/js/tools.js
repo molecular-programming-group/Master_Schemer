@@ -8,7 +8,7 @@ import {
   nearestOnPath, pointAt, subPath, dist, rectsIntersect, insertIndex, bladeCross,
   resizeEndSegments,
 } from './geom.js';
-import { svgEl, SEL, inkD, worldToScreen, elementBBox } from './render.js';
+import { svgEl, SEL, inkD, worldToScreen, elementBBox, duplexLink } from './render.js';
 
 const $ = id => document.getElementById(id);
 const preview = () => $('layer-preview');
@@ -371,6 +371,9 @@ export const tools = {
           drag = { mode: 'move', start: wp, items: moveItems(), drill: objSelected ? null : { chain, level, entry } };
           return;
         }
+        // a second click on a selected duplex (no drag) selects the strands it
+        // joins, which are hidden inside it — see up()
+        const cycle = duplexLink(el) && state.selection.length === 1 && isSelected(entry.id, undefined) ? el : null;
         if (!isSelected(entry.id, entry.seg)) state.selection = [entry];
         changed();
         // Ctrl+drag clones the selection and moves the copies
@@ -401,7 +404,7 @@ export const tools = {
           if (!nearBorder) return;
         }
         const items = moveItems();
-        if (items.length) drag = { mode: 'move', start: wp, items };
+        if (items.length || cycle) drag = { mode: 'move', start: wp, items, cycle };
         return;
       }
       if (!e.shiftKey) { state.selection = []; changed(); }
@@ -504,6 +507,9 @@ export const tools = {
         return;
       }
       // a click (no drag) on an already-group-selected object drills one level in
+      if (drag.mode === 'move' && drag.cycle && !drag.moved) {
+        state.selection = [{ id: drag.cycle.a.id }, ...(drag.cycle.b.id !== drag.cycle.a.id ? [{ id: drag.cycle.b.id }] : [])];
+      }
       if (drag.mode === 'move' && drag.drill && !drag.moved) {
         const { chain, level, entry } = drag.drill;
         const next = level + 1;

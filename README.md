@@ -68,21 +68,33 @@ color and opacity are yours to set, and **Unlink** in the panel dissolves it.
 Set a line's **Draw as** to **DNA molecule** (or tick **Draw as DNA molecules**
 for a whole selection) and it renders as a space-filling B-DNA strand, baked
 from the Blender library's B-DNA model. The brush works like an Affinity
-Designer image brush: a fixed 5′ cap, a repeating one-turn body, and a 3′ cap,
-bent along the line. Segment colours carry over as domain colours.
+Designer image brush: an end cap, a repeating one-turn body, and another end
+cap, bent along the line. Segment colours carry over as domain colours.
 
-- **Diameter** replaces Width. It is the duplex diameter at your drawing's
-  scale, so a single strand comes out naturally thinner than a duplex.
-- **Bases** default to *auto*, which gives natural B-DNA spacing for the line's
-  length and diameter. Type a number and the molecule stretches or compresses to
-  fit; the panel shows by how much (e.g. "1.33× natural"). **Natural spacing**
-  returns to auto.
-- A **Base pairs** link between two DNA strands (or between two segments of one
-  strand, for a hairpin) draws a double helix along the midline between them.
-  Each backbone takes its own strand's colour. The link's base-pair count sets
-  that domain's length on both strands. A segment can carry its own count, and
-  the rest of the strand shares the line's count, so changing one domain never
-  re-spaces the others.
+- **DNA grid.** The document has a DNA scale: *N bp per grid square*, by
+  default 10 (one helical turn). Base counts follow the drawn length on that
+  grid, and the diameter follows the scale, so anything you draw looks natural
+  and its length tells you its base count. You can go off the grid two ways:
+  type a **Diameter**, or type **Bases** and the molecule stretches or
+  compresses to fit (the panel shows by how much). **Snap to DNA grid** puts a
+  strand, its domains and its duplexes back on the grid.
+- **Duplexes.** A **Base pairs** link between two DNA strands (or between two
+  segments of one strand, for a hairpin) draws a double helix along the midline
+  between them, and each backbone takes its own strand's colour. The link's
+  base-pair count sets that domain's length on both strands. Where a strand
+  carries on single-stranded, it leaves the duplex in phase along its own
+  backbone and then bends out to its line, so a partly hybridized pair reads as
+  one molecule. Strands drawn half a grid apart give the smallest bend.
+- **Finding the strands.** A duplex hides its strands, so clicking it selects
+  the duplex and shows both strands dashed. Click it again to select the strands
+  themselves, or use the buttons in its panel.
+- **Look.** **Shading** can be *Soft* (rendered) or *Toon* (flat bands), and
+  **Black outline** is independent of colour. **Colour by** can be:
+  - *Strand*.
+  - *Backbone + bases*, with its own base colour.
+  - *Sequence*: A green, C blue, G amber, T red. A segment whose **String** is a
+    sequence shows that sequence; other bases are random, e.g. for a UMI.
+    Paired bases show their partner's complement.
 
 The textures live in `app/js/dna-tex.js`. They are regenerated with
 `blender -b -P tools/bake_dna_brush.py`, which needs the Molecular Nodes

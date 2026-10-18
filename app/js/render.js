@@ -6,7 +6,10 @@ import {
   GRID, bboxOfPts, subPath, pointAt, polylineLength, rectEdgePoint, basePairRungs, defaultBases,
   convexHull, ellipsePoints, roundedPathD,
 } from './geom.js';
-import { drawBrush, brushPath, strandLayout, midline, naturalBases, uAt } from './dna.js';
+import {
+  drawBrush, brushPath, strandLayout, midline, naturalBases, uAt, styleGroup, DEFAULT_BPG, naturalD,
+  gridPitch, randomBase, BASE_COLORS, COMPLEMENT,
+} from './dna.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 export const SEL = '#b57f1d'; // honey selection accent (matches --primary)
@@ -75,7 +78,7 @@ export function elementBBox(el) {
       return [el.x - m, el.y - m, el.x + el.w + m, el.y + el.h + m];
     }
     case 'path': case 'ink': case 'aline': {
-      const b = bboxOfPts(el.pts), m = el.dna ? el.dna * 0.75 + 4 : (el.width || 2) + 4;
+      const b = bboxOfPts(el.pts), m = el.dna ? diam(el) * 0.75 + 4 : (el.width || 2) + 4;
       return [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
     }
     case 'ellipse': {
@@ -357,22 +360,31 @@ function renderPath(el) {
   const pts = ptsAttr(el.pts);
   const w = el.width || 2;
   const color = resolveColor(el.color);
-  const hitW = el.dna ? Math.max(12, el.dna) : Math.max(12, w + 8);
-  svgEl('polyline', {
-    points: pts, fill: 'none', stroke: 'transparent', 'stroke-width': hitW, 'data-hit': '1',
-  }, g);
+  const hitW = el.dna ? Math.max(12, diam(el)) : Math.max(12, w + 8);
+  // inside a duplex a strand doesn't catch clicks: the duplex does (click it
+  // again for its strands), so what you click is what you see
+  const runs = el.dna ? dnaRuns(el, dnaLayout(el)) : [{ t0: 0, t1: Infinity }];
+  const unpaired = (t0, t1) => runs.some(r => (t0 + t1) / 2 >= r.t0 && (t0 + t1) / 2 <= r.t1);
+  for (const r of runs) {
+    svgEl('polyline', {
+      points: el.dna ? ptsAttr(subPath(el.pts, r.t0, r.t1)) : pts,
+      fill: 'none', stroke: 'transparent', 'stroke-width': hitW, 'data-hit': '1',
+    }, g);
+  }
   if (el.dna) drawDNAStrand(g, el);
   else svgEl('path', { d: roundedPathD(el.pts, el.corner || 0), ...strokeAttrs(el), stroke: paintOf(el, color) }, g);
   const len = polylineLength(el.pts);
-  const labelOff = el.dna ? el.dna / 2 + 9 : 16;
+  const labelOff = el.dna ? diam(el) / 2 + 9 : 16;
   (el.segments || []).forEach((seg, i) => {
     const sp = subPath(el.pts, seg.t0, seg.t1);
     const sa = ptsAttr(sp);
     const segColor = resolveColor(seg.color);
     const scap = seg.linecap || 'round';
-    svgEl('polyline', {
-      points: sa, fill: 'none', stroke: 'transparent', 'stroke-width': hitW, 'data-hit': '1', 'data-seg': i,
-    }, g);
+    if (unpaired(seg.t0, seg.t1)) {
+      svgEl('polyline', {
+        points: sa, fill: 'none', stroke: 'transparent', 'stroke-width': hitW, 'data-hit': '1', 'data-seg': i,
+      }, g);
+    }
     if (!el.dna) svgEl('path', {
       d: roundedPathD(sp, el.corner || 0), fill: 'none', stroke: paintOf(seg, segColor),
       'stroke-width': segWidth(seg, w),
@@ -592,7 +604,13 @@ export function linkStrand(ref) {
   return el.pts;
 }
 
-// ---- DNA strands (lines with .dna = diameter, drawn by the DNA brush) ----
+// ---- DNA strands (lines with .dna set, drawn by the DNA brush) ----
+// el.dna is true (follow the document's DNA grid) or an explicit diameter in
+// world units. The grid — doc.dnaBpg bases per grid square — sets every auto
+// base count, and the diameter that looks natural at that spacing.
+
+export const dnaBpg = () => state.doc.dnaBpg || DEFAULT_BPG;
+export const diam = el => (typeof el.dna === 'number' ? el.dna : naturalD(dnaBpg()));
 
 const dnaEnd = ref => {
   const e = ref && !ref.group && byId(ref.id);
@@ -604,12 +622,12 @@ const refSpan = (ref, e) => {
   const s = ref.seg !== undefined && e.segments?.[ref.seg];
   return s ? [s.t0, s.t1] : [0, polylineLength(e.pts)];
 };
-// The duplex's base pairs: the link's own count, else natural spacing.
+// The duplex's base pairs: the link's own count, else the grid's count.
 export function duplexBases(l) {
   if (l.bases) return l.bases;
   const A = dnaEnd(l.a), B = dnaEnd(l.b);
   const [a0, a1] = refSpan(l.a, A), [b0, b1] = refSpan(l.b, B);
-  return naturalBases(Math.min(a1 - a0, b1 - b0), (A.dna + B.dna) / 2);
+  return naturalBases(Math.min(a1 - a0, b1 - b0), gridPitch(dnaBpg()));
 }
 // Spans of a strand with a fixed base count: paired domains (from duplex links,
 // listed first so they win over a segment's own count) and counted segments.
@@ -618,54 +636,132 @@ function dnaFixed(el) {
   const fixed = [];
   for (const l of state.doc.elements) {
     if (!duplexLink(l)) continue;
-    for (const ref of [l.a, l.b]) {
-      if (ref.id !== el.id) continue;
-      const [t0, t1] = refSpan(ref, el);
-      fixed.push({ t0, t1, count: duplexBases(l), paired: true });
+    for (const role of ['a', 'b']) {
+      if (l[role].id !== el.id) continue;
+      const [t0, t1] = refSpan(l[role], el);
+      fixed.push({ t0, t1, count: duplexBases(l), paired: true, link: l, role });
     }
   }
   for (const s of el.segments || []) if (s.bases) fixed.push({ t0: s.t0, t1: s.t1, count: s.bases });
   return fixed;
 }
-export const dnaLayout = el => strandLayout(polylineLength(el.pts), el.dna, dnaFixed(el), el.bases);
+export const dnaLayout = el =>
+  strandLayout(polylineLength(el.pts), gridPitch(dnaBpg()), dnaFixed(el), el.bases);
+
+// The unpaired stretches of a strand: [{ t0, t1, before, after }], with the
+// paired spans (duplexes) they run on from / into.
+function dnaRuns(el, lay) {
+  const L = polylineLength(el.pts), runs = [];
+  let at = 0, before = null;
+  for (const sp of lay.spans.filter(x => x.paired)) {
+    if (sp.t0 - at >= 0.5) runs.push({ t0: at, t1: sp.t0, before, after: sp });
+    at = sp.t1; before = sp;
+  }
+  if (L - at >= 0.5) runs.push({ t0: at, t1: L, before, after: null });
+  return runs;
+}
 
 const strandColor = (e, t) =>
   resolveColor((e.segments || []).find(s => t >= s.t0 && t <= s.t1)?.color ?? e.color);
 const fillet = D => D * 1.5; // tightest turn a strand takes without its texture visibly smearing
 
-// Each single-stranded run between duplexes is its own capped stroke: where a
-// strand leaves a duplex it gets a rounded end, not a flat cut.
+// Base letter of strand e at base index i: its segment's sequence (the string
+// field, when it is one) or a fixed random base.
+function baseLetter(e, lay, i) {
+  for (const s of e.segments || []) {
+    const seq = (s.string || '').toUpperCase().replace(/U/g, 'T').replace(/[^ACGT]/g, '');
+    if (!seq) continue;
+    const j = i - Math.round(uAt(lay.knots, s.t0));
+    if (j >= 0 && j < Math.round(uAt(lay.knots, s.t1) - uAt(lay.knots, s.t0))) return seq[j % seq.length];
+  }
+  return randomBase(e.id, i);
+}
+const baseColor = e => resolveColor(e.baseColor) || '#f1ece2';
+
+// A strand's paint layers on texture `tex` ('ss', 'ssB', 'ds1'…): the whole
+// strand in its colour, then its bases per its colour mode. letterAt(i) maps
+// the brush's base slot i to the base letter shown there.
+function strandLayers(e, tex, btex, tOf, letterAt) {
+  const layers = tex ? [{ tex, colorAt: t => strandColor(e, tOf(t)) }] : [];
+  if (e.dnaColor === 'bases') layers.push({ tex: btex, colorAt: () => baseColor(e) });
+  if (e.dnaColor === 'sequence') layers.push({ tex: btex, base: true, colorAt: (t, i) => BASE_COLORS[letterAt(i)] });
+  return layers;
+}
+
+// A duplex's shape: the midline between its two strands' paired spans.
+function duplexGeom(l) {
+  const A = dnaEnd(l.a), B = dnaEnd(l.b);
+  const [a0, a1] = refSpan(l.a, A), [b0, b1] = refSpan(l.b, B);
+  const mid = midline(subPath(A.pts, a0, a1), subPath(B.pts, b0, b1), a1 - a0, b1 - b0, pointAt);
+  return { A, B, a0, a1, b0, b1, mid, D: (diam(A) + diam(B)) / 2, n: duplexBases(l) };
+}
+
+// Where a strand meets a duplex, at the start (atStart) or end of its paired
+// span: the duplex end there, its outward axis, the duplex u at it, and how
+// the strand runs in that u (A runs with it; antiparallel B against it). The
+// single-stranded continuation uses the matching lone-strand texture in the
+// duplex's own u frame, so its backbone carries straight on in phase.
+function junction(sp, atStart) {
+  const G = duplexGeom(sp.link), m = G.mid.pts;
+  const low = sp.role === 'a' ? atStart : (G.mid.rev ? !atStart : atStart); // the u = 0 end?
+  const p = low ? m[0] : m[m.length - 1], q = low ? m[1] : m[m.length - 2];
+  const d = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1;
+  return {
+    p, out: [(p[0] - q[0]) / d, (p[1] - q[1]) / d], u: low ? 0 : G.n,
+    dir: sp.role === 'a' || !G.mid.rev ? 1 : -1, tex: sp.role === 'a' ? 'ss' : 'ssB',
+  };
+}
+
 function drawDNAStrand(g, el) {
-  const D = el.dna, L = polylineLength(el.pts);
-  const lay = dnaLayout(el);
-  const path = brushPath(el.pts, Math.max(el.corner || 0, fillet(D)));
-  const runs = [];
-  let at = 0;
-  for (const [a, b] of lay.skips) { if (a - at >= 0.5) runs.push([at, a]); at = b; }
-  if (L - at >= 0.5) runs.push([at, L]);
-  for (const [t0, t1] of runs) {
-    const u0 = uAt(lay.knots, t0), n = Math.round(uAt(lay.knots, t1) - u0);
-    const sub = path.filter(v => v.t > t0 && v.t < t1);
-    const ends = [t0, t1].map(t => ({ p: pointAt(el.pts, t), t }));
-    drawBrush(g, {
-      path: [ends[0], ...sub, ends[1]].map(v => ({ ...v, t: v.t - t0 })),
-      knots: [[0, 0], ...lay.knots.filter(([t]) => t > t0 && t < t1).map(([t, u]) => [t - t0, u - u0]), [t1 - t0, n]],
-      n, D,
-      layers: [{ tex: 'ss', colorAt: t => strandColor(el, t + t0) }],
-      breaks: (el.segments || []).flatMap(s => [s.t0 - t0, s.t1 - t0]),
-      caps: { head: true, tail: true },
+  const D = diam(el), lay = dnaLayout(el);
+  const target = styleGroup(g, D, el.dnaOutline);
+  for (const run of dnaRuns(el, lay)) {
+    const { t0, t1 } = run;
+    const uS = t => uAt(lay.knots, t);
+    const jS = run.before && junction(run.before, false), jE = run.after && junction(run.after, true);
+    const ref = jS || jE;
+    const dir = ref ? ref.dir : 1, tex = ref ? ref.tex : 'ss';
+    // run u = c + dir · strand u, pinned to the duplex u at a junction
+    const c = jS ? jS.u - dir * uS(t0) : jE ? jE.u - dir * uS(t1) : -uS(t0);
+    // geometry: the strand's own line, but a junction end starts on the duplex
+    // axis and peels off to the line over about one diameter
+    const both = jS && jE;
+    const dS = jS ? Math.min(D * 0.9, (t1 - t0) / (both ? 3 : 2)) : 0;
+    const dE = jE ? Math.min(D * 0.9, (t1 - t0) / (both ? 3 : 2)) : 0;
+    const verts = [];
+    if (jS) verts.push({ p: jS.p, t: t0 });
+    verts.push({ p: pointAt(el.pts, t0 + dS), t: t0 + dS });
+    let acc = 0;
+    for (let i = 1; i < el.pts.length - 1; i++) {
+      acc += Math.hypot(el.pts[i][0] - el.pts[i - 1][0], el.pts[i][1] - el.pts[i - 1][1]);
+      if (acc > t0 + dS && acc < t1 - dE) verts.push({ p: el.pts[i], t: acc });
+    }
+    verts.push({ p: pointAt(el.pts, t1 - dE), t: t1 - dE });
+    if (jE) verts.push({ p: jE.p, t: t1 });
+    let knots = [[t0, c + dir * uS(t0)], ...lay.knots.filter(([t]) => t > t0 && t < t1).map(([t, u]) => [t, c + dir * u]), [t1, c + dir * uS(t1)]];
+    let caps = { head: !jS, tail: !jE };
+    // the brush wants u increasing: a strand running against the duplex u is drawn back to front
+    const sgn = dir;
+    if (sgn < 0) {
+      verts.reverse(); knots.reverse(); caps = { head: caps.tail, tail: caps.head };
+    }
+    const tOf = t => t * sgn;
+    const strandIndex = i => Math.round(dir > 0 ? i - c : c - i - 1); // brush base slot → strand base
+    drawBrush(target, {
+      path: brushPath(verts.map(v => v.p), fillet(D), verts.map(v => v.t * sgn)),
+      knots: knots.map(([t, u]) => [t * sgn, u]), D, caps, toon: el.dnaToon,
+      layers: strandLayers(el, tex, `${tex}b`, tOf, i => baseLetter(el, lay, strandIndex(i))),
+      breaks: (el.segments || []).flatMap(s => [s.t0 * sgn, s.t1 * sgn]),
     });
   }
 }
 
 // The double helix of a duplex link, laid along the midline between its two
-// strands. Strand A is the texture's strand 1 (5'→3' along A), B the other
-// backbone; each backbone takes its own strand's (segment) colour.
+// strands. Strand A is the texture's strand 1 (5'→3' along A), B the other;
+// each backbone takes its own strand's (segment) colour, and each strand's
+// bases follow its own colour mode — B's sequence is A's complement.
 function drawDuplex(g, l) {
-  const A = dnaEnd(l.a), B = dnaEnd(l.b);
-  const [a0, a1] = refSpan(l.a, A), [b0, b1] = refSpan(l.b, B);
-  const mid = midline(subPath(A.pts, a0, a1), subPath(B.pts, b0, b1), a1 - a0, b1 - b0, pointAt);
-  const D = (A.dna + B.dna) / 2, n = duplexBases(l);
+  const { A, B, a0, a1, b0, b1, mid, D, n } = duplexGeom(l);
   let acc = 0;
   const fk = mid.pts.map((p, i) => [acc += i ? Math.hypot(p[0] - mid.pts[i - 1][0], p[1] - mid.pts[i - 1][1]) : 0, mid.f[i]]);
   const Lm = acc;
@@ -681,12 +777,24 @@ function drawDuplex(g, l) {
     ...(A.segments || []).flatMap(s => [s.t0, s.t1]).map(t => (t - a0) / (a1 - a0)),
     ...(B.segments || []).flatMap(s => [s.t0, s.t1]).map(t => (t - b0) / (b1 - b0)).map(f => (mid.rev ? 1 - f : f)),
   ].filter(f => f > 0 && f < 1).map(f => lerp(fk, f, 1, 0));
-  drawBrush(g, {
-    path: brushPath(mid.pts, fillet(D)), knots: [[0, 0], [Lm, n]], n, D,
-    layers: [{ tex: 'ds', colorAt: t => strandColor(B, tB(t)) }, { tex: 'ds1', colorAt: t => strandColor(A, tA(t)) }],
-    breaks,
-    caps: { head: true, tail: true },
+  const layA = dnaLayout(A), uA0 = Math.round(uAt(layA.knots, a0));
+  const letterA = i => baseLetter(A, layA, uA0 + i);
+  const layers = [
+    { tex: 'ds', colorAt: t => strandColor(B, tB(t)) },
+    { tex: 'ds1', colorAt: t => strandColor(A, tA(t)) },
+    ...strandLayers(A, null, 'dsbA', tA, letterA),
+    ...strandLayers(B, null, 'dsbB', tB, i => COMPLEMENT[letterA(i)]),
+  ];
+  drawBrush(styleGroup(g, D, A.dnaOutline || B.dnaOutline), {
+    path: brushPath(mid.pts, fillet(D)), knots: [[0, 0], [Lm, n]], D, layers, breaks,
+    caps: { head: true, tail: true }, toon: A.dnaToon || B.dnaToon,
   });
+}
+
+// Everything a DNA strand's or duplex's pixels depend on beyond its own JSON.
+function dnaKey(el) {
+  const links = el.type === 'link' ? [el] : dnaFixed(el).map(f => f.link);
+  return dnaBpg() + JSON.stringify(links.map(l => [l, byId(l.a.id), byId(l.b.id)]));
 }
 
 function renderLink(el) {
@@ -743,10 +851,8 @@ function elKey(el, salt) {
   }
   // links trace live geometry: rekey when either endpoint's outline moves
   if (el.type === 'link') key += '|' + ptsAttr([...linkTargetPoints(el.a), ...linkTargetPoints(el.b)]);
-  // a duplex wears both strands' colours, segments and diameters
-  if (el.type === 'link' && duplexLink(el)) key += JSON.stringify([byId(el.a.id), byId(el.b.id)]);
-  // a DNA strand's base layout depends on the duplexes it is part of
-  if (el.dna) key += JSON.stringify(dnaFixed(el));
+  // DNA strands and duplexes depend on each other (shape, counts, colours) and the DNA grid
+  if (el.dna || (el.type === 'link' && duplexLink(el))) key += dnaKey(el);
   return key;
 }
 
@@ -782,6 +888,16 @@ function renderSelection(overlay) {
         handleDot(overlay, p1[0], p1[1], s, { 'data-seghandle': '1', 'data-id': el.id, 'data-segi': sel.seg });
       }
       continue;
+    }
+    // a duplex hides its strands: show them as ghosts while it is selected
+    if (el.type === 'link' && duplexLink(el)) {
+      for (const ref of [el.a, el.b]) {
+        const st = byId(ref.id);
+        svgEl('polyline', {
+          points: ptsAttr(st.pts), fill: 'none', stroke: resolveColor(st.color), 'stroke-width': 2 / s,
+          'stroke-dasharray': `${6 / s} ${4 / s}`, opacity: 0.9, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+        }, overlay);
+      }
     }
     if (el.type === 'path' || el.type === 'ink') {
       const attrs = {

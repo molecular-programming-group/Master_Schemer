@@ -7,217 +7,271 @@
  "elements": [
   {
    "type": "path",
-   "id": "ss1",
+   "id": "s1",
    "pts": [
     [
      0,
      0
     ],
     [
-     240,
+     300,
      0
-    ]
-   ],
-   "color": "#c8352e",
-   "width": 2,
-   "label": "ss auto",
-   "segments": [],
-   "linecap": "butt",
-   "dna": 20
-  },
-  {
-   "type": "path",
-   "id": "ss2",
-   "pts": [
-    [
-     0,
-     60
-    ],
-    [
-     240,
-     60
-    ]
-   ],
-   "color": "#2f6fd0",
-   "width": 2,
-   "label": "ss 40 nt",
-   "segments": [],
-   "linecap": "butt",
-   "dna": 20,
-   "bases": 40
-  },
-  {
-   "type": "path",
-   "id": "A",
-   "pts": [
-    [
-     0,
-     140
-    ],
-    [
-     360,
-     140
     ]
    ],
    "color": "#e0701f",
    "width": 2,
-   "label": "A",
+   "label": "strand 1",
    "segments": [
     {
-     "t0": 120,
-     "t1": 260,
+     "t0": 0,
+     "t1": 80,
+     "color": "#2f6fd0",
+     "label": "A"
+    },
+    {
+     "t0": 80,
+     "t1": 160,
+     "color": "#3a8a3e",
+     "label": "B"
+    },
+    {
+     "t0": 160,
+     "t1": 300,
      "color": "#e0701f",
-     "label": "c"
+     "label": "C"
     }
    ],
    "linecap": "butt",
-   "dna": 20
+   "dna": true
   },
   {
    "type": "path",
-   "id": "B",
+   "id": "s2",
    "pts": [
     [
-     280,
-     160
+     460,
+     10
     ],
     [
-     100,
-     160
+     160,
+     10
     ]
    ],
    "color": "#c8352e",
    "width": 2,
-   "label": "B",
-   "segments": [],
+   "label": "strand 2",
+   "segments": [
+    {
+     "t0": 0,
+     "t1": 80,
+     "color": "#2f6fd0",
+     "label": "A"
+    },
+    {
+     "t0": 80,
+     "t1": 160,
+     "color": "#3a8a3e",
+     "label": "B"
+    },
+    {
+     "t0": 160,
+     "t1": 300,
+     "color": "#c8352e",
+     "label": "C'"
+    }
+   ],
    "linecap": "butt",
-   "dna": 20
+   "dna": true
   },
   {
    "type": "link",
-   "id": "L1",
+   "id": "d1",
    "a": {
-    "id": "A",
-    "seg": 0
+    "id": "s1",
+    "seg": 2
    },
    "b": {
-    "id": "B"
+    "id": "s2",
+    "seg": 2
    },
    "style": "bases",
-   "bases": 40,
    "fill": "#2b2622"
   },
   {
    "type": "path",
-   "id": "C",
+   "id": "u1",
    "pts": [
     [
      0,
-     240
+     90
     ],
     [
-     160,
-     240
+     260,
+     90
+    ]
+   ],
+   "color": "#8a857c",
+   "width": 2,
+   "label": "UMI + primer",
+   "segments": [
+    {
+     "t0": 0,
+     "t1": 120,
+     "color": "#8a857c",
+     "label": "UMI"
+    },
+    {
+     "t0": 120,
+     "t1": 260,
+     "color": "#8a857c",
+     "label": "primer",
+     "string": "ACGTACGGATCCTTAGCAGT"
+    }
+   ],
+   "linecap": "butt",
+   "dna": true,
+   "dnaColor": "sequence"
+  },
+  {
+   "type": "path",
+   "id": "t1",
+   "pts": [
+    [
+     0,
+     170
     ],
     [
-     160,
-     380
+     240,
+     170
+    ]
+   ],
+   "color": "#7a4fd0",
+   "width": 2,
+   "label": "toon",
+   "segments": [],
+   "linecap": "butt",
+   "dna": true,
+   "dnaToon": true,
+   "dnaOutline": true,
+   "dnaColor": "sequence"
+  },
+  {
+   "type": "path",
+   "id": "t2",
+   "pts": [
+    [
+     240,
+     180
     ],
     [
-     300,
-     380
+     0,
+     180
+    ]
+   ],
+   "color": "#1f8fa0",
+   "width": 2,
+   "label": "",
+   "segments": [],
+   "linecap": "butt",
+   "dna": true,
+   "dnaToon": true,
+   "dnaOutline": true,
+   "dnaColor": "sequence"
+  },
+  {
+   "type": "link",
+   "id": "d2",
+   "a": {
+    "id": "t1"
+   },
+   "b": {
+    "id": "t2"
+   },
+   "style": "bases",
+   "fill": "#2b2622"
+  },
+  {
+   "type": "path",
+   "id": "h",
+   "pts": [
+    [
+     0,
+     260
+    ],
+    [
+     220,
+     260
+    ],
+    [
+     220,
+     270
+    ],
+    [
+     40,
+     270
+    ]
+   ],
+   "color": "#c03a8c",
+   "width": 2,
+   "label": "hairpin",
+   "segments": [
+    {
+     "t0": 60,
+     "t1": 200,
+     "color": "#c03a8c"
+    },
+    {
+     "t0": 250,
+     "t1": 390,
+     "color": "#c03a8c"
+    }
+   ],
+   "linecap": "butt",
+   "dna": true,
+   "dnaColor": "bases",
+   "baseColor": "#f6e7b8"
+  },
+  {
+   "type": "link",
+   "id": "d3",
+   "a": {
+    "id": "h",
+    "seg": 0
+   },
+   "b": {
+    "id": "h",
+    "seg": 1
+   },
+   "style": "bases",
+   "fill": "#2b2622"
+  },
+  {
+   "type": "path",
+   "id": "c",
+   "pts": [
+    [
+     320,
+     120
+    ],
+    [
+     440,
+     120
+    ],
+    [
+     440,
+     260
+    ],
+    [
+     540,
+     260
     ]
    ],
    "color": "#3a8a3e",
    "width": 2,
    "label": "turns",
-   "segments": [
-    {
-     "t0": 60,
-     "t1": 140,
-     "color": "#7a4fd0"
-    }
-   ],
-   "linecap": "butt",
-   "dna": 20
-  },
-  {
-   "type": "path",
-   "id": "dg",
-   "pts": [
-    [
-     340,
-     240
-    ],
-    [
-     420,
-     320
-    ],
-    [
-     520,
-     320
-    ]
-   ],
-   "color": "#2b2622",
-   "width": 2,
-   "label": "ink",
    "segments": [],
    "linecap": "butt",
-   "dna": 20
-  },
-  {
-   "type": "path",
-   "id": "H",
-   "pts": [
-    [
-     420,
-     0
-    ],
-    [
-     620,
-     0
-    ],
-    [
-     620,
-     20
-    ],
-    [
-     420,
-     20
-    ]
-   ],
-   "color": "#1f8fa0",
-   "width": 2,
-   "label": "hairpin",
-   "segments": [
-    {
-     "t0": 40,
-     "t1": 180,
-     "color": "#1f8fa0"
-    },
-    {
-     "t0": 240,
-     "t1": 380,
-     "color": "#c03a8c"
-    }
-   ],
-   "linecap": "butt",
-   "dna": 20
-  },
-  {
-   "type": "link",
-   "id": "HL",
-   "a": {
-    "id": "H",
-    "seg": 0
-   },
-   "b": {
-    "id": "H",
-    "seg": 1
-   },
-   "style": "bases",
-   "bases": 40,
-   "fill": "#2b2622"
+   "dna": true
   }
  ]
 }

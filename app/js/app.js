@@ -8,9 +8,9 @@ import {
 import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength } from './geom.js';
 import {
   render, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, PATTERNS, dataView,
-  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout,
+  linkStrand, defaultBases, duplexLink, duplexBases, dnaLayout, diam, dnaBpg,
 } from './render.js';
-import { DEFAULT_DIAMETER, spacing, uAt } from './dna.js';
+import { DEFAULT_BPG, spacing, uAt } from './dna.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
 
 const $ = id => document.getElementById(id);
@@ -1748,7 +1748,8 @@ function labelDisplayFields(target) {
 // and the rest of the strand shares el.bases (unset = natural B-DNA spacing).
 
 // Turn lines into DNA strands (or back). A new strand takes its base-pair
-// partner's diameter, so the duplex between them comes out round.
+// partner's diameter (so the duplex between them comes out round), else
+// follows the DNA grid.
 function setDNA(els, on) {
   for (const el of els) {
     if (!on) { delete el.dna; continue; }
@@ -1756,18 +1757,70 @@ function setDNA(els, on) {
     const l = state.doc.elements.find(x => x.type === 'link' && x.style === 'bases' &&
       (x.a?.id === el.id || x.b?.id === el.id));
     const other = l && byId(l.a.id === el.id ? l.b.id : l.a.id);
-    el.dna = other?.dna || state.dnaD || DEFAULT_DIAMETER;
+    el.dna = typeof other?.dna === 'number' ? other.dna : true;
   }
 }
 
-// Base-count field; clearing it returns to auto (natural spacing).
+// Back onto the DNA grid: grid diameter, and every count — the strands' own,
+// their segments', their duplexes' — back to what the drawn length gives.
+function snapDNA(els) {
+  beginChange();
+  for (const el of els) {
+    el.dna = true;
+    delete el.bases;
+    for (const sg of el.segments || []) delete sg.bases;
+    for (const l of state.doc.elements) {
+      if (l.type === 'link' && (l.a?.id === el.id || l.b?.id === el.id)) delete l.bases;
+    }
+  }
+  changed();
+}
+
+const BPG_CHOICES = [4, 5, 6, 8, 10, 12, 15, 20];
+// The document's DNA grid: how many bases one grid square holds.
+function dnaGridControl() {
+  const map = Object.fromEntries(BPG_CHOICES.map(n =>
+    [n, `${n} bp per square${n === 10 ? ' (1 turn)' : n === 20 ? ' (2 turns)' : n === 5 ? ' (½ turn)' : ''}`]));
+  return fieldRow('DNA grid', mappedSelect(map, () => String(dnaBpg()), v => {
+    if (+v === DEFAULT_BPG) delete state.doc.dnaBpg; else state.doc.dnaBpg = +v;
+  }));
+}
+
+// Look of one or more DNA strands: shading, outline, and what the colour means.
+function dnaStyleControls(els) {
+  const frag = document.createDocumentFragment();
+  const first = els[0];
+  const setAll = (k, v) => { for (const el of els) { if (v) el[k] = v; else delete el[k]; } };
+  frag.appendChild(fieldRow('Shading', mappedSelect({ soft: 'Soft (rendered)', toon: 'Toon (flat bands)' },
+    () => (first.dnaToon ? 'toon' : 'soft'), v => setAll('dnaToon', v === 'toon'))));
+  frag.appendChild(checkboxRow('Black outline', () => !!first.dnaOutline, v => setAll('dnaOutline', v)));
+  frag.appendChild(fieldRow('Colour by', mappedSelect(
+    { strand: 'Strand colour', bases: 'Backbone + bases', sequence: 'Sequence (A C G T)' },
+    () => first.dnaColor || 'strand', v => setAll('dnaColor', v === 'strand' ? null : v))));
+  if (first.dnaColor === 'bases') {
+    frag.appendChild(fieldRow('Base colour', colorPicker(`bases:${first.id}`,
+      () => (/^#[0-9a-f]{6}$/i.test(first.baseColor || '') ? first.baseColor : '#f1ece2'),
+      Object.assign(hex => { for (const el of els) el.baseColor = hex; render(); }, { begin: beginChange }),
+      changed)));
+  }
+  if (first.dnaColor === 'sequence') {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'A green · C blue · G amber · T red. A segment whose String is a sequence shows it; '
+      + 'other bases are random. Paired bases show their partner’s complement.';
+    frag.appendChild(p);
+  }
+  return frag;
+}
+
+// Base-count field; clearing it returns to auto (the DNA grid's count).
 function basesInput(get, set, { auto = false, readOnly = false } = {}) {
   const n = document.createElement('input');
   n.type = 'number'; n.min = 1; n.max = 10000; n.step = 1;
   n.value = get();
   n.readOnly = readOnly;
   if (auto) n.classList.add('auto');
-  n.title = readOnly ? 'Set by the strand’s domains' : 'Number of bases — clear to go back to natural spacing';
+  n.title = readOnly ? 'Set by the strand’s domains' : 'Number of bases — clear to go back to the DNA grid';
   n.addEventListener('change', () => {
     beginChange();
     set(n.value === '' ? null : clamp(Math.round(+n.value) || 1, 1, 10000));
@@ -1776,26 +1829,26 @@ function basesInput(get, set, { auto = false, readOnly = false } = {}) {
   return n;
 }
 
-// How far a span's texture is stretched from natural B-DNA proportions, plus
-// a one-click way back to natural spacing.
-function spacingNote(len, n, D, auto, reset) {
+// How a span's count relates to the grid and to natural B-DNA proportions,
+// plus a one-click way back to the grid.
+function spacingNote(len, n, D, auto, reset, what = 'bases') {
   const frag = document.createDocumentFragment();
   const p = document.createElement('p');
   p.className = 'muted';
   const s = spacing(len, n, D);
-  p.textContent = auto ? 'Auto: natural B-DNA spacing for this length and diameter.'
-    : Math.abs(s - 1) < 0.03 ? 'Natural B-DNA spacing.'
-      : `${s.toFixed(2)}× natural spacing — ${s > 1 ? 'stretched' : 'compressed'} to fit ${n} bases.`;
+  const look = Math.abs(s - 1) < 0.04 ? 'natural B-DNA proportions'
+    : `${s.toFixed(2)}× natural spacing (${s > 1 ? 'stretched' : 'compressed'})`;
+  p.textContent = auto ? `Auto from the DNA grid (${dnaBpg()} bp per square) — ${look}.` : `${n} ${what} — ${look}.`;
   frag.appendChild(p);
-  if (!auto) frag.appendChild(smallButton('Natural spacing', () => { beginChange(); reset(); changed(); },
-    'Let the length decide the base count again'));
+  if (!auto) frag.appendChild(smallButton('Back to grid count', () => { beginChange(); reset(); changed(); },
+    'Let the drawn length decide the base count again'));
   return frag;
 }
 
 function dnaControls(el) {
   const frag = document.createDocumentFragment();
-  frag.appendChild(fieldRow('Diameter', sliderNum(() => el.dna,
-    v => { el.dna = v; state.dnaD = v; }, { min: 4, max: 80, step: 1 })));
+  frag.appendChild(fieldRow('Diameter', sliderNum(() => +diam(el).toFixed(1),
+    v => { el.dna = v; }, { min: 4, max: 80, step: 0.5 })));
   const lay = dnaLayout(el);
   const fixedN = lay.n - lay.free;
   frag.appendChild(fieldRow('Bases', basesInput(() => lay.n,
@@ -1807,7 +1860,8 @@ function dnaControls(el) {
     p.textContent = `All ${lay.n} bases are set by its domains and base pairing.`;
     frag.appendChild(p);
   } else {
-    frag.appendChild(spacingNote(lay.freeLen, lay.free, el.dna, el.bases === undefined, () => delete el.bases));
+    frag.appendChild(spacingNote(lay.freeLen, lay.free, diam(el), el.bases === undefined, () => delete el.bases,
+      fixedN ? 'unpaired bases' : 'bases'));
     if (fixedN) {
       const p = document.createElement('p');
       p.className = 'muted';
@@ -1815,6 +1869,22 @@ function dnaControls(el) {
       frag.appendChild(p);
     }
   }
+  frag.appendChild(dnaGridRow([el]));
+  frag.appendChild(dnaStyleControls([el]));
+  return frag;
+}
+
+// DNA grid setting + the snap button that puts strands back on it.
+function dnaGridRow(els) {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(dnaGridControl());
+  const off = els.some(el => typeof el.dna === 'number' || el.bases !== undefined ||
+    (el.segments || []).some(sg => sg.bases) ||
+    state.doc.elements.some(l => l.type === 'link' && l.bases && duplexLink(l) && (l.a.id === el.id || l.b.id === el.id)));
+  const b = smallButton(off ? 'Snap to DNA grid' : 'On the DNA grid ✓', () => snapDNA(els),
+    'Grid diameter, and base counts from the drawn length (this strand, its domains and its duplexes)');
+  b.disabled = !off;
+  frag.appendChild(b);
   return frag;
 }
 
@@ -1838,7 +1908,7 @@ function segmentBases(el, i) {
   const n = Math.round(uAt(lay.knots, seg.t1) - uAt(lay.knots, seg.t0));
   frag.appendChild(fieldRow('Bases', basesInput(() => seg.bases ?? n,
     v => { if (v === null) delete seg.bases; else seg.bases = v; }, { auto: !seg.bases })));
-  if (seg.bases) frag.appendChild(spacingNote(seg.t1 - seg.t0, seg.bases, el.dna, false, () => delete seg.bases));
+  if (seg.bases) frag.appendChild(spacingNote(seg.t1 - seg.t0, seg.bases, diam(el), false, () => delete seg.bases));
   return frag;
 }
 
@@ -1847,7 +1917,7 @@ function duplexBasesControls(l) {
   frag.appendChild(fieldRow('Base pairs', basesInput(() => duplexBases(l),
     v => { if (v === null) delete l.bases; else l.bases = v; }, { auto: !l.bases })));
   const A = linkStrand(l.a), B = linkStrand(l.b);
-  const D = (byId(l.a.id).dna + byId(l.b.id).dna) / 2;
+  const D = (diam(byId(l.a.id)) + diam(byId(l.b.id))) / 2;
   frag.appendChild(spacingNote(Math.min(polylineLength(A), polylineLength(B)), duplexBases(l), D,
     !l.bases, () => delete l.bases));
   return frag;
@@ -1944,6 +2014,7 @@ function renderPanel() {
       ? `${count} object${count === 1 ? '' : 's'} in this scheme. Select one to edit its label and color.`
       : 'An empty canvas. Pick the Line tool (L) and drag on the grid to draw your first path, or frame a section with the Card tool (C).';
     sec.appendChild(p);
+    if (state.doc.elements.some(e => e.dna)) sec.appendChild(dnaGridControl());
     sec.appendChild(fieldRow('Background', colorPicker('bg',
       () => (/^#[0-9a-f]{6}$/i.test(state.doc.bg || '') ? state.doc.bg : '#ffffff'),
       Object.assign(hex => { state.doc.bg = hex; render(); }, { begin: beginChange }),
@@ -1980,8 +2051,10 @@ function renderPanel() {
       sec.appendChild(checkboxRow('Draw as DNA molecules', () => paths.every(p => p.dna),
         v => setDNA(paths, v)));
       if (paths.every(p => p.dna)) {
-        sec.appendChild(fieldRow('Diameter', sliderNum(() => paths[0].dna,
-          v => { for (const p of paths) p.dna = v; state.dnaD = v; }, { min: 4, max: 80, step: 1 })));
+        sec.appendChild(fieldRow('Diameter', sliderNum(() => +diam(paths[0]).toFixed(1),
+          v => { for (const p of paths) p.dna = v; }, { min: 4, max: 80, step: 0.5 })));
+        sec.appendChild(dnaGridRow(paths));
+        sec.appendChild(dnaStyleControls(paths));
       }
     }
     const join = joinSelectedPaths();
@@ -2027,7 +2100,7 @@ function renderPanel() {
     const info = document.createElement('p');
     info.className = 'muted';
     info.textContent = duplexLink(el)
-      ? 'A double helix between two DNA strands, coloured by each strand. It follows them as they move.'
+      ? 'A double helix between two DNA strands (shown dashed). Click it again to select the strands themselves.'
       : el.style === 'bases'
         ? 'Base pairs drawn between two strands — they follow them as they move.'
         : 'A filled area spanning two objects — it follows them as they move.';
@@ -2049,6 +2122,15 @@ function renderPanel() {
     }
     if (bases && duplexLink(el)) {
       sec.appendChild(duplexBasesControls(el));
+      const pick = ids => () => { state.selection = ids.map(id => ({ id })); refresh(); };
+      const row = document.createElement('div');
+      row.className = 'btn-row';
+      const nameOf = ref => resolveLabel(byId(ref.id).label || '') || (ref === el.a ? 'Strand A' : 'Strand B');
+      row.append(
+        smallButton('Both strands', pick([el.a.id, el.b.id]), 'Select the two strands this duplex joins (or click the duplex again)'),
+        smallButton(nameOf(el.a), pick([el.a.id])), smallButton(nameOf(el.b), pick([el.b.id])));
+      sec.appendChild(sectionTitle('Strands'));
+      sec.appendChild(row);
       sec.appendChild(deleteButton());
       panel.appendChild(sec);
       return;

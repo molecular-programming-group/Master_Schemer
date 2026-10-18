@@ -1,18 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { strandLayout, uAt, tAt, naturalBases, PITCH, brushPath, midline } from '../app/js/dna.js';
+import { strandLayout, uAt, tAt, naturalBases, gridPitch, brushPath, midline } from '../app/js/dna.js';
 import { pointAt } from '../app/js/geom.js';
 
 test('strandLayout: free length shares the free count, fixed spans keep theirs', () => {
-  const D = 20, nat = D * PITCH;
-  // no fixed spans, auto: natural spacing
+  const D = gridPitch(10); // the DNA grid: 10 bases per 20-unit square
+  // no fixed spans, auto: the grid's count
   const auto = strandLayout(200, D, [], undefined);
-  assert.equal(auto.n, naturalBases(200, D));
-  assert.ok(Math.abs(200 / auto.n - nat) < nat * 0.05);
+  assert.equal(auto.n, 100);
+  assert.equal(naturalBases(30, D), 15);
   // a 12 bp paired domain in the middle, 30 free bases split by length (50 : 100)
   const lay = strandLayout(200, D, [{ t0: 50, t1: 100, count: 12, paired: true }], 30);
   assert.equal(lay.n, 42);
-  assert.deepEqual(lay.skips, [[50, 100]]);
+  assert.deepEqual(lay.spans.map(s => [s.t0, s.t1, s.paired]), [[50, 100, true]]);
   assert.equal(uAt(lay.knots, 50), 10);
   assert.equal(uAt(lay.knots, 100), 22);
   assert.equal(uAt(lay.knots, 200), 42);
@@ -25,12 +25,20 @@ test('strandLayout: free length shares the free count, fixed spans keep theirs',
   const all = strandLayout(100, D, [{ t0: 0, t1: 100, count: 8 }, { t0: 40, t1: 60, count: 99 }], 5);
   assert.equal(all.n, 8);
   assert.equal(all.freeLen, 0);
+  // free shares are whole bases even when lengths don't divide evenly
+  const odd = strandLayout(100, D, [{ t0: 33, t1: 50, count: 5 }], 10);
+  assert.ok(odd.knots.every(([, u]) => Number.isInteger(u)));
+  assert.equal(odd.n, 15);
 });
 
 test('brushPath fillets corners but keeps original arc length at the ends', () => {
   const p = brushPath([[0, 0], [100, 0], [100, 100]], 20);
   assert.deepEqual(p[0], { p: [0, 0], t: 0 });
   assert.deepEqual(p[p.length - 1], { p: [100, 100], t: 200 });
+  // explicit vertex parameters are honoured
+  const q = brushPath([[0, 0], [100, 0], [100, 100]], 20, [-5, -3, -1]);
+  assert.equal(q[0].t, -5);
+  assert.equal(q[q.length - 1].t, -1);
   assert.ok(p.length > 4 && p.some(v => v.arc));
   for (let i = 1; i < p.length; i++) assert.ok(p[i].t >= p[i - 1].t); // t never runs backwards
   assert.ok(!p.some(v => v.p[0] === 100 && v.p[1] === 0)); // the sharp corner is gone

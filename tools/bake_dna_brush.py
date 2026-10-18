@@ -6,15 +6,16 @@ Writes app/js/dna-tex.js: grayscale+alpha PNGs as data URIs plus the metrics the
 needs. The brush is Affinity-style — a head cap, a repeating body, a tail cap — mapped
 along a line in "base units" (u = base index, 1 u = one helical rise):
 
-  head    u in [-overhang, CAP]      the 5' end, always helical phase 0
+  head[k] u in [-overhang, CAP]      a strand starting at helical phase k (u0 mod 10)
   body    one turn, u in [0, 10)     seamless: the twist is patched to exactly 36°/bp
-  tail[k] u in [-CAP, overhang]      relative to the 3' end; k = bases mod 10, so the
-                                     tail always meets the body in phase
+  tail[k] u in [-CAP, overhang]      relative to the end; k = end u mod 10, so caps
+                                     always meet the body in phase
 
 Tail phases come from screw symmetry: rotating the helix by k·36° about its axis makes
-base i look like base i+k, so the end of a k-rotated model is the end of a strand k
-bases longer. Two layers for the duplex — the whole duplex, and strand 1 alone (strand 2
-held out) — let the app tint each backbone with its own strand's colour.
+base i look like base i+k, so the ends of a k-rotated model are a strand shifted by k
+bases. Every layer shares one u frame (strand A's base 0), so a single strand can run on
+out of a duplex in phase. Layers split the duplex by strand and backbone/bases (see
+LAYERS) so the app can tint each part separately.
 
 Lighting is a headlight plus ambient: symmetric top-to-bottom, so a strand drawn
 right-to-left (texture rotated 180°) is lit the same as one drawn left-to-right.
@@ -153,46 +154,64 @@ def render(sc, path):
     return px
 
 
+# Every layer, as (model, material slots rendered white). Everything else on the model is
+# a holdout: transparent, but it still hides what is behind it. Slots are
+# 2·(chain B) + (base atom) — backbone and bases of each strand.
+LAYERS = {
+    "ds": ("ds", {0, 1, 2, 3}),     # the whole duplex
+    "ds1": ("ds", {0, 1}),          # strand 1 (A) of the duplex
+    "dsbA": ("ds", {1}),            # strand A's bases, as they show in the duplex
+    "dsbB": ("ds", {3}),            # strand B's bases
+    "ss": ("ss", {0, 1}),           # a lone strand, oriented as A (5'→3' along +u)
+    "ssb": ("ss", {1}),
+    "ssB": ("ssB", {2, 3}),         # a lone strand oriented as B (antiparallel), to
+    "ssBb": ("ssB", {3}),           #   continue strand B out of a duplex in phase
+}
+
+
 def main():
     os.makedirs(WORK, exist_ok=True)
     mn = mn_surface.start_blender()
     white, hold = material("white"), material("hold", holdout=True)
 
+    # all three models share one frame (pose="raw") and one u: base 0 of strand A
     fibers, objs = {}, {}
-    for kind, l2 in (("ds", N), ("ss", 0)):
+    for kind, l1, l2 in (("ds", N, N), ("ss", N, 0), ("ssB", 0, N)):
         pdb = f"{WORK}/fiber_{kind}.pdb"
-        fibers[kind] = bdna_fiber.write_fiber(pdb, strand1_len=N, strand2_len=l2, pose="raw")
+        fb = fibers[kind] = bdna_fiber.write_fiber(pdb, strand1_len=l1, strand2_len=l2, pose="raw")
         obj = mn_surface.realize(mn, pdb, f"DNA_{kind}")
-        slot = (fibers[kind]["chain"] == "B").astype(int)
-        mn_surface.paint_by_nearest_atom(obj, fibers[kind]["xyz"], slot, [white, white])
+        base = np.array([n not in bdna_fiber.BACKBONE for n in fb["name"]])
+        slot = 2 * (fb["chain"] == "B") + base
+        mn_surface.paint_by_nearest_atom(obj, fb["xyz"], slot, [white] * 4)
         obj.hide_render = True
         objs[kind] = obj
 
     f = fibers["ds"]
     rise = f["rise"]
     print(f"twist {f['twist']:.2f}°  rise {rise:.3f} Å")
-    # u = 0 at the start of base 0's slot: the mean axial position of position 0, less half a rise
-    xref = {k: float(fb["xyz"][fb["pos"] == 0][:, 0].mean()) - rise / 2 for k, fb in fibers.items()}
+    # u = 0 at the start of strand A's base-0 slot: its mean axial position, less half a rise
+    pos0 = (f["pos"] == 0)
+    xref = float(f["xyz"][pos0 & (f["chain"] == "A")][:, 0].mean()) - rise / 2
+    is_base = np.array([n not in bdna_fiber.BACKBONE for n in f["name"]])
+    # where each strand's bases sit within their slot, for slicing bases one by one
+    bshift = {c: float(f["xyz"][pos0 & is_base & (f["chain"] == c)][:, 0].mean() - xref) / rise - 0.5
+              for c in "AB"}
     xs = [v.co.x for o in objs.values() for v in o.data.vertices]
     x0, x1 = min(xs) - 3, max(xs) + 3
-    zs = [v.co.z for v in objs["ds"].data.vertices] + [v.co.y for v in objs["ds"].data.vertices]
-    print(f"duplex surface radius {max(abs(z) for z in zs):.1f} Å")
     sc = setup_scene(x0, x1)
 
-    def to_px(kind, u):
-        return round((xref[kind] + u * rise - x0) * PX)
+    def to_px(u):
+        return round((xref + u * rise - x0) * PX)
 
     shots = {}      # (layer, k) -> rgba
     for k in range(1 if os.environ.get("DNA_QUICK") else 10):
-        for kind in ("ds", "ss"):
+        for layer, (kind, lit) in LAYERS.items():
             obj = objs[kind]
             obj.hide_render = False
             obj.rotation_euler = (math.radians(TWIST * k), 0, 0)
-            layers = [("ds", white), ("ds1", hold)] if kind == "ds" else [("ss", white)]
-            for layer, second in layers:
-                obj.data.materials[1] = second      # slot 1 = strand 2 (unused on ss)
-                shots[(layer, k)] = render(sc, f"{WORK}/{layer}_{k}.png")
-            obj.data.materials[1] = white
+            for i in range(4):
+                obj.data.materials[i] = white if i in lit else hold
+            shots[(layer, k)] = render(sc, f"{WORK}/{layer}_{k}.png")
             obj.hide_render = True
 
     def crop(rgba, a, b):
@@ -213,36 +232,35 @@ def main():
     lum0 = (ref[..., :3] @ [0.2126, 0.7152, 0.0722])[ref[..., 3] > 0.99]
     lo, hi = np.percentile(lum0, 2), np.percentile(lum0, 98)
     LO, HI = 0.30, 0.97
-    out = dict(rise=rise, twist=TWIST, px=PX, halfH=HALF_H * PX, cap=CAP, layers={})
-    for layer in ("ds", "ds1", "ss"):
-        kind = "ss" if layer == "ss" else "ds"
-        s0 = shots[(layer, 0)]
-        ppb = rise * PX                       # pixels per base
-        # surface extent past the end bases, from the alpha channel
-        cols = np.where(s0[..., 3].max(0) > 0.02)[0]
-        left = (cols.min() - to_px(kind, 0)) / ppb
-        right = (cols.max() + 1 - to_px(kind, N)) / ppb
-        head_a, head_b = int(cols.min()), to_px(kind, CAP)
-        tails = []
+    ppb = rise * PX                       # pixels per base
+    out = dict(rise=rise, twist=TWIST, px=PX, ppb=ppb, halfH=HALF_H * PX, cap=CAP, layers={})
+    for layer, (kind, _) in LAYERS.items():
+        # caps by phase: the k-rotated model's ends are a strand starting at phase k
+        # (head) and one ending at phase k (tail) — see the module docstring
+        heads, tails = [], []
         for k in range(10):
             sk = shots[(layer, k)]
             ck = np.where(sk[..., 3].max(0) > 0.02)[0]
-            ta, tb = to_px(kind, N - CAP), int(ck.max()) + 1
+            if not len(ck):         # a bases-only layer can be empty near an end
+                ck = np.array([to_px(0), to_px(N) - 1])
+            ha, hb = min(int(ck.min()), to_px(0)), to_px(CAP)
+            ta, tb = to_px(N - CAP), max(int(ck.max()) + 1, to_px(N))
+            heads.append(dict(src=crop(sk, ha, hb), x=(ha - to_px(0)) / ppb, w=(hb - ha) / ppb))
             tails.append(dict(src=crop(sk, ta, tb), w=(tb - ta) / ppb))
         out["layers"][layer] = dict(
-            tile=crop(s0, to_px(kind, TILE[0]), to_px(kind, TILE[1])),
-            head=dict(src=crop(s0, head_a, head_b), x=(head_a - to_px(kind, 0)) / ppb,
-                      w=(head_b - head_a) / ppb),
-            tail=tails, overhang=[float(-left), float(right)])
+            tile=crop(shots[(layer, 0)], to_px(TILE[0]), to_px(TILE[1])),
+            head=heads, tail=tails,
+            overhang=[-heads[0]["x"], tails[0]["w"] - CAP],
+            bshift=bshift["B" if kind == "ssB" or layer == "dsbB" else "A"])
     # the duplex's full height, in Å — what a line's "diameter" maps to
     a = shots[("ds", 0)][..., 3].max(1)
     rows = np.where(a > 0.02)[0]
     out["diameter"] = (rows.max() + 1 - rows.min()) / PX
-    out["ppb"] = rise * PX
     with open(OUT, "w") as fh:
         fh.write("// Generated by tools/bake_dna_brush.py — do not edit by hand.\n")
         fh.write("export default " + json.dumps(out) + ";\n")
-    print(f"wrote {OUT}: {os.path.getsize(OUT) / 1024:.0f} KB, diameter {out['diameter']:.1f} Å")
+    print(f"wrote {OUT}: {os.path.getsize(OUT) / 1024:.0f} KB, diameter {out['diameter']:.1f} Å, "
+          f"bshift {bshift}")
 
 
 main()
