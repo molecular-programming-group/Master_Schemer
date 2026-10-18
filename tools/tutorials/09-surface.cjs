@@ -18,10 +18,10 @@ run('09-surface', async t => {
   await t.click('[data-tool="segment"]', 200);
   await t.wdrag([[60, 50], [60, 10]]);
   await t.fill('Label', 's*');
-  await t.cap('A filled circle marks the attachment point', 400);
+  await t.cap('A flat filled ellipse marks the attachment point, in the surface’s perspective', 400);
   await t.select([]);
   await t.click('[data-tool="ellipse"]', 300);
-  await t.wdrag([[54, 104], [66, 116]]);
+  await t.wdrag([[52, 107], [68, 113]]);
   await t.check('Fill', 400);
   await t.tool('v');
   await t.cap('Ctrl+drag both to make a second anchor', 400);

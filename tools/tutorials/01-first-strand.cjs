@@ -37,6 +37,6 @@ run('01-first-strand', async t => {
   await t.wdrag([[30, 20], [30, 100]], 16, ['Control']);
   await t.deselect();
   await t.zoomTo(2.6, 80, 55);
-  await t.cap('Next: domains, complements and base pairs', 2200);
+  await t.cap('A strand with caps, a curve and a typeset label — every part still editable', 2200);
   await t.cap('', 300);
 });

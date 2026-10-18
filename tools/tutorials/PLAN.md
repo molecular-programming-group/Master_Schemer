@@ -36,5 +36,7 @@ check it off, commit.
 
 ## Notes
 
+- Every video stands alone: no captions pointing to other videos ("Next: …"), so videos can be changed, reordered or added freely.
+
 - Stock "surface block" asset (Library → Shapes) was added for 09.
 - Old GIFs (tutorial_*.gif in screenshots/) are superseded by this set.
