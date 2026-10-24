@@ -9,10 +9,10 @@ import {
 import { GRID, mergePaths, rot90, flipPt, snapHalf, polylineLength, subPath, resizeEndSegments, drawnPts } from './geom.js';
 import {
   render, renderNow, screenToWorld, contentBBox, elementBBox, exportSVGString, CAPS, POINTED_CAPS, PATTERNS, dataView, alineD, alineMid,
-  linkStrand, rungSeqs, refSeq, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, strandView, lookOf, dnaView, invalidateRenderCache,
+  linkStrand, rungSeqs, refSeq, baseHex, rcOk, rcEnds, rcDriver, syncComplements, duplexLink, duplexBases, dnaLayout, diam, dnaBpg, strandView, lookOf, dnaView, invalidateRenderCache,
   FONTS, LINE_H, INLINE_TAGS, inlineHTML, toon, outlined, LABEL_STYLE_KEYS, labelStyleOf, anchorFrac, textWidth,
 } from './render.js';
-import { DEFAULT_BPG, seqOf, spacing, tintRef, uAt, worldPerA, gridPitch, naturalBases, seqLetters } from './dna.js';
+import { DEFAULT_BPG, seqOf, spacing, tintRef, uAt, worldPerA, gridPitch, naturalBases, seqLetters, IUPAC, DEGENERATE } from './dna.js';
 import MOLS from './mol-tex.js';
 import { tools, cancelActive, isDragging, cardContents } from './tools.js';
 import { THEMES } from './themes.js';
@@ -50,7 +50,7 @@ function refresh() {
   $('zoomLabel').textContent = `${Math.round(state.view.s * 100)}%`;
   syncNoteRefs(); // a renamed object updates its live chips in the notes
 }
-setOnChanged(refresh);
+setOnChanged(() => { syncComplements(); refresh(); });
 
 // ---- tool switching ----
 
@@ -229,8 +229,22 @@ function transformSelection(op) { // 'cw' | 'ccw' | 'h' | 'v'
   const rot = op === 'cw' || op === 'ccw';
   const pt = p => rot ? rot90(p, c, op === 'cw' ? 1 : -1) : flipPt(p, c, op);
   beginChange();
+  const norm = d => { d = ((d % 360) + 540) % 360 - 180; return d === -180 ? 180 : d; };
   for (const el of els) {
+    if (MOLS[el.mol]) { // a protein isn't symmetric: it turns (el.rot) and mirrors (el.mirror) for real
+      const ctr = pt([el.x + el.w / 2, el.y + el.h / 2]);
+      el.x = ctr[0] - el.w / 2;
+      el.y = ctr[1] - el.h / 2;
+      const r = el.rot || 0;
+      if (!rot) el.mirror = !el.mirror; // mirror ∘ turn r = turn −r ∘ mirror (and a vertical flip adds a half turn)
+      const r2 = norm(rot ? r + (op === 'cw' ? 90 : -90) : op === 'h' ? -r : 180 - r);
+      if (r2) el.rot = r2; else delete el.rot;
+      if (!el.mirror) delete el.mirror;
+      continue;
+    }
     if (!rot && el.rot) el.rot = -el.rot; // a mirrored turned shape turns the other way
+    // a harpoon's barb is on one side of the line: mirrored, it goes to the other
+    if (!rot) for (const k of ['cap0', 'cap1']) if (el[k] === 'harpoon') { if (el[k + 'flip']) delete el[k + 'flip']; else el[k + 'flip'] = true; }
     if (el.type === 'ellipse') {
       [el.cx, el.cy] = pt([el.cx, el.cy]);
       if (rot) [el.rx, el.ry] = [el.ry, el.rx];
@@ -600,6 +614,10 @@ function createLink(targets, style) {
   // two DNA strands pair up as a duplex rather than a filled area
   if (style) el.style = style;
   else if (targets.every(t => byId(t.id) && lookOf(byId(t.id)) === 'dna') && linkStrand(el.a) && linkStrand(el.b)) el.style = 'bases';
+  // pairing a sequenced domain with an empty one fills the empty one with its
+  // reverse complement, kept in step (rcControl turns it off)
+  const seqd = ['a', 'b'].map(k => !!refSeq(el[k], byId(el[k].id)));
+  if (seqd[0] !== seqd[1] && rcOk(el, seqd[0] ? 'a' : 'b')) el.rc = seqd[0] ? 'a' : 'b';
   state.selection = [{ id: el.id }];
   changed();
 }
@@ -1170,6 +1188,67 @@ try {
       face([[0, 20], [200, 20], [200, 34], [0, 34]], '#aaa49b'),
       face([[200, 20], [230, 0], [230, 14], [200, 34]], '#8d877f'),
     ] });
+    localStorage.setItem(SEED_KEY, '1');
+    saveLibrary();
+  }
+} catch { /* storage blocked — skip seeding */ }
+
+// Stock biology shapes: an RCA nanoball (one long strand balled up, a random walk
+// on a sphere seen from the front), an emulsion droplet, a teardrop, and a cell.
+// All closed/smooth line notes and ellipses, so every point stays editable.
+function rcaBallPts(R = 40, n = 240, seed = 7) {
+  let h = seed;
+  const rnd = () => ((h = (Math.imul(h ^ (h >>> 15), 2246822507) + 0x9e3779b9) | 0) >>> 0) / 4294967296;
+  const norm = v => { const l = Math.hypot(...v); return v.map(x => x / l); };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  let p = [0, 0, 1], d = [1, 0, 0];
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const r = R * (0.55 + 0.45 * rnd()); // depth: inner coils fill the middle
+    pts.push([Math.round(p[0] * r * 10) / 10, Math.round(p[1] * r * 10) / 10]);
+    const side = cross(p, d), turn = (rnd() - 0.5) * 1.6; // wander: turn the heading about the normal
+    d = norm(d.map((x, k) => x * Math.cos(turn) + side[k] * Math.sin(turn)));
+    const a = 0.38; // step along the great circle
+    const q = norm(p.map((x, k) => x * Math.cos(a) + d[k] * Math.sin(a)));
+    d = norm(cross(cross(q, d), q)); // keep the heading tangent at the new point
+    p = q;
+  }
+  return pts;
+}
+try {
+  const SEED_KEY = 'master-schemer-lib-seeded-bio1';
+  if (!localStorage.getItem(SEED_KEY)) {
+    const line = (pts, o) => ({ type: 'aline', id: newId(), pts, color: '#2b2622', width: 1.5, cap0: 'none', cap1: 'none', ...o });
+    const oval = (cx, cy, rx, ry, o) => ({ type: 'ellipse', id: newId(), cx, cy, rx, ry, color: '#2b2622', width: 1.5, ...o });
+    const asset = (name, els) => {
+      const g = newId();
+      return { id: newId(), category: 'Shapes', name, groups: els.length > 1 ? [{ id: g, name }] : [],
+        elements: els.map(el => (els.length > 1 ? { ...el, group: g } : el)) };
+    };
+    // a lumpy closed outline around (cx, cy): radius r, wobbling by k
+    const blob = (cx, cy, rx, ry, k, n = 10) => Array.from({ length: n }, (_, i) => {
+      const a = i / n * 2 * Math.PI, w = 1 + k * Math.sin(3 * a + 1) * Math.cos(2 * a);
+      return [Math.round(cx + rx * w * Math.cos(a)), Math.round(cy + ry * w * Math.sin(a))];
+    });
+    library.push(
+      asset('RCA nanoball', [
+        oval(0, 0, 44, 44, { color: '#1f8fa0', width: 0, fill: '#1f8fa0', fillOpacity: 0.12 }),
+        line(rcaBallPts(), { smooth: true, color: '#1f8fa0', width: 1.2 }),
+      ]),
+      asset('droplet', [
+        oval(0, 0, 40, 40, { color: '#2f6fd0', fill: '#2f6fd0', fillOpacity: 0.15 }),
+        oval(-14, -16, 9, 5, { color: '#ffffff', width: 0, fill: '#ffffff', fillOpacity: 0.85, rot: -35 }),
+      ]),
+      asset('droplet (teardrop)', [
+        line([[0, -46], [16, -14], [26, 8], [18, 28], [0, 36], [-18, 28], [-26, 8], [-16, -14]],
+          { closed: true, smooth: true, color: '#2f6fd0', fill: '#2f6fd0', fillOpacity: 0.2 }),
+      ]),
+      asset('cell', [
+        line(blob(0, 0, 90, 64, 0.06), { closed: true, smooth: true, color: '#c03a8c', width: 2.5, fill: '#c03a8c', fillOpacity: 0.1 }),
+        oval(12, 4, 30, 24, { color: '#7a4fd0', fill: '#7a4fd0', fillOpacity: 0.25 }),
+        oval(18, 0, 7, 6, { color: '#7a4fd0', width: 0, fill: '#7a4fd0', fillOpacity: 0.6 }),
+      ]),
+    );
     localStorage.setItem(SEED_KEY, '1');
     saveLibrary();
   }
@@ -2530,16 +2609,18 @@ function sequenceField(el) {
   const say = () => {
     const n = dnaLayout(el).n, fit = naturalBases(polylineLength(drawnPts(el)), gridPitch(dnaBpg()));
     const bad = (el.seq || '').trim() && !seqLetters(el.seq);
-    note.textContent = bad ? 'Not a sequence (A C G T U N only) — kept as text.'
+    note.textContent = bad ? 'Not a sequence (A C G T U, IUPAC codes and N only) — kept as text.'
       : n === fit ? `${n} nt — fits the drawn length.`
         : `${n} nt — the drawn length holds ${fit}. Grid → Resize Strands to Grid.`;
   };
-  frag.appendChild(fieldRow('Sequence', boundInput(() => el.seq || '', v => {
+  const input = boundInput(() => el.seq || '', v => {
     if (v.trim()) el.seq = v; else delete el.seq;
     say();
-  }, { textarea: true, placeholder: '5′→3′, e.g. ATGCATGATCG' })));
+  }, { textarea: true, placeholder: '5′→3′, e.g. ATGCATGATCG' });
+  frag.appendChild(fieldRow('Sequence', input));
   say();
   frag.appendChild(note);
+  if (rcDriver(el.id, undefined)) frag.appendChild(rcNote(input));
   return frag;
 }
 
@@ -2632,13 +2713,37 @@ function dnaStyleControls(els) {
         Object.assign(hex => { for (const el of els) el.baseColor = hex; render(); }, { begin: beginChange }),
         changed)));
     }
+    frag.appendChild(baseColorRows());
     const p = document.createElement('p');
     p.className = 'muted';
-    p.textContent = 'A green · C blue · G amber · T red. A segment whose String is a sequence (ACGT/U, '
-      + '4+ letters; N = unknown) shows it and gets exactly that many bases. Paired bases without '
-      + 'their own sequence show their partner’s complement.';
+    p.textContent = 'A segment whose String is a sequence (A C G T/U and the IUPAC codes R Y S W K M B D H V N, '
+      + '4+ letters) shows it and gets exactly that many bases; N is unknown unless it has a colour. Paired bases '
+      + 'without their own sequence show their partner’s complement.';
     frag.appendChild(p);
   }
+  return frag;
+}
+
+// The document's base colours (doc.baseColors over the stock ones), shared by
+// every strand, letter and rung coloured by sequence. Degenerate codes fold away.
+let degenerateOpen = false;
+function baseColorRows() {
+  const frag = document.createDocumentFragment();
+  const row = b => fieldRow(IUPAC[b] ? `${b} (${[...IUPAC[b]].join('/')})` : b, colorPicker(`base:${b}`,
+    () => baseHex(b) || '#f1ece2',
+    Object.assign(hex => { (state.doc.baseColors ||= {})[b] = hex; render(); }, { begin: beginChange }),
+    changed));
+  for (const b of 'ACGT') frag.appendChild(row(b));
+  const more = document.createElement('details');
+  more.open = degenerateOpen;
+  more.addEventListener('toggle', () => { degenerateOpen = more.open; });
+  const sum = document.createElement('summary');
+  sum.textContent = 'Degenerate bases (R Y S W K M B D H V N)';
+  more.append(sum, ...DEGENERATE.map(row));
+  frag.appendChild(more);
+  if (state.doc.baseColors) frag.appendChild(smallButton('Default base colours', () => {
+    beginChange(); delete state.doc.baseColors; changed();
+  }, 'Back to A green · C blue · G amber · T red, degenerate codes their mix'));
   return frag;
 }
 
@@ -2762,6 +2867,35 @@ function seqNote() {
 }
 const linkSeq = l => refSeq(l.a, byId(l.a.id)) || refSeq(l.b, byId(l.b.id));
 
+// A base-pair link can keep one end the reverse complement of the other
+// (l.rc, see render.js). Offered for whichever ends can take it.
+function rcControl(l) {
+  const name = (ref, d) => { const t = resolveLabel(backbone(ref).label || ''); return t && !/[$<]/.test(t) ? t : d; };
+  const na = name(l.a, 'A'), nb = name(l.b, 'B');
+  const map = { off: 'Independent' };
+  if (rcOk(l, 'a') || l.rc === 'a') map.a = `${nb} = rev. complement of ${na}`;
+  if (rcOk(l, 'b') || l.rc === 'b') map.b = `${na} = rev. complement of ${nb}`;
+  const frag = document.createDocumentFragment();
+  if (Object.keys(map).length === 1) return frag;
+  frag.appendChild(fieldRow('Sequences', mappedSelect(map, () => l.rc || 'off',
+    v => { if (v === 'off') delete l.rc; else l.rc = v; })));
+  if (l.rc && !rcOk(l, l.rc)) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'Paused: the source has no sequence, or the other end pairs only part of its domain.';
+    frag.appendChild(p);
+  }
+  return frag;
+}
+// Shown on a sequence field the link above writes.
+function rcNote(node) {
+  node.readOnly = true;
+  const p = document.createElement('p');
+  p.className = 'muted';
+  p.textContent = 'Kept as the reverse complement of its base-paired partner — set Sequences to Independent on the link to edit.';
+  return p;
+}
+
 // Where along each end a base-pair link pairs: from/to as % of that end's domain
 // (or line), so a short domain can pair with part of a longer one. A fraction
 // like 6/13 is read as one. Both full = the old whole-domain pairing.
@@ -2875,6 +3009,9 @@ function renderPanel() {
         if (v === 'cartoon') el.molIcon = true;
       })));
     styleSec.appendChild(checkboxRow('Black outline', () => !!el.dnaOutline, v => { if (v) el.dnaOutline = true; else delete el.dnaOutline; }));
+    styleSec.appendChild(fieldRow('Rotation (°)', sliderNum(() => el.rot || 0,
+      v => { if (v) el.rot = v; else delete el.rot; }, { min: -180, max: 180, step: 1 })));
+    styleSec.appendChild(checkboxRow('Mirrored', () => !!el.mirror, v => { if (v) el.mirror = true; else delete el.mirror; }));
     styled = true;
   } else if (!single || (single.el.width !== undefined && !single.el.dna)) {
     styleSec.appendChild(fieldRow('Width', widthControl(
@@ -2898,6 +3035,7 @@ function renderPanel() {
         { strand: 'Strand colour', sequence: 'A C G T colours' },
         () => (el.dnaColor === 'sequence' ? 'sequence' : 'strand'),
         v => { if (v === 'sequence') el.dnaColor = v; else delete el.dnaColor; })));
+      if (look === 'seq' && el.dnaColor === 'sequence') styleSec.appendChild(baseColorRows());
       if (look === 'seq') styleSec.appendChild(fieldRow('Letter size', sliderNum(() => el.seqScale || 1,
         v => { if (v === 1) delete el.seqScale; else el.seqScale = v; }, { min: 0.4, max: 3, step: 0.1 })));
       if (look === 'line') {
@@ -3063,9 +3201,9 @@ function renderPanel() {
     sec.appendChild(labelFields(seg, 'e.g. domain a', true));
     sec.appendChild(labelDisplayFields(seg));
     sec.appendChild(labelStyleFields(seg, `lab:${el.id}.${single.seg}`, { size: 12, color: resolveColor(seg.color) }));
-    sec.appendChild(fieldRow('String', boundInput(
-      () => seg.string || '', v => { seg.string = v; },
-      { placeholder: 'e.g. domain sequence' })));
+    const strIn = boundInput(() => seg.string || '', v => { seg.string = v; }, { placeholder: 'e.g. domain sequence' });
+    sec.appendChild(fieldRow('String', strIn));
+    if (rcDriver(el.id, single.seg)) sec.appendChild(rcNote(strIn));
     sec.appendChild(fieldRow('Data (not displayed)', boundInput(
       () => seg.notes || '', v => { seg.notes = v; }, { textarea: true, placeholder: 'notes, metadata…' })));
     sec.appendChild(deleteButton('Delete segment'));
@@ -3097,6 +3235,7 @@ function renderPanel() {
     if (bases && duplexLink(el)) {
       sec.appendChild(duplexBasesControls(el));
       sec.appendChild(pairRangeRows(el));
+      sec.appendChild(rcControl(el));
       // the duplex has no colour of its own: each backbone is its strand's paired
       // segment (or line), hidden inside it — so edit them from here
       const nameOf = ref => resolveLabel(backbone(ref).label || '') || resolveLabel(byId(ref.id).label || '')
@@ -3146,11 +3285,13 @@ function renderPanel() {
         { auto: 'Auto', straight: 'Straight (from the shorter strand)', spread: 'Spread over both strands' },
         () => el.rungAlign || 'auto', v => { if (v === 'auto') delete el.rungAlign; else el.rungAlign = v; })));
       sec.appendChild(pairRangeRows(el));
+      sec.appendChild(rcControl(el));
       sec.appendChild(fieldRow('Colour by', mappedSelect(
         { fill: 'One colour', strands: 'Strand colours (two-tone)', sequence: 'Sequence (A C G T)' },
         () => el.rungColor || 'fill', v => { if (v === 'fill') delete el.rungColor; else el.rungColor = v; })));
       if (el.rungColor !== 'strands') sec.appendChild(fillControl(el,
         { optional: false, label: el.rungColor ? 'Unsequenced' : 'Base pair', pattern: false }));
+      if (el.rungColor === 'sequence') sec.appendChild(baseColorRows());
       sec.appendChild(deleteButton());
       panel.appendChild(sec);
       return;
@@ -3370,6 +3511,7 @@ const EXPORT_KEY = 'master-schemer-export';
 const FORMATS = {
   png: { label: 'PNG image', ext: 'png', mime: 'image/png' },
   svg: { label: 'SVG image', ext: 'svg', mime: 'image/svg+xml' },
+  pdf: { label: 'PDF (vector, via print)', ext: 'pdf', mime: 'application/pdf' },
   csv: { label: 'CSV table', ext: 'csv', mime: 'text/csv' },
 };
 const PNG_SCALES = [1, 2, 3, 4, 6, 8];
@@ -3443,6 +3585,33 @@ async function rasterizePNG(o, plain) {
   } catch { return undefined; } finally { URL.revokeObjectURL(url); }
 }
 
+// PDF: the webview's own print engine lays the export SVG out on one page its
+// exact size, so text, math and fonts come out as the app draws them (vector;
+// the DNA and protein renders, being filtered images, stay raster). The user
+// saves it from the print dialog (Save as PDF / Print to File).
+// ponytail: the print dialog, not a silent file write — a native PDF writer per platform if that grates
+function printSVG(svgText, name) {
+  // its own document (an iframe), so the copy's ids can't capture the live canvas's lookups
+  const frame = document.createElement('iframe');
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+  const m = svgText.match(/<svg[^>]*\swidth="([\d.]+)"[^>]*\sheight="([\d.]+)"/), [w, h] = m ? [m[1], m[2]] : [800, 600];
+  const esc = t => t.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(name)}</title><style>
+@page { size: ${w}px ${h}px; margin: 0 }
+html, body { margin: 0; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact }
+body > svg { display: block; width: ${w}px; height: ${h}px }
+</style></head><body>${svgText}</body></html>`;
+  frame.addEventListener('load', () => {
+    const win = frame.contentWindow;
+    const done = () => setTimeout(() => frame.remove(), 1000);
+    win.addEventListener('afterprint', done, { once: true });
+    win.focus();
+    win.print();
+    setTimeout(done, 120000); // a webview that never fires afterprint
+  }, { once: true });
+  document.body.appendChild(frame);
+}
+
 async function runExport(o, name) {
   exportOpts = o;
   try { localStorage.setItem(EXPORT_KEY, JSON.stringify(o)); } catch { /* full */ }
@@ -3461,7 +3630,16 @@ async function runExport(o, name) {
     refresh();
     $('hint').textContent = `Building ${o.format.toUpperCase()}…`;
     if (o.format === 'svg') blob = new Blob([await exportSVGString(opts)], { type: f.mime });
-    else {
+    else if (o.format === 'pdf') {
+      const svgText = await exportSVGString(opts);
+      render(); // export rendered unculled; restore the culled view
+      state.selection = keep;
+      refresh();
+      if (!svgText) return;
+      $('hint').textContent = 'Choose “Save as PDF” (or Print to File) in the print dialog.';
+      printSVG(svgText, name);
+      return;
+    } else {
       blob = await rasterizePNG(opts, false);
       if (blob === undefined) {
         blob = await rasterizePNG(opts, true);
@@ -3546,6 +3724,7 @@ function showExport(format = exportOpts.format) {
       check(sel.size ? `Only the selection (${sel.size} object${sel.size > 1 ? 's' : ''})` : 'Only the selection (nothing selected)', 'only', !sel.size),
       check('Show the grid', 'grid'),
       check('Transparent background', 'transparent'));
+    if (o.format === 'pdf') body.append(note('Opens the print dialog: choose “Save as PDF” (or Print to File → PDF). Text and math stay text; DNA and protein renders are embedded as images.'));
     if (o.format === 'png') {
       const box = contentBBox(o.only && sel.size ? state.doc.elements.filter(el => withConnectors(new Set(sel)).has(el.id)) : undefined);
       body.append(fieldRow('Resolution', select(Object.fromEntries(PNG_SCALES.map(k => [k, `${k}× (${k * 96} dpi)`])), o.scale, v => { o.scale = +v; })));
@@ -3783,7 +3962,7 @@ const MENU_ACTS = {
   showPanels: () => setHiddenPanels([]), hidePanels: () => setHiddenPanels(PANELS),
   cut: cutSelection, duplicate: duplicateSelection, invertSel: invertSelection,
   selectNone: () => { state.selection = []; refresh(); },
-  zoomSel: zoomToSelection, grid: toggleGrid, keys: () => setKeyHints(!document.body.classList.contains('show-keys')), exportPng: () => showExport('png'),
+  zoomSel: zoomToSelection, grid: toggleGrid, keys: () => setKeyHints(!document.body.classList.contains('show-keys')), exportPng: () => showExport('png'), exportPdf: () => showExport('pdf'),
   dnaEnds: () => setDNAEnds(!dnaView.ends, true),
   collapseAll, expandAll, themes: () => showThemes(),
   ticks: toggleTicks, baseSnap: () => setBaseSnap(!state.baseSnap, true),

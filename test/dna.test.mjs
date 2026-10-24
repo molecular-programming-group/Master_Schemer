@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { strandLayout, uAt, tAt, naturalBases, gridPitch, brushPath, midline, seqLetters } from '../app/js/dna.js';
+import { strandLayout, uAt, tAt, naturalBases, gridPitch, brushPath, midline, seqLetters, revComp } from '../app/js/dna.js';
 import { pointAt, snap8 } from '../app/js/geom.js';
 
 test('strandLayout: free length shares the free count, fixed spans keep theirs', () => {
@@ -79,4 +79,11 @@ test('seqLetters: digits inside a name mean a name, not bases', async () => {
   const { seqLetters } = await import('../app/js/dna.js');
   assert.equal(seqLetters('GATA1'), '');
   assert.equal(seqLetters("5′-ACGT TG-3′"), 'ACGTTG');
+});
+
+test('degenerate bases read as sequence; reverse complement maps IUPAC codes', () => {
+  assert.equal(seqLetters('5′-ACG TRYN-3′'), 'ACGTRYN');
+  assert.equal(seqLetters('GATA1'), '');
+  assert.equal(revComp('AACGRYSWKMBDHVN'), 'NBDHVKMWSRYCGTT');
+  assert.equal(revComp(revComp('ACGTRYKMBDHVN')), 'ACGTRYKMBDHVN');
 });

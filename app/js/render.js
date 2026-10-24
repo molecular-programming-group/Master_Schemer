@@ -8,7 +8,7 @@ import {
 } from './geom.js';
 import {
   drawBrush, brushPath, strandLayout, midline, naturalBases, uAt, outlineOf, DEFAULT_BPG, naturalD,
-  gridPitch, randomBase, BASE_COLORS, COMPLEMENT, seqOf, seqLetters, tAt, tintRef, DIAMETER_A,
+  gridPitch, randomBase, BASE_COLORS, COMPLEMENT, revComp, seqOf, seqLetters, tAt, tintRef, DIAMETER_A,
 } from './dna.js';
 import MOLS from './mol-tex.js';
 
@@ -772,15 +772,27 @@ const molFit = (el, m) => {
   const sc = Math.min(el.w / m.w, el.h / m.h); // preserveAspectRatio meet
   return { sc, ox: el.x + (el.w - m.w * sc) / 2, oy: el.y + (el.h - m.h * sc) / 2 };
 };
-// ponytail: bbox test of every DNA strand against the binding band; a strand
-// crossing the protein at an angle also counts — fine for straddling schematics
+// A protein's turn (el.rot) and mirror (el.mirror, left-right before turning),
+// about its box centre — as an SVG transform, and taking a world point into the
+// unturned box's frame.
+const molTransform = el => {
+  const [cx, cy] = shapeCenter(el);
+  return `${el.rot ? `rotate(${el.rot} ${cx} ${cy}) ` : ''}${el.mirror ? `translate(${2 * cx} 0) scale(-1 1)` : ''}`.trim();
+};
+const molLocal = (el, p) => {
+  const c = shapeCenter(el), q = rotatePt(p, c, -(el.rot || 0));
+  return el.mirror ? [2 * c[0] - q[0], q[1]] : q;
+};
+// ponytail: bbox test of every DNA strand (in the protein's own frame) against
+// the binding band; a strand crossing at an angle also counts — fine for straddling schematics
 function molThreaded(el, m) {
   if (!m.front) return false;
   const { sc, ox, oy } = molFit(el, m);
   const y = oy + m.axis * sc, r = DIAMETER_A / 2 * sc;
   return state.doc.elements.some(d => {
     if (d.type !== 'path' || lookOf(d) !== 'dna') return false;
-    const b = elementBBox(d);
+    const w = elementBBox(d);
+    const b = el.rot || el.mirror ? bboxOfPts([[w[0], w[1]], [w[2], w[1]], [w[2], w[3]], [w[0], w[3]]].map(p => molLocal(el, p))) : w;
     return b[0] < ox + m.w * sc && b[2] > ox && b[1] < y + r && b[3] > y - r;
   });
 }
@@ -791,9 +803,10 @@ function renderMol(el, m) {
   const filter = tintRef(resolveColor(el.color) || '#8a857c', !!el.dnaToon);
   // outline as thick as a DNA strand's drawn at this molecule's Å scale
   const D = DIAMETER_A * molFit(el, m).sc;
+  const tf = molTransform(el);
   const layer = (parent, href) => {
     const body = svgEl('g', { filter });
-    svgEl('image', { href, x: el.x, y: el.y, width: el.w, height: el.h, preserveAspectRatio: 'xMidYMid meet' }, body);
+    svgEl('image', { href, x: el.x, y: el.y, width: el.w, height: el.h, preserveAspectRatio: 'xMidYMid meet', ...(tf ? { transform: tf } : {}) }, body);
     if (el.dnaOutline) parent.appendChild(outlineOf(body, D));
     parent.appendChild(body);
   };
@@ -1125,13 +1138,16 @@ const fillet = D => D * 1.5; // tightest turn a strand takes without its texture
 function baseLetter(e, lay, i) {
   const line = lineSeq(e);
   const b = (line.length === lay.n ? line[i] : seqAt(e, lay, i)) || '';
-  return b && b !== 'N' ? b.replace('U', 'T') : null;
+  return b && (b !== 'N' || baseHex('N')) ? b.replace('U', 'T') : null;
 }
+// A base letter's colour: the document's own (doc.baseColors, set in the
+// panel), else the stock one; U is T's. N has none unless the document sets one.
+export const baseHex = b => b && (state.doc.baseColors?.[b === 'U' ? 'T' : b] || BASE_COLORS[b === 'U' ? 'T' : b]);
 const baseColor = e => resolveColor(e.baseColor) || '#f1ece2';
 // Colour of a base whose letter is unknown: the strand's base colour, or a fixed
 // random base (placeholder / UMI look). `rand` is the letter to use for that.
-const unknownBase = (e, rand) => (e.seqUnknown === 'random' ? BASE_COLORS[rand] : baseColor(e));
-const letterColor = (letter, e, rand) => (letter ? BASE_COLORS[letter] : unknownBase(e, rand));
+const unknownBase = (e, rand) => (e.seqUnknown === 'random' ? baseHex(rand) : baseColor(e));
+const letterColor = (letter, e, rand) => baseHex(letter) || unknownBase(e, rand);
 
 // A strand's paint layers on texture `tex` ('ss', 'ssB', 'ds1'…): the whole
 // strand in its colour, then its bases per its colour mode. seqColor(i) is the
@@ -1243,7 +1259,7 @@ function drawSeqStrand(g, el) {
     if (deg > 90.5 || deg <= -89.5) deg += 180; // upright: leftward and upward runs read flipped
     if (Math.abs(deg) > 60) deg = 0; // a steep run stacks its letters upright
     const ch = seqAt(el, lay, i);
-    const fill = el.dnaColor === 'sequence' && BASE_COLORS[ch.replace('U', 'T')] || strandColor(el, t);
+    const fill = el.dnaColor === 'sequence' && baseHex(ch) || strandColor(el, t);
     svgEl('text', { x: 0, y: 0, 'font-size': +(Math.min(t1 - t0, pitch) * 1.6 * k).toFixed(2), fill,
       transform: `translate(${+x.toFixed(2)} ${+y.toFixed(2)}) rotate(${+deg.toFixed(1)})` }, near)
       .textContent = ch || '·';
@@ -1328,7 +1344,7 @@ function renderLink(el) {
     // by strands: each half takes the colour of the strand (domain) it meets.
     const byseq = el.rungColor === 'sequence', bystrand = el.rungColor === 'strands';
     const spA = linkSpan(el.a), spB = linkSpan(el.b);
-    const half = (mine, other) => BASE_COLORS[mine || COMPLEMENT[other]] || color;
+    const half = (mine, other) => baseHex(mine || COMPLEMENT[other]) || color;
     // a strand drawn as letters keeps its rungs clear of them
     const clear = sp => (seqStrand(sp.el) ? gridPitch(dnaBpg()) * 0.8 * (sp.el.seqScale || 1) : 0);
     const clearA = clear(spA), clearB = clear(spB);
@@ -1379,9 +1395,54 @@ export function rungSeqs(l) {
     return naturalBases(Math.min(a1 - a0, b1 - b0), gridPitch(dnaBpg())); };
   const n = qa.length || qb.length || l.bases
     || (seqStrand(ea) || seqStrand(eb) ? grid() : defaultBases(linkStrand(l.a), linkStrand(l.b)));
-  const letters = q => Array.from({ length: n }, (_, i) => (q[i] && q[i] !== 'N' ? q[i] : null));
+  const letters = q => Array.from({ length: n }, (_, i) => (q[i] && (q[i] !== 'N' || baseHex('N')) ? q[i] : null));
   return { n, sa: letters(qa), sb: letters(qb), fromSeq: !!(qa || qb) };
 }
+
+// ---- reverse complement ----
+// A base-pair link may keep one end's sequence the reverse complement of the
+// other's: l.rc names the source end ('a' | 'b'), and the other end (a domain's
+// String, or a whole line's Sequence) is rewritten on every change — read the
+// way the pairing is drawn: strands drawn antiparallel get the reverse
+// complement, strands drawn running the same way the plain complement.
+export const rcEnds = l => (l.rc === 'a' ? [l.a, l.b] : [l.b, l.a]);
+// Can the end opposite `src` take a computed sequence: src has one, and the
+// other is a whole domain or line (no partial range) whose letters aren't
+// supplied by sequenced segments tiling it.
+export function rcOk(l, src) {
+  const from = l[src], to = l[src === 'a' ? 'b' : 'a'], e = byId(to?.id);
+  return l.type === 'link' && l.style === 'bases' && e?.type === 'path' && !hasRange(to)
+    && (to.seg !== undefined ? !!e.segments?.[to.seg] : !lineSeq(e)) && !!refSeq(from, byId(from.id));
+}
+function pairRev(l) {
+  if (duplexLink(l)) return duplexGeom(l).mid.rev;
+  const A = linkStrand(l.a), B = A && linkStrand(l.b);
+  return B ? !!basePairRungs(A, B, rungSeqs(l).n, l.rungAlign).rev : true;
+}
+// The target sequence a link with l.rc wants, or null.
+export function rcSeq(l) {
+  if (!l.rc || !rcOk(l, l.rc)) return null;
+  const [from] = rcEnds(l), q = refSeq(from, byId(from.id));
+  return pairRev(l) ? revComp(q) : [...q].map(b => COMPLEMENT[b] || b).join('');
+}
+// ponytail: a few passes settle chains (a → b → c); a cycle just stops after them
+export function syncComplements() {
+  for (let pass = 0; pass < 3; pass++) {
+    let moved = false;
+    for (const l of state.doc.elements) {
+      const q = l.type === 'link' && rcSeq(l);
+      if (!q) continue;
+      const to = rcEnds(l)[1], e = byId(to.id);
+      const obj = to.seg !== undefined ? e.segments[to.seg] : e;
+      const k = to.seg !== undefined ? 'string' : 'seq';
+      if (obj[k] !== q) { obj[k] = q; delete obj.bases; moved = true; }
+    }
+    if (!moved) return;
+  }
+}
+// The link keeping (element, segment) the reverse complement of its partner, if any.
+export const rcDriver = (id, seg) => state.doc.elements.find(l => l.type === 'link' && l.rc
+  && rcEnds(l)[1].id === id && rcEnds(l)[1].seg === seg && rcOk(l, l.rc));
 
 const RENDERERS = {
   card: renderCard, arrow: renderArrow, path: renderPath, ink: renderInk,
@@ -1418,6 +1479,7 @@ function elKey(el, salt) {
   if (seqStrand(el)) key += '|seq' + dnaBpg();
   if (el.comb && lookOf(el) === 'line') key += JSON.stringify(pairedSpans(el));
   if (MOLS[el.mol]) key += molThreaded(el, MOLS[el.mol]);
+  if (state.doc.baseColors && key.includes('"sequence"')) key += JSON.stringify(state.doc.baseColors); // A C G T colours
   if (key.includes('slot:')) key += salt; // last: strands folded in above may use slots too
   return key;
 }

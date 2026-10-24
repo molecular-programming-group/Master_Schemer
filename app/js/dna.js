@@ -144,14 +144,25 @@ export function midline(A, B, LA, LB, at, m = 64) {
 
 // ---- sequence colours ----
 
-// A field's text as a sequence: its bases (A C G T U N, upper-cased) with
-// spaces, dashes and 5′/3′ marks dropped (other digits, e.g. GATA1, mean a name) — or '' when it holds anything else.
+// A field's text as a sequence: its bases (A C G T U, the IUPAC degenerate codes
+// R Y S W K M B D H V, and N, upper-cased) with spaces, dashes and 5′/3′ marks
+// dropped (other digits, e.g. GATA1, mean a name) — or '' when it holds anything else.
 export function seqLetters(s) {
   const t = (s || '').toUpperCase().replace(/[35]\s*[′']/g, '').replace(/[\s\-–—]/g, '');
-  return /^[ACGTUN]+$/.test(t) ? t : '';
+  return /^[ACGTURYSWKMBDHVN]+$/.test(t) ? t : '';
 }
 export const BASE_COLORS = { A: '#3a8a3e', C: '#2f6fd0', G: '#d59c12', T: '#c8352e' };
-export const COMPLEMENT = { A: 'T', T: 'A', C: 'G', G: 'C' };
+// What each IUPAC code stands for. N has no default colour: an N base is unknown
+// (the strand's base colour, or a random base) unless the document colours N.
+export const IUPAC = { R: 'AG', Y: 'CT', S: 'CG', W: 'AT', K: 'GT', M: 'AC', B: 'CGT', D: 'AGT', H: 'ACT', V: 'ACG', N: 'ACGT' };
+export const DEGENERATE = Object.keys(IUPAC);
+const mix = hexes => '#' + [1, 3, 5].map(i => Math.round(hexes.reduce((a, h) => a + parseInt(h.slice(i, i + 2), 16), 0) / hexes.length)
+  .toString(16).padStart(2, '0')).join('');
+// Default colour of a degenerate code: the mean of the bases it stands for.
+for (const [k, v] of Object.entries(IUPAC)) if (k !== 'N') BASE_COLORS[k] = mix([...v].map(b => BASE_COLORS[b]));
+export const COMPLEMENT = { A: 'T', T: 'A', U: 'A', C: 'G', G: 'C', R: 'Y', Y: 'R', S: 'S', W: 'W', K: 'M', M: 'K', B: 'V', V: 'B', D: 'H', H: 'D', N: 'N' };
+// Reverse complement, 5′→3′ (U read as T).
+export const revComp = q => [...q].reverse().map(b => COMPLEMENT[b] || b).join('');
 // A domain's String read as a sequence: seqLetters, but at least 4 letters, so
 // a domain named "a" or "tag" isn't mistaken for bases. (A strand's own
 // Sequence field is always bases, any length.)
